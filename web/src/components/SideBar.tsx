@@ -139,6 +139,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   );
 
   const isSidebarCollapsed = collapsed ?? storedCollapsed;
+  const navRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -156,6 +157,24 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   useEffect(() => {
     if (searchFocusToken > 0) searchRef.current?.focus();
   }, [searchFocusToken]);
+
+  // When expanded on desktop, clicking outside the sidebar smoothly collapses it.
+  // Drawer mode on phone/tablet relies on its modal scrim instead.
+  useEffect(() => {
+    if (isSidebarCollapsed) return;
+    if (navRef.current?.closest('.navigation-drawer')) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (navRef.current && navRef.current.contains(target)) return;
+      const toggleBtn = (target as Element).closest?.('button[aria-label="切换侧栏"]');
+      if (toggleBtn) return;
+      document.querySelector<HTMLButtonElement>('button[aria-label="切换侧栏"]')?.click();
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [isSidebarCollapsed]);
 
   const query = sessionQuery.trim();
   // A non-empty query is answered by the server-side metadata search; the local
@@ -206,15 +225,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
 
   return (
     <nav
+      ref={navRef}
       aria-label="项目与会话"
-      className={`material-chrome relative h-full shrink-0 select-none border-r border-line overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)] ${
-        isSidebarCollapsed ? 'w-[44px]' : 'w-[240px]'
-      }`}
+      // The 44px rail box is the only in-flow part of the navigation: the
+      // expanded tree is `.navigation-overlay`, an out-of-flow panel over the
+      // workspace, so opening the sidebar no longer re-flows the open
+      // conversation.  The narrow bands keep their modal drawer, whose own rules
+      // (`.navigation-drawer nav`) size this same element to the drawer instead.
+      className="relative h-full w-[44px] shrink-0 select-none border-r border-line"
     >
       {/* Minimal Rail View (shown when collapsed) */}
       <div
         inert={!isSidebarCollapsed}
-        className={`absolute inset-0 flex flex-col items-center py-3 gap-1.5 transition-opacity duration-200 ${
+        className={`material-chrome absolute inset-0 flex flex-col items-center overflow-hidden py-3 gap-1.5 transition-opacity duration-200 ${
           isSidebarCollapsed ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
       >
@@ -270,10 +293,13 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
       {/* Expanded Sidebar View */}
       <div
         inert={isSidebarCollapsed}
-        className={`w-[240px] h-full flex flex-col py-3 text-sm font-sans transition-opacity duration-200 ${
-          isSidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
+        style={{ width: isSidebarCollapsed ? '0px' : '240px' }}
+        // Smooth drawer slide transition purely via width, exactly aligned with RightDock.
+        className={`navigation-overlay material-chrome flex flex-col overflow-hidden text-sm font-sans select-none transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)] ${
+          isSidebarCollapsed ? 'border-r-0 pointer-events-none' : 'border-r border-line pointer-events-auto navigation-overlay-shadow'
         }`}
       >
+      <div className="w-[240px] navigation-content h-full flex flex-col py-3 shrink-0">
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's
@@ -691,6 +717,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
         </div>
       </div>
 
+      </div>
       </div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {usageOpen && <UsageDashboardDialog onClose={() => setUsageOpen(false)} />}

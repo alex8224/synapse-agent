@@ -233,7 +233,14 @@ export function App() {
       </div>
       <div className="console-workspace flex min-w-0 flex-1 flex-col overflow-hidden" inert={mobile && drawerOpen}>
         <TopBar onToggleNavigation={toggleNavigation} navigationExpanded={mobile ? drawerOpen : tablet ? !tabletCollapsed : undefined} />
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/*
+          `relative` on purpose: this row is the positioning context for the
+          right dock's floating panel, so the panel is anchored to the workspace
+          area rather than to the viewport.  That is what keeps the header's dock
+          toggle, the window buttons and the status strip clear of it while it is
+          open.
+        */}
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {/*
           Deliberately *not* `overflow-hidden`: the transcript scroller reaches up
           behind the header (`.console-under-chrome`) so the header's acrylic has

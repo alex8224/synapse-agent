@@ -2872,7 +2872,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   expandedProjectIds: [],
   projectSessions: {},
   loadingProjectIds: [],
-  isSidebarCollapsed: false,
+  isSidebarCollapsed: true,
   toggleSidebar: () => set((s) => ({ isSidebarCollapsed: !s.isSidebarCollapsed })),
   gitExplorer: null,
   openGitExplorer: (path) => set({ gitExplorer: { path: path ?? null } }),

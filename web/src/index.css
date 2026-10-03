@@ -1361,6 +1361,64 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
 .navigation-drawer nav, .navigation-drawer nav > div { width: 100%; }
 .navigation-drawer nav > div:last-of-type { padding-top: 52px; }
 .navigation-close { position: absolute; right: 8px; top: max(8px, env(safe-area-inset-top, 0px)); z-index: 1; }
+/*
+  Desktop side panels float over the workspace instead of taking width from it.
+
+  Opening either column used to re-flow the reading column -- a 240px navigation
+  or a 280-760px dock -- which re-wrapped every paragraph of the open
+  conversation and moved the composer out from under the pointer.  The two
+  panels are therefore out of flow on the desktop band, which is the same "pop
+  out over the content" the narrow bands already do with `.navigation-drawer`.
+
+  Two things make that work:
+
+  - the navigation keeps a 44px in-flow rail (`w-[44px]` on the `nav`), so the
+    workspace does not even shift by the rail's width when the panel opens; only
+    the expanded tree floats, from under the header to above the status strip
+    (`--chrome-h` / `--status-h`), which is what leaves the header's sidebar
+    toggle, the project/branch chips and the dock toggle clickable;
+  - both panels sit at `z-index: 40`: above the header (`z-20`) and above the
+    floating composer (`z-30`, which would otherwise paint over the panel on a
+    narrow desktop window, because the chat column precedes the dock in the
+    DOM), level with the status strip they stop short of, and below the
+    portalled flyouts (`z-50`).
+
+  Neither panel takes a scrim.  The dock is read *while* composing, so a modal
+  layer over the composer would defeat it; what a panel covers is therefore
+  covered, and the reading column never moves out of the way.  The 44px rail
+  stays in flow, so the collapsed and the expanded navigation measure the same
+  to the workspace.
+*/
+.navigation-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+  z-index: 40;
+}
+.navigation-overlay-shadow {
+  box-shadow: var(--material-edge), 4px 0 24px rgb(0 0 0 / 0.25);
+}
+/*
+  Inside the drawer the panel *is* the drawer: in flow, full size, no elevation.
+  The band keeps its own geometry (`.navigation-drawer nav`, and the 52px top
+  padding that clears the close button).
+*/
+.navigation-drawer .navigation-overlay {
+  position: static;
+  width: 100% !important;
+  height: 100%;
+  z-index: auto;
+  box-shadow: var(--material-edge);
+}
+.navigation-drawer .navigation-content {
+  width: 100%;
+}
+/* The dock's own elevation, mirrored: it is anchored to the right edge. */
+.dock-overlay {
+  box-shadow: var(--material-edge), -4px 0 24px rgb(0 0 0 / 0.25);
+}
 /* The list/detail back affordance exists only in the phone bands. */
 .list-detail-back { display: none; }
 

@@ -485,13 +485,13 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                       onDoubleClick={() => handleSelectSession(item)}
                       className={`relative flex items-center gap-3 rounded-control px-3 py-2.5 cursor-pointer transition-all duration-fast ${
                         isSelected
-                          ? 'bg-blue-600/15 dark:bg-blue-500/20 text-gray-900 dark:text-white font-medium shadow-sm border border-blue-500/35 dark:border-blue-400/35'
+                          ? 'bg-blue-600/15 dark:bg-blue-500/20 text-gray-900 dark:text-gray-100 font-medium shadow-xs border border-blue-500/35 dark:border-blue-400/35'
                           : 'hover:bg-control-hover/70 text-gray-600 dark:text-gray-400 border border-transparent'
                       }`}
                     >
                       {/* Fluent Selection Indicator: 3.5px accent bar on left */}
                       {isSelected && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3.5px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-sm" />
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3.5px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-xs" />
                       )}
 
                       {/* Status icon / dot */}
@@ -513,7 +513,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                         <div className="flex items-center gap-1.5">
                           <span
                             className={`truncate text-xs ${
-                              isSelected ? 'font-semibold text-gray-900 dark:text-white' : 'font-medium text-gray-700 dark:text-gray-300'
+                              isSelected ? 'font-semibold text-gray-900 dark:text-gray-100' : 'font-medium text-gray-700 dark:text-gray-300'
                             }`}
                           >
                             {item.title}
@@ -603,7 +603,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
 
                   {/* Live Activity Section */}
                   {currentSelected.activity && (
-                    <div className="rounded-card bg-surface-sunken p-3 border border-line flex flex-col gap-2 shadow-sm">
+                    <div className="rounded-card bg-surface-sunken p-3 border border-line flex flex-col gap-2 shadow-xs">
                       <div className="flex items-center justify-between text-[11px] text-gray-400 font-semibold">
                         <span className="flex items-center gap-1.5 text-accent">
                           <Wrench20Regular />
