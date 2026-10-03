@@ -343,7 +343,7 @@ test('only the strip keys are claimed, and each by exactly one row', () => {
     (shortcut) => shortcut.chord,
   );
   assert.deepEqual(copyOnly, [
-    'Enter', 'Ctrl + C', 'Ctrl + B', 'Ctrl + J', 'Ctrl + `', TERMINAL_MAXIMIZE_CHORD, 'Ctrl + N', 'Ctrl + K',
+    'Enter', 'Ctrl + C', 'Ctrl + B', 'Ctrl + J', 'Ctrl + `', TERMINAL_MAXIMIZE_CHORD, 'Ctrl + P', 'Ctrl + N', 'Ctrl + K',
     THEME_SHORTCUT_CHORD, 'F2',
   ]);
   for (const chord of copyOnly) {

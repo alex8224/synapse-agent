@@ -1,0 +1,1203 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="fluent-dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synapse - Fluent 2 Quick Switcher (快速会话定位与运行态看板)</title>
+  <style>
+    /* ==========================================================================
+       Microsoft Fluent Design System 2 变量体系规范
+       严格对齐 Synapse web/src/index.css 与 @fluentui/tokens
+       ========================================================================== */
+    :root {
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+
+      --control-h: 32px;
+      --control-compact-h: 24px;
+      --radius-control: 4px;
+      --radius-card: 8px;
+      --radius-pill: 9999px;
+
+      --motion-fast: 150ms;
+      --motion-normal: 250ms;
+      --motion-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
+    }
+
+    [data-theme='fluent-dark'] {
+      color-scheme: dark;
+      --bg-canvas: #1f1f1f;            /* colorNeutralBackground2 */
+      --bg-card: #292929;              /* colorNeutralBackground1 */
+      --bg-card-hover: #333333;        /* colorNeutralBackground1Hover */
+      --bg-card-pressed: #242424;      /* colorNeutralBackground1Pressed */
+      --bg-sunken: #181818;            /* colorNeutralBackground3 */
+      --bg-subtle-hover: #383838;      /* colorSubtleBackgroundHover */
+      --bg-acrylic: rgba(41, 41, 41, 0.88);
+
+      --border-line: #3d3d3d;          /* colorNeutralStroke2 */
+      --border-line-subtle: #2d2d2d;   /* colorNeutralStroke3 */
+      --border-line-strong: #666666;   /* colorNeutralStroke1 */
+
+      --fg-1: #ffffff;                 /* colorNeutralForeground1 */
+      --fg-2: #d6d6d6;                 /* colorNeutralForeground2 */
+      --fg-3: #adadad;                 /* colorNeutralForeground3 */
+      --fg-4: #8a8a8a;                 /* colorNeutralForeground4 */
+
+      --brand: #0078d4;                /* colorBrandBackground */
+      --brand-hover: #1084d8;          /* colorBrandBackgroundHover */
+      --brand-pressed: #006cbe;        /* colorBrandBackgroundPressed */
+      --brand-soft: rgba(0, 120, 212, 0.16);
+      --brand-border: rgba(0, 120, 212, 0.38);
+      --brand-fg: #479ef5;             /* colorBrandForeground1 */
+
+      --status-running: #0078d4;
+      --status-approval: #f59e0b;
+      --status-approval-soft: rgba(245, 158, 11, 0.15);
+      --status-idle: #10b981;
+      --status-idle-soft: rgba(16, 185, 129, 0.15);
+
+      --shadow-flyout: 0 16px 36px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
+      --focus-ring: 0 0 0 2px var(--bg-card), 0 0 0 4px var(--brand-fg);
+    }
+
+    [data-theme='fluent-light'] {
+      color-scheme: light;
+      --bg-canvas: #fafafa;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f5f5f5;
+      --bg-card-pressed: #ebebeb;
+      --bg-sunken: #f0f0f0;
+      --bg-subtle-hover: #e8e8e8;
+      --bg-acrylic: rgba(255, 255, 255, 0.92);
+
+      --border-line: #e0e0e0;
+      --border-line-subtle: #eaeaea;
+      --border-line-strong: #bfbfbf;
+
+      --fg-1: #242424;
+      --fg-2: #424242;
+      --fg-3: #616161;
+      --fg-4: #8a8a8a;
+
+      --brand: #0f6cbd;
+      --brand-hover: #115ea3;
+      --brand-pressed: #0c3b5e;
+      --brand-soft: rgba(15, 108, 189, 0.12);
+      --brand-border: rgba(15, 108, 189, 0.28);
+      --brand-fg: #0f6cbd;
+
+      --status-running: #0f6cbd;
+      --status-approval: #d97706;
+      --status-approval-soft: rgba(217, 119, 6, 0.12);
+      --status-idle: #059669;
+      --status-idle-soft: rgba(5, 150, 105, 0.12);
+
+      --shadow-flyout: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
+      --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px var(--brand);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-canvas);
+      color: var(--fg-1);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 20px;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: row;
+      transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+    }
+
+    /* 细滚动条 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-line-strong);
+      border-radius: var(--radius-pill);
+    }
+
+    /* Fluent 基础按钮 */
+    .fluent-btn {
+      min-height: var(--control-h);
+      padding: 0 10px;
+      border-radius: var(--radius-control);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      outline: none;
+      transition: all var(--motion-fast) var(--motion-ease);
+    }
+    .fluent-btn:active { transform: scale(0.98); }
+    .fluent-btn-primary { background: var(--brand); color: #fff; }
+    .fluent-btn-primary:hover { background: var(--brand-hover); }
+    .fluent-btn-subtle { background: transparent; color: var(--fg-1); }
+    .fluent-btn-subtle:hover { background: var(--bg-subtle-hover); }
+    .fluent-btn-secondary { background: var(--bg-card); color: var(--fg-1); border: 1px solid var(--border-line); }
+    .fluent-btn-secondary:hover { background: var(--bg-card-hover); border-color: var(--border-line-strong); }
+    .fluent-btn-compact { min-height: var(--control-compact-h); padding: 0 8px; font-size: 12px; }
+
+    /* ==========================================================================
+       1. Synapse 原生宿主界面框架 (SideBar + TopBar + Transcript + BottomBar)
+       ========================================================================== */
+    /* 左侧侧栏 (标准 44px 紧凑 Rail) */
+    .app-sidebar-rail {
+      width: 44px;
+      background: var(--bg-card);
+      border-right: 1px solid var(--border-line);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px 0;
+      gap: 12px;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .rail-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-control);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--fg-2);
+      cursor: pointer;
+      transition: background var(--motion-fast);
+      position: relative;
+    }
+    .rail-btn:hover { background: var(--bg-subtle-hover); color: var(--fg-1); }
+    .rail-btn.active { background: var(--bg-sunken); color: var(--brand-fg); }
+    .rail-btn.active::before {
+      content: '';
+      position: absolute;
+      left: -6px;
+      top: 8px;
+      bottom: 8px;
+      width: 3px;
+      border-radius: var(--radius-pill);
+      background: var(--brand);
+    }
+
+    /* 主工作台区域 */
+    .app-workspace-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      height: 100vh;
+      position: relative;
+    }
+
+    /* 顶部栏 (TopBar) */
+    .app-topbar {
+      height: 44px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-line);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .topbar-center {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--fg-1);
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    /* 会话对话主体 (Transcript) */
+    .app-transcript-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .chat-bubble {
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      padding: 14px 16px;
+      box-shadow: var(--shadow-card);
+      line-height: 1.6;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: var(--brand-soft);
+      border-color: var(--brand-border);
+      max-width: 80%;
+    }
+    .chat-tool-row {
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-line-subtle);
+      border-radius: var(--radius-control);
+      padding: 8px 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--fg-2);
+    }
+
+    /* 底部输入框 (RichComposer) */
+    .app-composer-area {
+      padding: 12px 24px;
+      background: var(--bg-canvas);
+      border-top: 1px solid var(--border-line-subtle);
+      display: flex;
+      justify-content: center;
+    }
+    .composer-box {
+      width: 100%;
+      max-width: 960px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-card);
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .composer-input-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .composer-input-fake {
+      color: var(--fg-3);
+      font-size: 13px;
+    }
+
+    /* 底部状态条 (BottomBar) */
+    .app-bottombar {
+      height: 26px;
+      background: var(--bg-card);
+      border-top: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--fg-3);
+      flex-shrink: 0;
+    }
+    .kbd-chip {
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-line);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--fg-2);
+      font-weight: 600;
+    }
+
+    /* ==========================================================================
+       2. Fluent 2 Quick Switcher 居中浮层 (Core Innovation)
+       ========================================================================== */
+    .qs-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 200;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding-top: 12vh;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--motion-fast) var(--motion-ease);
+    }
+    .qs-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .qs-window {
+      width: 820px;
+      max-width: calc(100vw - 48px);
+      max-height: 600px;
+      background: var(--bg-acrylic);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--border-line-strong);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-flyout);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transform: translateY(-10px) scale(0.99);
+      transition: transform var(--motion-fast) var(--motion-ease);
+    }
+    .qs-backdrop.open .qs-window {
+      transform: translateY(0) scale(1);
+    }
+
+    /* 顶部搜索框 (Fluent Field) */
+    .qs-search-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-card);
+    }
+    .qs-search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--fg-1);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 22px;
+    }
+    .qs-search-input::placeholder {
+      color: var(--fg-4);
+    }
+
+    /* 主体左右双栏布局 (Fluent 2 Master-Detail) */
+    .qs-body-columns {
+      display: flex;
+      height: 480px;
+      overflow: hidden;
+    }
+
+    /* 左栏：会话分组与检索列表 */
+    .qs-list-column {
+      width: 380px;
+      border-right: 1px solid var(--border-line);
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      background: var(--bg-canvas);
+    }
+
+    .qs-group-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-3);
+      padding: 8px 10px 4px 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Fluent 导航行 (ui-nav-row) */
+    .qs-row-item {
+      min-height: 42px;
+      border-radius: var(--radius-control);
+      padding: 6px 10px 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      position: relative;
+      transition: background-color var(--motion-fast) var(--motion-ease);
+    }
+    .qs-row-item:hover {
+      background: var(--bg-card-hover);
+    }
+    .qs-row-item.selected {
+      background: var(--bg-subtle-hover);
+      color: var(--fg-1);
+    }
+
+    /* Fluent Selection Indicator: 左侧高亮竖条 */
+    .qs-row-item::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 0;
+      border-radius: var(--radius-pill);
+      background: var(--brand);
+      transition: height var(--motion-fast) var(--motion-ease);
+    }
+    .qs-row-item.selected::before {
+      height: 20px;
+    }
+
+    /* 状态指示小图标 */
+    .qs-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-running {
+      background: var(--status-running);
+      box-shadow: 0 0 0 2px var(--brand-soft);
+      animation: fluent-pulse 1.8s infinite ease-in-out;
+    }
+    .dot-approval {
+      background: var(--status-approval);
+      box-shadow: 0 0 0 2px var(--status-approval-soft);
+    }
+    .dot-idle {
+      background: var(--status-idle);
+    }
+
+    @keyframes fluent-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+    }
+
+    .qs-row-text-wrap {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex: 1;
+    }
+    .qs-row-title {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--fg-1);
+    }
+    .qs-row-subtitle {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--fg-3);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .qs-row-meta {
+      font-size: 11px;
+      color: var(--fg-4);
+      flex-shrink: 0;
+    }
+
+    /* 右栏：实时运行态详情与摘要看板 (Fluent Detail Card) */
+    .qs-detail-column {
+      flex: 1;
+      background: var(--bg-card);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+    }
+
+    .detail-badge-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .detail-project-tag {
+      font-size: 11px;
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius-control);
+      padding: 2px 8px;
+      color: var(--fg-3);
+      font-family: var(--font-mono);
+    }
+    .detail-status-pill {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-pill-running { background: var(--brand-soft); color: var(--brand-fg); border: 1px solid var(--brand-border); }
+    .status-pill-approval { background: var(--status-approval-soft); color: var(--status-approval); border: 1px solid rgba(245, 158, 11, 0.4); }
+    .status-pill-idle { background: var(--status-idle-soft); color: var(--status-idle); border: 1px solid rgba(16, 185, 129, 0.4); }
+
+    .detail-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--fg-1);
+      line-height: 1.4;
+    }
+
+    /* 运行中工具调用卡片 */
+    .detail-tool-section {
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-line-subtle);
+      border-radius: var(--radius-control);
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .detail-section-label {
+      font-size: 11px;
+      color: var(--fg-3);
+      font-weight: 600;
+    }
+    .detail-tool-command {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--brand-fg);
+      word-break: break-all;
+    }
+
+    /* 阶段进度条 (Fluent Progress Track) */
+    .fluent-progress-track {
+      height: 3px;
+      background: var(--border-line-subtle);
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .fluent-progress-thumb {
+      height: 100%;
+      background: var(--brand);
+      border-radius: var(--radius-pill);
+      transition: width var(--motion-normal) ease;
+    }
+
+    /* 最新摘要面板 */
+    .detail-summary-card {
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-line-subtle);
+      border-radius: var(--radius-control);
+      padding: 12px;
+      font-size: 12px;
+      color: var(--fg-2);
+      line-height: 1.6;
+      flex: 1;
+    }
+
+    /* 安全授权就地批准区域 (Approval Gate) */
+    .detail-approval-box {
+      background: var(--status-approval-soft);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      border-radius: var(--radius-control);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .approval-actions-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    /* 底部操作与键盘提示栏 (Footer) */
+    .qs-footer {
+      padding: 8px 16px;
+      background: var(--bg-card);
+      border-top: 1px solid var(--border-line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--fg-3);
+    }
+    .qs-footer-shortcuts {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==========================================================================
+       1. Synapse 原生宿主界面 (熟悉的控制台全貌)
+       ========================================================================== -->
+  <!-- 左侧紧凑侧栏 Rail (44px) -->
+  <aside class="app-sidebar-rail">
+    <!-- Fluent: PanelLeft (展开/收起) -->
+    <div class="rail-btn" title="侧栏导航 (Ctrl+B)">
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M3 4.5A1.5 1.5 0 014.5 3h11A1.5 1.5 0 0117 4.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 15.5v-11zm5 .5v10h7a.5.5 0 00.5-.5v-9a.5.5 0 00-.5-.5H8z"/>
+      </svg>
+    </div>
+    <!-- 激活的会话图标 (Chat20Regular) -->
+    <div class="rail-btn active" title="会话列表">
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M10 3a7 7 0 00-6.19 10.244l-1.077 3.23a.75.75 0 00.95.95l3.23-1.078A7 7 0 1010 3z"/>
+      </svg>
+    </div>
+    <!-- 新建会话 (+) -->
+    <div class="rail-btn" title="新建会话 (Ctrl+N)">
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M10 3.75a.75.75 0 01.75.75v4.75H15.5a.75.75 0 010 1.5h-4.75v4.75a.75.75 0 01-1.5 0v-4.75H4.5a.75.75 0 010-1.5h4.75V4.5a.75.75 0 01.75-.75z"/>
+      </svg>
+    </div>
+  </aside>
+
+  <!-- 右侧主工作区 -->
+  <div class="app-workspace-col">
+    <!-- TopBar -->
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <span style="font-weight: 600; color: var(--fg-1);">Synapse</span>
+        <span style="color: var(--fg-4);">/</span>
+        <span style="color: var(--fg-3); font-family: var(--font-mono); font-size: 12px;">synapse-core (main)</span>
+      </div>
+
+      <div class="topbar-center">
+        <!-- Chat20Regular -->
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="var(--brand-fg)">
+          <path d="M10 3a7 7 0 00-6.19 10.244l-1.077 3.23a.75.75 0 00.95.95l3.23-1.078A7 7 0 1010 3z"/>
+        </svg>
+        <span id="hostCurrentTitle">后端架构重构 & 单元测试</span>
+      </div>
+
+      <div class="topbar-right">
+        <!-- 呼出 Quick Switcher 快捷按钮 -->
+        <button class="fluent-btn fluent-btn-secondary fluent-btn-compact" id="btnOpenSwitcher" title="快捷键: Ctrl+P 或 Ctrl+K">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
+          </svg>
+          快速切换 (Ctrl+P)
+        </button>
+
+        <!-- 主题切换 -->
+        <button class="fluent-btn fluent-btn-subtle fluent-btn-compact" id="btnThemeToggle" title="切换 Fluent Light / Dark">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 2a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 2zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 15zm8-5a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 0118 10zM5 10a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 015 10z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Transcript 区域 -->
+    <main class="app-transcript-area" id="hostTranscript">
+      <div class="chat-bubble user">
+        请重构 backend 模块的流式回退逻辑，并运行 pytest 单元测试验证其行为。
+      </div>
+
+      <div class="chat-bubble">
+        <p style="margin-bottom: 8px;">好的，我将按以下步骤开展工作：</p>
+        <div class="chat-tool-row">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="var(--brand-fg)">
+            <path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1.323l3.954 1.582 1.599-.8a1 1 0 011.054 1.698l-1.4 1.4a6.002 6.002 0 010 5.6l1.4 1.4a1 1 0 01-1.054 1.697l-1.599-.8L11 15.677V17a1 1 0 11-2 0v-1.323l-3.954-1.582-1.599.8A1 1 0 012.393 13.2l1.4-1.4a6.002 6.002 0 010-5.6l-1.4-1.4A1 1 0 013.447 3.1l1.599.8L9 4.323V3a1 1 0 011-1z" clip-rule="evenodd"/>
+          </svg>
+          <span>execute(pytest tests/test_backends.py -q)</span>
+          <span style="margin-left: auto; color: var(--status-running); font-size: 11px;">● 执行中 1m 24s</span>
+        </div>
+        <p style="margin-top: 8px; color: var(--fg-2);">
+          检测到测试用例未通过，已提取 traceback，正在调用 patch 工具修正 fallback 边界。
+        </p>
+      </div>
+    </main>
+
+    <!-- 底部输入框 (RichComposer) -->
+    <div class="app-composer-area">
+      <div class="composer-box">
+        <div class="composer-input-row">
+          <span class="composer-input-fake">向当前会话发送指令... (按 Ctrl+P 快速切换到其他正在运行的任务)</span>
+          <button class="fluent-btn fluent-btn-primary fluent-btn-compact">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部状态条 (BottomBar) -->
+    <footer class="app-bottombar">
+      <div>Claude 3.7 Sonnet (F2)</div>
+      <div>12.4k / 200k tokens</div>
+      <div style="margin-left: auto; display: flex; gap: 12px;">
+        <span><span class="kbd-chip">Ctrl+P</span> 快速切换与看板</span>
+        <span><span class="kbd-chip">Ctrl+B</span> 侧栏</span>
+        <span><span class="kbd-chip">F1</span> 帮助</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ==========================================================================
+       2. Fluent 2 Quick Switcher 居中浮层 (真正的核心设计)
+       ========================================================================== -->
+  <div class="qs-backdrop open" id="qsBackdrop">
+    <div class="qs-window" role="dialog" aria-modal="true" aria-label="会话快速定位与切换">
+      
+      <!-- 1. 顶部检索框 -->
+      <div class="qs-search-header">
+        <!-- Fluent Search Icon -->
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="var(--fg-3)">
+          <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
+        </svg>
+        <input 
+          type="text" 
+          class="qs-search-input" 
+          id="qsSearchInput"
+          placeholder="搜索会话、任务动作、项目名称... (支持纯键盘漫游)"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <span class="kbd-chip">Esc 退出</span>
+      </div>
+
+      <!-- 2. 主体双栏 (Master-Detail) -->
+      <div class="qs-body-columns">
+        
+        <!-- 左栏：会话列表 -->
+        <div class="qs-list-column" id="qsListColumn">
+          <!-- 动态渲染各分组和会话行 -->
+        </div>
+
+        <!-- 右栏：实时运行态详情与摘要 -->
+        <div class="qs-detail-column" id="qsDetailColumn">
+          <!-- 动态渲染右侧卡片 -->
+        </div>
+      </div>
+
+      <!-- 3. 底部快捷键指南 -->
+      <div class="qs-footer">
+        <div class="qs-footer-shortcuts">
+          <span><span class="kbd-chip">↑</span> <span class="kbd-chip">↓</span> 漫游列表</span>
+          <span><span class="kbd-chip">Enter</span> 切换会话</span>
+          <span><span class="kbd-chip">Y</span> / <span class="kbd-chip">N</span> 就地审批</span>
+        </div>
+        <div>
+          <span>已捕获 3 个并发工位活动</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       3. 交互逻辑与键盘驱动
+       ========================================================================== -->
+  <script>
+    // 会话数据模型 (融合运行态、工具执行、安全待办)
+    const SESSIONS = [
+      {
+        id: "sess-01",
+        title: "后端架构重构 & 单元测试",
+        project: "synapse-core",
+        status: "running", // running | approval | idle
+        currentTool: "execute(pytest tests/test_backends.py -q)",
+        durationSec: 84,
+        progress: 65,
+        summary: "发现 1 个用例报错，正在自动分析测试日志并调用 patch 工具修复回退分支...",
+        lastOutput: "tests/test_backends.py:142: AssertionError: Expected fallback to be triggered\n-> Calling patch tool on src/synapse/backends/client.py",
+        chatPreview: [
+          { role: "user", text: "请重构 backend 模块的流式回退逻辑，并运行 pytest 单元测试验证其行为。" },
+          { role: "agent", text: "正在执行 pytest tests/test_backends.py 校验测试集..." }
+        ]
+      },
+      {
+        id: "sess-02",
+        title: "清理旧版本构建产物与缓存",
+        project: "web-dist",
+        status: "approval",
+        currentTool: "execute(rm -rf ./dist ./build)",
+        durationSec: 32,
+        progress: 40,
+        summary: "触发安全网关保护：请求删除目录 ./dist 与 ./build，可能影响已部署包，需人工授权。",
+        pendingApproval: {
+          action: "execute(rm -rf ./dist ./build)",
+          reason: "清理旧版本构建遗留文件以准备打包",
+          risk: "破坏性文件操作"
+        },
+        lastOutput: "[SECURITY GATE] Operation requires user confirmation before proceeding.",
+        chatPreview: [
+          { role: "user", text: "请先清理掉以前生成的临时构建物。" },
+          { role: "agent", text: "已发现 ./dist 和 ./build 目录，正在请求安全授权以删除..." }
+        ]
+      },
+      {
+        id: "sess-03",
+        title: "Prompt 缓存命中率深度诊断",
+        project: "cache-eval",
+        status: "running",
+        currentTool: "read_file(logs/cache_snapshots.jsonl)",
+        durationSec: 156,
+        progress: 88,
+        summary: "已完成 128 个 checkpoint 的快照比对，正在提炼 3 条针对多轮工具调用的缓存调优方案。",
+        lastOutput: "Checkpoint analysis complete. Cache hit rate increased from 42% to 89% with unified prompt prefix.",
+        chatPreview: [
+          { role: "user", text: "分析一下最近几个 session 的 prompt cache 为什么频繁 miss。" },
+          { role: "agent", text: "分析完成，正在整理前缀对齐策略。" }
+        ]
+      },
+      {
+        id: "sess-04",
+        title: "Fluent 2 视觉规范与圆角对齐",
+        project: "synapse-web",
+        status: "idle",
+        currentTool: "none",
+        durationSec: 210,
+        progress: 100,
+        summary: "已基于 @fluentui/tokens 规范统一按钮、输入框、导航行的圆角与焦点环。",
+        lastOutput: "Build succeeded: 0 errors, all unit tests passed.",
+        chatPreview: [
+          { role: "user", text: "检查 Web 控制台当前的 Fluent 规范对齐情况。" },
+          { role: "agent", text: "已完成所有 Fluent 2 视觉 token 的校验并全部通过。" }
+        ]
+      },
+      {
+        id: "sess-05",
+        title: "项目依赖更新与 Python 3.13 验证",
+        project: "synapse-core",
+        status: "idle",
+        currentTool: "none",
+        durationSec: 45,
+        progress: 100,
+        summary: "完成 uv sync 锁定与环境测试，无弃用警告。",
+        lastOutput: "Audited 124 packages, all compatible.",
+        chatPreview: [
+          { role: "user", text: "测试一下在 Python 3.13 下 uv 是否能正常编译 native wheels。" },
+          { role: "agent", text: "测试通过，无兼容性问题。" }
+        ]
+      }
+    ];
+
+    let currentSelectedIdx = 0; // Quick Switcher 中高亮的项
+    let filteredList = [...SESSIONS];
+    let isSwitcherOpen = true;
+
+    function formatDuration(sec) {
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m}m ${s < 10 ? '0' : ''}${s}s`;
+    }
+
+    // 渲染左侧列表
+    function renderList() {
+      const container = document.getElementById("qsListColumn");
+      container.innerHTML = "";
+
+      if (filteredList.length === 0) {
+        container.innerHTML = `<div style="padding: 24px; text-align: center; color: var(--fg-4);">未匹配到相关会话</div>`;
+        renderDetail(null);
+        return;
+      }
+
+      // 按状态归类显示（Running/Approval 优先）
+      const runningItems = filteredList.filter(s => s.status === 'running');
+      const approvalItems = filteredList.filter(s => s.status === 'approval');
+      const idleItems = filteredList.filter(s => s.status === 'idle');
+
+      let globalIdx = 0;
+
+      function renderGroup(groupTitle, items) {
+        if (items.length === 0) return;
+        const header = document.createElement("div");
+        header.className = "qs-group-header";
+        header.innerText = groupTitle;
+        container.appendChild(header);
+
+        items.forEach(item => {
+          const rowIdx = globalIdx;
+          const isSelected = rowIdx === currentSelectedIdx;
+
+          const row = document.createElement("div");
+          row.className = `qs-row-item ${isSelected ? 'selected' : ''}`;
+          row.onclick = () => {
+            currentSelectedIdx = rowIdx;
+            renderList();
+            renderDetail(filteredList[currentSelectedIdx]);
+          };
+          row.ondblclick = () => {
+            applySessionSwitch(item);
+          };
+
+          let dotClass = "dot-idle";
+          if (item.status === 'running') dotClass = "dot-running";
+          if (item.status === 'approval') dotClass = "dot-approval";
+
+          row.innerHTML = `
+            <span class="qs-status-dot ${dotClass}"></span>
+            <div class="qs-row-text-wrap">
+              <span class="qs-row-title">${item.title}</span>
+              <span class="qs-row-subtitle">${item.status === 'approval' ? '▲ 待授权: ' + item.pendingApproval?.action : item.currentTool}</span>
+            </div>
+            <span class="qs-row-meta">${item.project}</span>
+          `;
+
+          container.appendChild(row);
+          globalIdx++;
+        });
+      }
+
+      renderGroup("正在运行的任务", runningItems);
+      renderGroup("等待安全审批", approvalItems);
+      renderGroup("最近会话", idleItems);
+
+      // 联动渲染右侧详情
+      renderDetail(filteredList[currentSelectedIdx] || null);
+    }
+
+    // 渲染右侧实时详情与摘要
+    function renderDetail(session) {
+      const container = document.getElementById("qsDetailColumn");
+      if (!session) {
+        container.innerHTML = `<div style="color: var(--fg-4); text-align: center; margin-top: 40px;">请选择左侧会话</div>`;
+        return;
+      }
+
+      let statusPillHtml = "";
+      if (session.status === "running") {
+        statusPillHtml = `<span class="detail-status-pill status-pill-running">● 运行中 (${formatDuration(session.durationSec)})</span>`;
+      } else if (session.status === "approval") {
+        statusPillHtml = `<span class="detail-status-pill status-pill-approval">▲ 等待安全审批</span>`;
+      } else {
+        statusPillHtml = `<span class="detail-status-pill status-pill-idle">✔ 已就绪 / 空闲</span>`;
+      }
+
+      let approvalBoxHtml = "";
+      if (session.status === "approval" && session.pendingApproval) {
+        approvalBoxHtml = `
+          <div class="detail-approval-box">
+            <div style="font-weight: 600; color: var(--status-approval); font-size: 12px;">
+              [安全网关拦截] ${session.pendingApproval.risk}
+            </div>
+            <div style="font-size: 11px; font-family: var(--font-mono); color: var(--fg-1); background: var(--bg-card); padding: 6px; border-radius: 4px;">
+              ${session.pendingApproval.action}
+            </div>
+            <div style="font-size: 12px; color: var(--fg-2);">
+              原因: ${session.pendingApproval.reason}
+            </div>
+            <div class="approval-actions-row">
+              <button class="fluent-btn fluent-btn-primary fluent-btn-compact" onclick="inSituApprove('${session.id}')">
+                Y 批准执行 (就地执行)
+              </button>
+              <button class="fluent-btn fluent-btn-secondary fluent-btn-compact" onclick="inSituReject('${session.id}')">
+                N 拒绝
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      container.innerHTML = `
+        <div class="detail-badge-row">
+          <span class="detail-project-tag">${session.project} · ${session.id}</span>
+          ${statusPillHtml}
+        </div>
+
+        <div class="detail-title">${session.title}</div>
+
+        <div class="detail-tool-section">
+          <div class="detail-section-label">当前执行工具:</div>
+          <div class="detail-tool-command">${session.currentTool}</div>
+          <div class="fluent-progress-track">
+            <div class="fluent-progress-thumb" style="width: ${session.progress}%;"></div>
+          </div>
+        </div>
+
+        ${approvalBoxHtml}
+
+        <div class="detail-section-label">最新执行动态与摘要:</div>
+        <div class="detail-summary-card">
+          ${session.summary}
+          <div style="margin-top: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); border-top: 1px dashed var(--border-line-subtle); padding-top: 8px;">
+            ${session.lastOutput}
+          </div>
+        </div>
+
+        <div style="margin-top: auto; display: flex; justify-content: flex-end;">
+          <button class="fluent-btn fluent-btn-primary" onclick="applySessionSwitch(filteredList[currentSelectedIdx])">
+            回车切换到此会话 (Enter)
+          </button>
+        </div>
+      `;
+    }
+
+    // 真正切换主界面的会话
+    function applySessionSwitch(session) {
+      if (!session) return;
+      document.getElementById("hostCurrentTitle").innerText = session.title;
+      
+      const transcript = document.getElementById("hostTranscript");
+      transcript.innerHTML = session.chatPreview.map(c => `
+        <div class="chat-bubble ${c.role === 'user' ? 'user' : ''}">
+          ${c.text}
+        </div>
+      `).join("");
+
+      closeSwitcher();
+    }
+
+    // 就地批准
+    function inSituApprove(id) {
+      const s = SESSIONS.find(item => item.id === id);
+      if (!s) return;
+      s.status = "running";
+      s.summary = "用户已就地授权执行，命令推进中...";
+      s.currentTool = s.pendingApproval?.action || "execute(...)";
+      s.lastOutput = `[APPROVED] Command executed: ${s.currentTool}\nProcess returned exit code 0`;
+      s.pendingApproval = null;
+      renderList();
+    }
+
+    // 就地拒绝
+    function inSituReject(id) {
+      const s = SESSIONS.find(item => item.id === id);
+      if (!s) return;
+      s.status = "idle";
+      s.summary = "用户已拒绝高危指令，任务等待新输入。";
+      s.currentTool = "none";
+      s.lastOutput = "[REJECTED] User cancelled dangerous action.";
+      s.pendingApproval = null;
+      renderList();
+    }
+
+    function openSwitcher() {
+      isSwitcherOpen = true;
+      document.getElementById("qsBackdrop").classList.add("open");
+      document.getElementById("qsSearchInput").focus();
+      document.getElementById("qsSearchInput").select();
+    }
+
+    function closeSwitcher() {
+      isSwitcherOpen = false;
+      document.getElementById("qsBackdrop").classList.remove("open");
+    }
+
+    // 搜索过滤响应
+    document.getElementById("qsSearchInput").addEventListener("input", (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      if (!q) {
+        filteredList = [...SESSIONS];
+      } else {
+        filteredList = SESSIONS.filter(s => 
+          s.title.toLowerCase().includes(q) ||
+          s.project.toLowerCase().includes(q) ||
+          s.currentTool.toLowerCase().includes(q) ||
+          s.summary.toLowerCase().includes(q)
+        );
+      }
+      currentSelectedIdx = 0;
+      renderList();
+    });
+
+    // 全局快捷键驱动
+    window.addEventListener("keydown", (e) => {
+      // Ctrl+P 或 Ctrl+K: 切换打开/关闭 Quick Switcher
+      if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P" || e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        if (isSwitcherOpen) closeSwitcher();
+        else openSwitcher();
+        return;
+      }
+
+      if (isSwitcherOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeSwitcher();
+          return;
+        }
+
+        // 箭头键上下移动
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          if (filteredList.length > 0) {
+            currentSelectedIdx = (currentSelectedIdx + 1) % filteredList.length;
+            renderList();
+          }
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          if (filteredList.length > 0) {
+            currentSelectedIdx = (currentSelectedIdx - 1 + filteredList.length) % filteredList.length;
+            renderList();
+          }
+          return;
+        }
+
+        // Enter: 切换
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (filteredList[currentSelectedIdx]) {
+            applySessionSwitch(filteredList[currentSelectedIdx]);
+          }
+          return;
+        }
+
+        // 就地审批 Y/N (仅当焦点不在普通文本输入内容时，或当前项是 approval)
+        const current = filteredList[currentSelectedIdx];
+        if (current && current.status === "approval") {
+          if (e.key === "y" || e.key === "Y") {
+            // 如果搜索框没有选中输入，则作为快捷键
+            if (document.activeElement !== document.getElementById("qsSearchInput") || document.getElementById("qsSearchInput").value === "") {
+              e.preventDefault();
+              inSituApprove(current.id);
+              return;
+            }
+          }
+          if (e.key === "n" || e.key === "N") {
+            if (document.activeElement !== document.getElementById("qsSearchInput") || document.getElementById("qsSearchInput").value === "") {
+              e.preventDefault();
+              inSituReject(current.id);
+              return;
+            }
+          }
+        }
+      }
+    });
+
+    // 按钮事件绑定
+    document.getElementById("btnOpenSwitcher").onclick = openSwitcher;
+    document.getElementById("qsBackdrop").onclick = (e) => {
+      if (e.target === document.getElementById("qsBackdrop")) closeSwitcher();
+    };
+
+    // 主题切换
+    document.getElementById("btnThemeToggle").onclick = () => {
+      const current = document.documentElement.getAttribute("data-theme");
+      const next = current === "fluent-dark" ? "fluent-light" : "fluent-dark";
+      document.documentElement.setAttribute("data-theme", next);
+    };
+
+    // 动态后台任务耗时心跳推进（真实运行感）
+    setInterval(() => {
+      SESSIONS.forEach(s => {
+        if (s.status === "running") {
+          s.durationSec += 1;
+          if (s.progress < 95) s.progress += 1;
+        }
+      });
+      if (isSwitcherOpen) {
+        renderList();
+      }
+    }, 1000);
+
+    // 初始化运行
+    renderList();
+    document.getElementById("qsSearchInput").focus();
+  </script>
+</body>
+</html>

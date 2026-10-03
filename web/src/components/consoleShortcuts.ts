@@ -63,6 +63,7 @@ export const CONSOLE_SHORTCUTS: readonly ConsoleShortcut[] = [
   { chord: 'Ctrl + J', label: '展开 / 收起辅助工作台' },
   { chord: 'Ctrl + `', label: '展开 / 收起集成终端' },
   { chord: TERMINAL_MAXIMIZE_CHORD, label: '最大化 / 还原集成终端' },
+  { chord: 'Ctrl + P', label: '快速定位与切换会话 (Quick Switcher)' },
   { chord: 'Ctrl + N', label: '新建会话' },
   { chord: 'Ctrl + K', label: '搜索会话' },
   { chord: THEME_SHORTCUT_CHORD, label: '切换浅色 / 深色主题' },
