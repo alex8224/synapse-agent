@@ -37,8 +37,10 @@ def run_tui(
         pass
     root = project_root or Path.cwd()
     tid = thread_id or "pending"
+    settings_baseline: tuple[Any, ...] | None = None
     try:
         with span("tui:session"):
+            from synapse.sessions.session_binding import snapshot_session_axes
             from synapse.sessions.store import (
                 SessionStore,
                 apply_binding_to_settings,
@@ -47,6 +49,10 @@ def run_tui(
                 resolve_startup_binding,
             )
 
+            # Captured *before* the startup binding lands on ``settings``: the
+            # resumed session's own model/reasoning level must not become the
+            # baseline that every later session switch resolves against.
+            settings_baseline = snapshot_session_axes(settings)
             store = SessionStore(settings.resolved_sessions_path())
             try:
                 store.prune_empty(except_ids=set())
@@ -88,6 +94,7 @@ def run_tui(
             env_path=env_path,
             project_root=root,
             defer_agent_build=defer,
+            settings_baseline=settings_baseline,
         )
     global_mark("tui:app-created")
 

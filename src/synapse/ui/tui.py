@@ -14,6 +14,7 @@ Layout (Grok/Cursor chrome):
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -139,6 +140,8 @@ from synapse.ui.user_turn import has_paste_placeholder as _has_paste_placeholder
 from synapse.ui.user_turn import wrap_user_turn_text as _wrap_user_turn_text
 from synapse.ui.user_turn_block import UserTurnBlock
 from synapse.ui.welcome import WelcomeView
+
+_LOGGER = logging.getLogger(__name__)
 
 _copy_to_clipboard = copy_to_clipboard
 format_answer_divider = _format_answer_divider
@@ -368,6 +371,7 @@ class CodingAgentApp(App[None]):
         env_path: Path | None = None,
         project_root: Path | None = None,
         defer_agent_build: bool = False,
+        settings_baseline: tuple[Any, ...] | None = None,
     ) -> None:
         super().__init__()
         self.agent = agent
@@ -375,6 +379,12 @@ class CodingAgentApp(App[None]):
         self.thread_id = thread_id
         self.env_path = env_path
         self.project_root = project_root or Path.cwd()
+        # The pristine project axes this app's ``settings`` object started from
+        # (see ``snapshot_session_axes``).  A session switch resolves the target
+        # session from this baseline, so the previous session's model/reasoning
+        # level cannot survive into the next one.  ``None`` (tests, embedders)
+        # keeps the historical layering behaviour.
+        self._settings_baseline = settings_baseline
         self._lifecycle = AgentLifecycleController(
             self,
             agent=agent,
@@ -837,9 +847,16 @@ class CodingAgentApp(App[None]):
         thread_id: str,
         title_hint: str,
         model: str,
+        thinking: str,
         generation: int,
     ) -> None:
-        """Persist the session touch off the UI thread, then apply its title."""
+        """Persist the session touch off the UI thread, then apply its title.
+
+        ``thinking`` is the session's *effective* reasoning level.  It has to be
+        written with the model: a row that carries only a model comes back from
+        a switch at the model profile's default, which is exactly the level the
+        user did not choose.
+        """
         try:
             from synapse.sessions.store import SessionStore
 
@@ -847,7 +864,12 @@ class CodingAgentApp(App[None]):
             if store is None:
                 store = SessionStore(self.settings.resolved_sessions_path())
                 self._session_store = store
-            info = store.touch(thread_id, title_hint=title_hint, model=model)
+            info = store.touch(
+                thread_id,
+                title_hint=title_hint,
+                model=model,
+                thinking=thinking,
+            )
             title = (info.title or "").strip() if info is not None else None
         except Exception:  # noqa: BLE001 - session touch is best-effort
             title = None
@@ -1516,6 +1538,17 @@ class CodingAgentApp(App[None]):
         # Detach foreground rendering; never cancel running sessions.
         if turn is not None:
             turn.detach()
+        # A project switch is also a session switch: resolve the target
+        # project's pristine axes first (they are what its sessions fall back
+        # to), then let an existing target session keep the model and reasoning
+        # level it stored -- the same resolution the daemon runs when it opens a
+        # session.  Without it the target session silently ran on this project's
+        # defaults instead of its own binding.
+        from synapse.sessions.session_binding import snapshot_session_axes
+
+        self._settings_baseline = snapshot_session_axes(project_settings)
+        if thread_id:
+            self._resolve_switched_session_axes(project_settings, workspace, target_thread)
         # Swap the app's project context.
         self.settings = project_settings
         self.project_root = workspace
@@ -1574,6 +1607,44 @@ class CodingAgentApp(App[None]):
         else:
             self._build_project_agent_bg(
                 project_id, project_settings, target_thread, build_generation, workspace
+            )
+
+    def _resolve_switched_session_axes(
+        self, settings: Any, workspace: Path, thread_id: str
+    ) -> None:
+        """Resolve one session's model/reasoning axes onto freshly loaded settings.
+
+        Runs on the target project's pristine settings object before it becomes
+        the app's live one, so the target session runs on its own stored binding
+        rather than on the project's defaults.  The resolved axes are written
+        back for a row that exists, which is what makes the next switch resolve
+        to the same answer.
+
+        Best-effort: a store that cannot be read leaves the project's own
+        defaults in force, which is exactly what a session with no binding of its
+        own gets anyway -- so a failure degrades to the previous behaviour
+        instead of blocking the switch.
+        """
+        from synapse.sessions.session_binding import resolve_session_axes
+        from synapse.sessions.store import SessionStore, binding_from_settings
+
+        try:
+            with SessionStore(settings.resolved_sessions_path()) as store:
+                resolve_session_axes(
+                    settings,
+                    binding=store.get_model_binding(thread_id),
+                    baseline=self._settings_baseline,
+                    workspace=workspace,
+                )
+                store.save_model_binding(
+                    thread_id,
+                    binding_from_settings(settings),
+                    also_last=False,
+                    create=False,
+                )
+        except Exception as exc:  # noqa: BLE001 - project defaults stay in force
+            _LOGGER.warning(
+                "session %s kept the project defaults: %s", thread_id, exc
             )
 
     @work(thread=True, exclusive=True, group="project-agent")

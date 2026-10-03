@@ -17,6 +17,7 @@ from typing import Any
 from textual.widgets import Input
 
 from synapse.content.multimodal import find_placeholders
+from synapse.models.helpers import settings_thinking_label
 from synapse.observability.error_log import record_error
 from synapse.runtime.agent_loop import TurnContext
 from synapse.runtime.async_runtime import get_async_runtime
@@ -1216,6 +1217,7 @@ class TurnController:
             app.thread_id,
             title_hint=text,
             model=str(app.settings.model),
+            thinking=settings_thinking_label(app.settings),
             generation=int(app._transcript_generation),
         )
         app._image_bank.clear()

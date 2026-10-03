@@ -121,9 +121,19 @@ def handle_model(
     except KeyError as exc:
         return SlashResult(handled=True, lines=[str(exc)], error=True)
 
+    from synapse.models.helpers import reasoning_level_survives_switch
     from synapse.models.registry import apply_profile_to_settings
 
-    apply_profile_to_settings(working_settings, profile, seed_thinking=True)
+    # The model and the reasoning level are independent axes (see the help text
+    # above): switching the model keeps the level this session is already on, and
+    # adopts the new profile's own default only when the session's level is not
+    # part of the new model's catalog.  Seeding unconditionally is what silently
+    # reset a session's level whenever anything rebuilt the graph through
+    # ``/model <same-alias>`` (the subagent configuration dialog, for one).
+    keep_level = reasoning_level_survives_switch(
+        working_settings, reg.allowed_thinking_levels(profile.name)
+    )
+    apply_profile_to_settings(working_settings, profile, seed_thinking=not keep_level)
 
     # /model <alias> high
     # /model <alias> thinking high

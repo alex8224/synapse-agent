@@ -13,7 +13,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any
 
-from synapse.models.helpers import apply_thinking_to_settings
+from synapse.models.helpers import apply_thinking_to_settings, reasoning_level_survives_switch
 from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
 from synapse.runtime.daemon.auth import (
@@ -40,6 +40,7 @@ from synapse.runtime.service import (
 )
 from synapse.runtime.sessions import RuntimeManager
 from synapse.runtime.transport import ConnectionAuthenticator, RuntimeWebSocketServer
+from synapse.sessions.session_binding import resolve_session_axes
 from synapse.sessions.store import (
     SessionStore,
     apply_binding_to_settings,
@@ -161,9 +162,12 @@ def apply_mcp_rebinding(
                 explicit_path=project_settings.mcp_config_path,
             )
     settings = load_project_settings(descriptor.workspace)
-    active_model = binding.settings.active_model or binding.settings.model
-    profile = registry_from_settings(settings).get(active_model)
-    apply_profile_to_settings(settings, profile, seed_thinking=False)
+    # The MCP *config* is read from the project layer, but the session's own
+    # model/reasoning axes have to survive the rebuild: this rebind persists its
+    # result as the session's binding, so leaving the project's (or the model
+    # profile's) default in force would rewrite the session's model and level as
+    # a side effect of an MCP action.
+    apply_binding_to_settings(settings, binding_from_settings(binding.settings))
     from synapse.integrations.mcp_client import load_mcp_server_configs
 
     server_configs = load_mcp_server_configs(
@@ -239,36 +243,6 @@ def apply_project_thinking_default(settings: Any, level: str, *, workspace: Any)
     label = apply_thinking_to_settings(copy.deepcopy(settings), level, allowed=allowed)
     set_project_reasoning_effort(label, workspace=workspace)
     return label
-
-
-def apply_project_layer_thinking(settings: Any, workspace: Any) -> None:
-    """Seed a session's settings with the project layer's explicit default level.
-
-    Called on the copy a newly opened session will use, *before* its own persisted
-    binding is applied (a thread that rebound its level keeps it).  The value has to
-    be applied here because the loaded ``Settings`` object already had
-    ``reasoning_effort`` overwritten by the selected model profile, so the project
-    layer is the only place that still knows the project's own default.
-
-    A default that is no longer inside the live whitelist (for example after a
-    model switch) is skipped with a warning instead of blocking the session open.
-    """
-    from synapse.runtime.service.config_source import resolve_thinking_levels
-    from synapse.settings.config_paths import read_project_thinking_default
-
-    level = read_project_thinking_default(workspace)
-    if level is None:
-        return
-    try:
-        allowed = list(resolve_thinking_levels(settings))
-        apply_thinking_to_settings(settings, level, allowed=allowed)
-    except Exception as exc:  # noqa: BLE001 - a stale default must not block opening
-        _LOGGER.warning(
-            "ignoring project reasoning default %r for workspace %s: %s",
-            level,
-            workspace,
-            exc,
-        )
 
 
 class RuntimeDaemon:
@@ -360,11 +334,27 @@ class RuntimeDaemon:
 
         def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:
             settings = project_settings.model_copy(deep=True)
-            # The project's own default level is applied before the thread's
-            # persisted binding, so a session that rebound its level keeps it.
-            apply_project_layer_thinking(settings, descriptor.workspace)
             with SessionStore(settings.resolved_sessions_path()) as store:
-                apply_binding_to_settings(settings, store.get_model_binding(thread_id))
+                # One resolution step for the whole open path: the project layer's
+                # own default first, then the thread's persisted binding, so a
+                # session that chose a level for itself keeps it.
+                resolve_session_axes(
+                    settings,
+                    binding=store.get_model_binding(thread_id),
+                    workspace=descriptor.workspace,
+                )
+                # Materialize what this session just resolved to, so opening it
+                # again is the same answer instead of a fresh guess at the
+                # defaults (a row carrying only a model would otherwise come back
+                # at the model profile's own level).  ``create=False``: opening a
+                # session must never bring a session the user never used into the
+                # database.
+                store.save_model_binding(
+                    thread_id,
+                    binding_from_settings(settings),
+                    also_last=False,
+                    create=False,
+                )
             return build_agent(settings, thread_id), settings
 
         def persist_session_binding(thread_id: str, settings: Any) -> None:
@@ -379,8 +369,14 @@ class RuntimeDaemon:
             thread_id: str, model: str, binding: Any, _shared: Any
         ) -> tuple[Any, Any]:
             settings = binding.settings.model_copy(deep=True)
-            profile = registry_from_settings(settings).get(model)
-            apply_profile_to_settings(settings, profile)
+            registry = registry_from_settings(settings)
+            profile = registry.get(model)
+            # The model and the reasoning level are independent axes: keep the
+            # level this session is on unless the new model does not accept it.
+            keep_level = reasoning_level_survives_switch(
+                settings, list(registry.allowed_thinking_levels(model))
+            )
+            apply_profile_to_settings(settings, profile, seed_thinking=not keep_level)
             return build_agent(settings, thread_id), settings
 
         def build_mcp_rebinding(

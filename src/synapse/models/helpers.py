@@ -148,6 +148,30 @@ def format_model_status(settings: Any) -> str:
     return f"{model} · {settings_thinking_label(settings)}"
 
 
+def reasoning_level_survives_switch(settings: Any, allowed: list[str] | None) -> bool:
+    """True when the level in force can be kept across a model switch.
+
+    The reasoning level is an independent axis -- ``/model`` states it as
+    "thinking_levels are independent of model identity; session thinking
+    overrides profile default" -- so switching the model must not silently
+    replace the session's level with the new profile's own default.  The level
+    is re-seeded from the profile only when keeping it would hand the new model
+    a level that model does not accept, which is the same catalog the
+    session-level write path (``runtime.session.thinking.set``) validates
+    against.
+
+    ``allowed`` is the target model's catalog; ``None`` means no catalog is
+    known, so nothing is known to be unsupported and the level is kept.
+    """
+    if getattr(settings, "enable_thinking", True) is False:
+        # "off" is an explicit choice, not the absence of one: a profile that
+        # enables thinking must not switch it back on behind the user's back.
+        return True
+    if allowed is None:
+        return True
+    return settings_thinking_label(settings) in set(allowed)
+
+
 def apply_thinking_to_settings(
     settings: Any,
     raw: str,

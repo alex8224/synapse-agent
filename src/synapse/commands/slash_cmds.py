@@ -22,7 +22,6 @@ from synapse.integrations.mcp_client import (
 )
 from synapse.sessions.store import (
     SessionStore,
-    apply_binding_to_settings,
     binding_from_settings,
 )
 
@@ -161,15 +160,37 @@ def _restore_thread_model(
     agent: Any,
     project_root: Path,
     thread_id: str,
+    baseline: tuple[Any, ...] | None = None,
 ) -> tuple[Any | None, list[str]]:
-    """Restore model binding for a thread. Returns (new_agent|None, notes)."""
+    """Resolve one thread's model/reasoning axes onto ``settings``.
+
+    A session switch is a *resolution*, not an incremental mutation.  With
+    ``baseline`` (a snapshot of the pristine project settings) the axes are reset
+    before the target's binding is layered on, so a session that carries no
+    level of its own falls back to the project's defaults instead of inheriting
+    the previous session's -- and cannot keep it in the graph either, which is
+    why the caller rebuilds whenever this reports a change.
+
+    The resolved axes are written back for a row that already exists, so the next
+    switch resolves to the same answer rather than a fresh guess at the defaults
+    (``create=False``: a session the user never used stays out of the database).
+
+    Returns ``(new_agent|None, notes)``.
+    """
+    from synapse.sessions.session_binding import resolve_session_axes
+
     store = _store(settings)
     binding = store.get_model_binding(thread_id)
-    if not binding.has_data():
-        return None, []
-    changed = apply_binding_to_settings(settings, binding)
+    changed = resolve_session_axes(
+        settings,
+        binding=binding,
+        baseline=baseline,
+        workspace=project_root,
+    )
+    resolved = binding_from_settings(settings)
+    store.save_model_binding(thread_id, resolved, also_last=False, create=False)
     if not changed:
-        return None, [f"model binding: {binding.display()}"]
+        return None, [f"model binding: {resolved.display()}"]
     try:
         new_agent = _rebuild_agent(
             settings,
@@ -179,7 +200,7 @@ def _restore_thread_model(
         )
     except Exception as exc:  # noqa: BLE001
         return None, [f"restore model failed: {exc}"]
-    return new_agent, [f"restored model: {binding.display()}"]
+    return new_agent, [f"restored model: {resolved.display()}"]
 
 
 def _rebuild_agent(
@@ -310,8 +331,15 @@ def handle_slash(
     thread_id: str,
     project_root: Path | None = None,
     defer_persist: bool = False,
+    settings_baseline: tuple[Any, ...] | None = None,
 ) -> SlashResult:
-    """Parse and handle a slash command. Non-commands return handled=False."""
+    """Parse and handle a slash command. Non-commands return handled=False.
+
+    ``settings_baseline`` is the caller's snapshot of the pristine project
+    settings (:func:`synapse.sessions.session_binding.snapshot_session_axes`).
+    A session switch resolves the target's axes from it, so the previous
+    session's model/reasoning level cannot survive into the next one.
+    """
     raw = (text or "").strip()
     if not raw.startswith("/") and raw not in {":q"}:
         return SlashResult(handled=False)
@@ -376,6 +404,7 @@ def handle_slash(
                 agent=agent,
                 project_root=root,
                 thread_id=result.thread_id,
+                baseline=settings_baseline,
             )
             if notes:
                 result.lines = [*result.lines, *notes]

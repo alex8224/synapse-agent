@@ -88,6 +88,25 @@ synapse tui -w . -m claude-sonnet
 export AGENT_ACTIVE_MODEL=deepseek
 ```
 
+### 会话级思考级别
+
+模型与思考级别是两个**独立**的轴：切换模型不会改动当前会话的思考级别，只有新模型不接受该级别
+（不在该模型的 `thinking_levels` 白名单内）时才回落到新 profile 的默认值；`off`（关闭思考）
+在任何切换下都保留。会话级写入走 `runtime.session.thinking.set`（Web 控制台底栏），项目默认
+级别走 `runtime.project.thinking.set`。
+
+每个会话把自己的模型与思考级别记在会话行上，解析顺序（先命中者生效）：
+
+| 层 | 作用范围 |
+|---|---|
+| 会话行 `model` / `active_model` / `thinking` | 该会话；切回时原样恢复 |
+| 项目层 `<workspace>/.synapse/settings.json` 的 `reasoning_effort` | 该项目**新开**会话的默认级别 |
+| 模型 profile 的 `thinking` / `reasoning_effort` | 兜底默认（前两者都没有时） |
+
+每轮结束会把该会话**实际生效**的级别写回会话行；打开/切换到会话时按上表解析并回写，因此切换
+会话、重载 MCP、保存子 Agent 配置（会重建 agent）都不会让级别漂移。子 Agent 未单独配置
+`reasoning_effort` 时继承主会话构图时的级别，per-role 覆盖存在用户级 `settings.json`。
+
 ## 列出可用模型
 
 ```bash

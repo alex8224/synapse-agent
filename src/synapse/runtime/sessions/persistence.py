@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from synapse.models.helpers import settings_thinking_label
 from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
 from synapse.runtime.streaming import (
     ToolFinishedPayload,
@@ -495,7 +496,12 @@ class RuntimeProjectPersistence:
         try:
             model = str(getattr(settings, "model", "") or "") or None
             active_model = str(getattr(settings, "active_model", "") or "") or None
-            thinking = str(getattr(settings, "thinking", "") or "") or None
+            # The *effective* label, not a ``settings.thinking`` attribute:
+            # ``Settings`` carries ``enable_thinking`` + ``reasoning_effort`` and
+            # has no ``thinking`` field at all, so reading one silently wrote
+            # NULL on every turn and left the session row without a level -- the
+            # next open then fell back to the project/model-profile default.
+            thinking = settings_thinking_label(settings)
             store.touch(
                 thread_id,
                 title_hint=user_text or None,
