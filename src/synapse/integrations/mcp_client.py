@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -427,6 +428,54 @@ def _content_to_message_content(result: Any) -> str | list[dict[str, Any]]:
     return blocks
 
 
+@dataclass
+class _McpCallOutcome:
+    """One MCP tool result: model content plus the canonical PTC payload.
+
+    ``content`` is exactly what the model has always seen (text, or text plus
+    ``image_url`` blocks). ``data`` mirrors the server's ``structuredContent``
+    when present and is ``None`` otherwise; ``truncated`` stays ``None`` because
+    MCP exposes no truncation signal. ``is_error`` marks an MCP ``isError`` (or a
+    transport failure) so the caller raises instead of reporting a success
+    string.
+    """
+
+    content: str | list[dict[str, Any]]
+    data: Any = None
+    truncated: bool | None = None
+    is_error: bool = False
+
+
+def _ptc_artifact(data: Any, truncated: bool | None) -> dict[str, Any]:
+    """Canonical PTC artifact envelope (mirrors ``tools.filesystem_search``)."""
+    return {"ptc": {"data": data, "truncated": truncated}}
+
+
+def _call_outcome(result: Any) -> _McpCallOutcome:
+    """Project an MCP ``CallToolResult`` into content + canonical PTC data.
+
+    ``structuredContent`` is the only programmatic source of truth: when the
+    server sends it, it becomes ``artifact.data`` verbatim. Text blocks are
+    never reverse-parsed as JSON -- a text block is model content, not a
+    structured payload.
+    """
+    return _McpCallOutcome(
+        content=_content_to_message_content(result),
+        data=getattr(result, "structuredContent", None),
+        truncated=None,
+        is_error=bool(getattr(result, "isError", False)),
+    )
+
+
+def _normalize_call_outcome(
+    outcome: Any,
+) -> tuple[str | list[dict[str, Any]], Any, bool | None, bool]:
+    """Accept either a rich ``_McpCallOutcome`` or a legacy plain content value."""
+    if isinstance(outcome, _McpCallOutcome):
+        return outcome.content, outcome.data, outcome.truncated, outcome.is_error
+    return outcome, None, None, False
+
+
 def _make_tool(
     *,
     server: McpServerConfig,
@@ -434,24 +483,43 @@ def _make_tool(
     description: str,
     input_schema: dict[str, Any] | None,
     call_fn,
+    output_schema: Any = None,
 ):
-    from langchain_core.tools import StructuredTool
+    from langchain_core.tools import StructuredTool, ToolException
 
     prefix = server.tool_prefix if server.tool_prefix is not None else f"{server.name}__"
     full_name = f"{prefix}{tool_name}" if prefix else tool_name
     safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in full_name)
     args_model = json_schema_to_pydantic_model(safe_name, input_schema)
+    # Pass the server's own ``outputSchema`` through verbatim when the raw tool
+    # definition carried one: it describes the ``structuredContent`` we place in
+    # ``artifact['ptc']['data']``. Never fabricate a schema the server did not
+    # declare -- an absent outputSchema stays absent.
+    metadata: dict[str, Any] | None = None
+    if isinstance(output_schema, Mapping) and output_schema:
+        metadata = {"ptc_output_schema": dict(output_schema)}
 
-    def _invoke(**kwargs: Any) -> str | list[dict[str, Any]]:
+    def _invoke(**kwargs: Any) -> tuple[str | list[dict[str, Any]], dict[str, Any]]:
         # Drop explicit Nones so optional MCP fields stay omitted.
         arguments = {k: v for k, v in kwargs.items() if v is not None}
-        return call_fn(tool_name, arguments)
+        content, data, truncated, is_error = _normalize_call_outcome(
+            call_fn(tool_name, arguments)
+        )
+        if is_error:
+            # ``handle_tool_error`` turns this into an error-status ToolMessage
+            # (and a plain error string for a direct ``invoke``).
+            message = content if isinstance(content, str) else json.dumps(content, default=str)
+            raise ToolException(message or "MCP tool error")
+        return content, _ptc_artifact(data, truncated)
 
     return StructuredTool.from_function(
         func=_invoke,
         name=safe_name,
         description=description or f"MCP tool {tool_name} from {server.name}",
         args_schema=args_model,
+        response_format="content_and_artifact",
+        handle_tool_error=True,
+        metadata=metadata,
     )
 
 
@@ -756,13 +824,16 @@ class McpSessionPool:
 
     async def _call(
         self, server_name: str, tool_name: str, arguments: dict[str, Any]
-    ) -> str | list[dict[str, Any]]:
+    ) -> _McpCallOutcome:
         live = self._servers.get(server_name)
         if live is None:
-            return f"MCP error: server {server_name} is not connected"
+            return _McpCallOutcome(
+                content=f"MCP error: server {server_name} is not connected",
+                is_error=True,
+            )
         try:
             result = await live.session.call_tool(tool_name, arguments=arguments)
-            return _content_to_message_content(result)
+            return _call_outcome(result)
         except Exception as exc:
             # Connection broken (e.g. stdio process exited, HTTP stream closed,
             # anyio.ClosedResourceError).  Drop the dead session so follow-up
@@ -775,16 +846,40 @@ class McpSessionPool:
                 exc,
             )
             self._servers.pop(server_name, None)
-            return f"MCP error: {server_name}/{tool_name}: {exc}"
+            return _McpCallOutcome(
+                content=f"MCP error: {server_name}/{tool_name}: {exc}",
+                is_error=True,
+            )
 
     def call_tool(
         self, server_name: str, tool_name: str, arguments: dict[str, Any]
     ) -> str | list[dict[str, Any]]:
+        """Public API: run one MCP tool and return its model-facing content.
+
+        Kept content-only for backward compatibility: this is exactly the value
+        this method returned before the PTC work (text, or text plus
+        ``image_url`` blocks). Callers that also need the canonical payload use
+        :meth:`call_tool_result`.
+        """
+        return self.call_tool_result(server_name, tool_name, arguments).content
+
+    def call_tool_result(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> _McpCallOutcome:
+        """Rich API: run one MCP tool and return content plus canonical PTC data.
+
+        ``_make_tool`` binds this so a nested/child call can publish
+        ``artifact['ptc']['data']``; ``call_tool`` stays the content-only
+        surface external callers already depend on.
+        """
         try:
             return self._loop.run(self._call(server_name, tool_name, arguments))
         except Exception as exc:
             logger.warning("MCP call_tool %s/%s loop error: %s", server_name, tool_name, exc)
-            return f"MCP error: {server_name}/{tool_name}: {exc}"
+            return _McpCallOutcome(
+                content=f"MCP error: {server_name}/{tool_name}: {exc}",
+                is_error=True,
+            )
 
     async def _discover(self, servers: list[McpServerConfig]) -> McpLoadResult:
         async def _load_one(
@@ -820,7 +915,7 @@ class McpSessionPool:
             all_raw_names = [getattr(item, "name", "") for item in listed.tools]
 
             def make_call(server_name: str = server.name):
-                def _call(name: str, arguments: dict[str, Any]) -> str:
+                def _call(name: str, arguments: dict[str, Any]) -> Any:
                     # Legacy process-level reload replaces and closes
                     # ``_ACTIVE_POOL``. Agents compiled before the reload keep
                     # their StructuredTool objects, so resolve the current
@@ -830,6 +925,13 @@ class McpSessionPool:
                     # own stable instance.
                     active = get_active_mcp_pool() if self._follow_active_pool else None
                     pool = active if active is not None and active is not self else self
+                    # Prefer the rich API so the child call can publish the
+                    # canonical artifact. Legacy stand-in pools (older reloads,
+                    # tests) only expose ``call_tool``, whose content-only return
+                    # is normalized to ``data=None`` by ``_normalize_call_outcome``.
+                    rich = getattr(pool, "call_tool_result", None)
+                    if callable(rich):
+                        return rich(server_name, name, arguments)
                     return pool.call_tool(server_name, name, arguments)
 
                 return _call
@@ -852,6 +954,7 @@ class McpSessionPool:
                     tool_name=tool_name_raw,
                     description=getattr(item, "description", "") or "",
                     input_schema=getattr(item, "inputSchema", None),
+                    output_schema=getattr(item, "outputSchema", None),
                     call_fn=call_fn,
                 )
                 server_tools.append(tool)

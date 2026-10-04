@@ -276,6 +276,54 @@ test('a nested row that names its subagent is a step, never a new group', () => 
   assert.deepEqual(group.tools.map((t) => t.name), ['read_file']);
 });
 
+test('a run_code call opens its own group, never a subagent card', () => {
+  // A programmatic sandbox reports its own calls as nested items, so they fold under
+  // the call that ran them -- but the group is not a subagent and carries no persona.
+  const nodes = groupToolsForView([
+    tool('run_code', { id: 'r1', callId: 'call-r', args: { intent: 'script the loop' } }),
+    tool('read_file', { id: 'r1-1', sub: true, parentId: 'r1' }),
+    tool('execute', { id: 'r1-2', sub: true, parentId: 'call-r' }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['run_code']);
+  const group = nodes[0];
+  assert.ok(group.type === 'run_code');
+  assert.equal(group.parent.name, 'run_code');
+  assert.deepEqual(group.tools.map((t) => t.name), ['read_file', 'execute']);
+  assert.equal('subagentName' in group, false, 'a run_code group is not a subagent');
+  assert.equal('subagentGoal' in group, false, 'it fabricates no subagent goal');
+});
+
+test('a run_code group and a task group coexist without cross-attribution', () => {
+  const nodes = groupToolsForView([
+    tool('task', { id: 't1', callId: 'call-t', args: { subagent_type: 'researcher' } }),
+    tool('read_file', { id: 't1-1', sub: true, parentId: 't1' }),
+    tool('run_code', { id: 'r1', callId: 'call-r', args: { intent: 'run the script' } }),
+    tool('execute', { id: 'r1-1', sub: true, parentId: 'r1' }),
+    tool('edit_file', { id: 'm1' }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['subagent', 'run_code', 'single']);
+  const task = nodes[0];
+  const runCode = nodes[1];
+  assert.ok(task.type === 'subagent');
+  assert.ok(runCode.type === 'run_code');
+  // The task keeps its own subagent identity and steps; the sandbox keeps its own.
+  assert.equal(task.subagentName, 'researcher');
+  assert.deepEqual(task.tools.map((t) => t.name), ['read_file']);
+  assert.deepEqual(runCode.tools.map((t) => t.name), ['execute']);
+  assert.equal(nodes[2].type === 'single' ? nodes[2].tool.name : '', 'edit_file');
+});
+
+test('a run_code step whose parent is missing never joins an open task', () => {
+  const nodes = groupToolsForView([
+    tool('task', { id: 't1', args: { subagent_type: 'researcher' } }),
+    tool('read_file', { id: 'c1', sub: true, parentId: 'missing-run-code' }),
+  ]);
+  assert.deepEqual(nodes.map((n) => n.type), ['subagent', 'single']);
+  const task = nodes[0];
+  assert.ok(task.type === 'subagent');
+  assert.deepEqual(task.tools, [], 'the orphan must not pollute the open task');
+});
+
 test('a file-content tool body takes the language of its path', () => {
   assert.equal(toolPreviewLanguage('read_file', 'src/app.py', 'print(1)'), 'python');
   assert.equal(toolPreviewLanguage('read', 'web/src/App.tsx', 'const a = 1;'), 'typescript');

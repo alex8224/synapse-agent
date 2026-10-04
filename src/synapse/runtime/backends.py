@@ -390,8 +390,6 @@ class CodingLocalShellBackend(LocalShellBackend):
             )
         matches = []
         for item in payload["matches"]:
-            if len(matches) >= max_results:
-                break
             result_path = self._native_result_path(base_path, item["path"])
             if result_path is None:
                 continue
@@ -401,8 +399,11 @@ class CodingLocalShellBackend(LocalShellBackend):
             if "modified_at_unix" in item:
                 result["modified_at"] = datetime.fromtimestamp(item["modified_at_unix"]).isoformat()
             matches.append(result)
+        # The native glob already returns the complete match set. Sort before
+        # taking its bounded prefix: sorting a different walk-order prefix for
+        # each offset page duplicates/skips paths on unsorted filesystems.
         matches.sort(key=lambda item: item["path"])
-        return GlobResult(matches=matches)
+        return GlobResult(matches=matches[:max_results])
 
     def execute(
         self,

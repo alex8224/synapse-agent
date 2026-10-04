@@ -21,6 +21,51 @@ from synapse.settings.config_paths import (
 )
 
 
+def test_ptc_layered_settings_and_override_validation(tmp_path, monkeypatch):
+    from synapse.settings.schema import load_project_settings
+
+    home = tmp_path / "home" / ".synapse"
+    workspace = tmp_path / "workspace"
+    project = workspace / ".synapse"
+    home.mkdir(parents=True)
+    project.mkdir(parents=True)
+    monkeypatch.setattr("synapse.settings.config_paths.user_config_dir", lambda: home)
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+    monkeypatch.setattr("synapse.settings.schema.find_dotenv", lambda *_: None)
+    monkeypatch.setattr(
+        "synapse.models.registry.apply_models_config_to_settings", lambda settings: settings
+    )
+    monkeypatch.setenv("AGENT_TOOL_MODE", "native")
+    (home / "settings.json").write_text(
+        json.dumps({"tool_mode": "both", "ptc_max_calls": 12}), encoding="utf-8"
+    )
+    settings_path = project / "settings.json"
+    settings_path.write_text(
+        json.dumps({"tool_mode": "code", "ptc_max_parallel": 3}), encoding="utf-8"
+    )
+    settings = load_project_settings(workspace)
+    assert settings.tool_mode == "code"
+    assert settings.ptc_max_calls == 12
+    assert settings.ptc_max_parallel == 3
+    assert load_project_settings(workspace, tool_mode="both").tool_mode == "both"
+
+    for invalid in (
+        {"tool_mode": "invalid"},
+        {"ptc_timeout_seconds": -1},
+        {"ptc_max_calls": 0},
+        {"ptc_max_parallel": 65},
+        {"ptc_max_output_bytes": 255},
+        {"ptc_max_result_bytes": 1023},
+        {"ptc_max_code_bytes": 255},
+    ):
+        settings_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_project_settings(workspace)
+        settings_path.write_text("{}", encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_project_settings(workspace, **invalid)
+
+
 def test_layered_dirs_order(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "synapse.settings.config_paths.user_config_dir",

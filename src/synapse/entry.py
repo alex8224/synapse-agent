@@ -14,6 +14,12 @@ import sys
 
 def main() -> None:
     """Console-script entry point: start the trace, then delegate to the CLI."""
+    if sys.argv[1:2] == ["--synapse-ptc-worker"]:
+        # Frozen executables are not Python interpreters: re-enter the worker
+        # before importing CLI/settings or writing anything onto protocol stdout.
+        from synapse.runtime.ptc.worker import main as worker_main
+
+        raise SystemExit(worker_main(sys.argv[2:]))
     if sys.argv[1:2] == ["--synapse-runtime-daemon"]:
         from synapse.runtime.daemon.entry import main as daemon_main
 

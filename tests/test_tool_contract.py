@@ -22,6 +22,7 @@ REGISTERED_TOOL_NAMES = {
     "glob",
     "grep",
     "execute",
+    "run_code",
     "write_todos",
     "task",
     "find_files",
@@ -52,12 +53,21 @@ def test_every_contract_is_scoped_and_rated() -> None:
         assert contract.risk_level in {"low", "medium", "high"}
 
 
-def test_readonly_exclusions_match_the_historical_set() -> None:
-    assert readonly_excluded_tools() == HISTORICAL_APPROVAL_SET
+def test_readonly_exclusions_include_host_code_execution() -> None:
+    assert readonly_excluded_tools() == HISTORICAL_APPROVAL_SET | {"run_code"}
 
 
-def test_approval_requirements_match_the_historical_set() -> None:
-    assert approval_required_tools() == HISTORICAL_APPROVAL_SET
+def test_approval_requirements_include_host_code_execution() -> None:
+    assert approval_required_tools() == HISTORICAL_APPROVAL_SET | {"run_code"}
+
+
+def test_run_code_is_host_scoped_not_a_readonly_sandbox() -> None:
+    contract = tool_contract("run_code")
+    assert contract is not None
+    assert contract.side_effect_scope == "host"
+    assert contract.needs_approval
+    assert not contract.read_only
+    assert not contract.concurrent_safe
 
 
 def test_session_scoped_tools_stay_available_in_readonly_mode() -> None:

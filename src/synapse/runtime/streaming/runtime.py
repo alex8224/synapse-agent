@@ -87,7 +87,11 @@ def iter_stream_events(
     cancel_event: threading.Event | None = None,
 ) -> Iterator[tuple[str, Any, tuple[str, ...]]]:
     """Yield normalized stream events with async/sync saver compatibility."""
+    # ``custom`` carries the PTC sandbox's tool lifecycle.  It is never a model
+    # message, so it is requested alongside the message/state modes and ignored
+    # by every consumer that does not recognize it.
     modes: list[str] = ["messages", "updates"] if token_stream else ["updates"]
+    modes = [*modes, "custom"]
 
     def cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()

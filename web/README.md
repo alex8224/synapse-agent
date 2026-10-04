@@ -262,6 +262,14 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 也不会把转录拽到底部）。分组规则由 `tests/transcriptLabels.test.ts` 守护，卡面、标记与状态动画由
 `tests/transcriptLayoutGuard.test.ts` 守护。
 
+**`run_code` 的步骤是工具分组，不是子代理。** PTC（代码模式）里 `run_code` 沙箱会把它在内部发起的工具
+调用同样以嵌套项（`sub` / `parentId`）送回，所以它们也折进发起它们的那次调用之下——但分组类型是
+`run_code`，不是 `subagent`：卡头是一条普通工具行（`run_code` 名 + 模型给的意图 + `N 步骤` + 状态徽标），
+没有子代理的人格图标、`@名` 标签、目标与下发提词，也不计入子代理统计；卡体沿用同一条竖直导轨列出沙箱
+自己的每一步。`task` 的子代理卡片与统计保持原样。分组时先按 `parentId` 的 item id / call id 归位，若该父
+行不在本批里（例如投影丢了链接）则退回平铺行，**绝不**把 `run_code` 的步骤挂到旁边仍打开的任务分组里。
+规则由 `tests/transcriptLabels.test.ts` 守护。
+
 ## Git 分支与历史（右侧栏「分支」页）
 
 右侧栏的「分支」页（`src/components/rightDock/gitTab.tsx`）用**三层下钻**看仓库对象历史：

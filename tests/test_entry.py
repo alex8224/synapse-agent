@@ -11,6 +11,22 @@ import synapse.entry as entry
 from synapse.observability.startup_trace import StartupTrace
 
 
+def test_entry_dispatches_to_ptc_worker_without_cli(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "synapse.runtime.ptc.worker.main",
+        lambda argv: calls.append(argv) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["synapse.exe", "--synapse-ptc-worker"])
+    monkeypatch.setattr("synapse.cli.main", lambda: pytest.fail("worker imported the CLI"))
+
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+
+    assert error.value.code == 0
+    assert calls == [[]]
+
+
 def test_entry_dispatches_to_runtime_daemon(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(

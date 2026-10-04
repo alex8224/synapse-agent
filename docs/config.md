@@ -66,6 +66,37 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_MINIMAL_FILESYSTEM_EXCLUDED_TOOLS` | `["search_files", "edit_file", "write_file"]` | 极简模式下剔除的文件工具列表（可自定义组合） |
 | `ENABLE_COMMAND_BLACKLIST` | `true` | 启用命令黑名单 |
 
+### 程序化工具调用（PTC）
+
+PTC 让模型在一次模型回合里用一段 Python 代码编排多个工具调用（尤其适合批量 MCP 调用）。
+完整说明见 [程序化工具调用（PTC）](ptc.md)。**默认关闭**（`native`），按需选择混合或代码模式。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `AGENT_TOOL_MODE` | `native` | `native` 不注册 `run_code`；`both` 原生工具与 `run_code` 并存；`code` 折叠可编排工具（审批模式下需审批的工具、会话状态工具仍保留原生） |
+| `AGENT_PTC_TIMEOUT_SECONDS` | `120` | 单次 `run_code` 超时（秒），范围 `0.1`–`3600` |
+| `AGENT_PTC_MAX_CALLS` | `100` | 单次运行的子调用次数上限，范围 `1`–`10000` |
+| `AGENT_PTC_MAX_PARALLEL` | `8` | 并发子调用上限，范围 `1`–`64` |
+| `AGENT_PTC_MAX_OUTPUT_BYTES` | `64000` | `{logs, value, error?}` 整体输出上限（字节），范围 `256`–`16000000` |
+| `AGENT_PTC_MAX_RESULT_BYTES` | `4000000` | 中间值（单个工具结果 / `return` 值）上限（字节），范围 `1024`–`64000000` |
+| `AGENT_PTC_MAX_CODE_BYTES` | `64000` | `code` 字节上限，范围 `256`–`1000000` |
+
+同样的字段也可写进分层 `settings.json`（用户层 `~/.synapse/settings.json`，项目层
+`<workspace>/.synapse/settings.json`），字段名与上表同名（去掉 `AGENT_` 前缀并转小写，
+如 `tool_mode`、`ptc_timeout_seconds`）：
+
+```json
+{
+  "tool_mode": "both",
+  "ptc_timeout_seconds": 120,
+  "ptc_max_calls": 100,
+  "ptc_max_parallel": 8
+}
+```
+
+工具集与上限在 **Agent 构建时**固定：修改后需**重建 Agent / 重启会话**才生效，没有运行时或
+UI 开关。PTC 不是安全沙箱——模型代码与用户 shell 同权限；只读模式会**完全禁用** `run_code`。
+
 ### 会话
 
 | 变量 | 默认值 | 说明 |

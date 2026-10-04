@@ -51,6 +51,9 @@ conversation_history/
 logs/
 site/
 
+# Test-written CLI state (tests/test_runtime_daemon_s8_hardening.py)
+.s8-cli-state/
+
 # Benchmark evaluation artifacts (local, not part of the repo)
 benchmark21/
 jobs/
@@ -64,6 +67,7 @@ Thumbs.db
 
 # Local release executables (build artifacts, not committed)
 synapse-*.exe
+*.exe.sha256
 *.spec
 rust/synapse-gui/binaries/*
 !rust/synapse-gui/binaries/.gitkeep

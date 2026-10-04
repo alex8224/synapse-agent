@@ -22,6 +22,43 @@ from synapse.runtime.execute_capture import begin_execute_capture, end_execute_c
 from synapse.tools.filesystem_search import build_filesystem_search_tools
 
 
+def test_glob_pagination_sorts_before_limiting(tmp_path: Path, monkeypatch) -> None:
+    """Growing a walk-order prefix must not duplicate or skip sorted paths."""
+    import synapse_core_tool
+
+    paths = ["z.py", "a.py", "m.py", "b.py", "c.py"]
+    for name in paths:
+        (tmp_path / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        synapse_core_tool,
+        "glob",
+        lambda *_args, **_kwargs: {
+            "matches": [{"path": name, "is_dir": False} for name in paths]
+        },
+    )
+    backend = CodingLocalShellBackend(
+        root_dir=tmp_path, virtual_mode=True, inherit_env=False, env={}
+    )
+    find_files, _ = build_filesystem_search_tools(backend)
+    seen: list[str] = []
+    offset = 0
+    while True:
+        result = find_files.invoke({
+            "type": "tool_call",
+            "id": f"page-{offset}",
+            "name": "find_files",
+            "args": {"pattern": "*.py", "max_results": 2, "offset": offset},
+        })
+        data = result.artifact["ptc"]["data"]
+        seen.extend(row["path"] for row in data["matches"])
+        if data["next_offset"] is None:
+            break
+        assert data["next_offset"] > offset
+        offset = data["next_offset"]
+    assert seen == [f"/{name}" for name in sorted(paths)]
+    assert len(seen) == len(set(seen))
+
+
 def test_default_shell_platform_aware():
     """Default shell: pwsh on Windows, bash elsewhere."""
     if sys.platform == "win32":

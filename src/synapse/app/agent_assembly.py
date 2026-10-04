@@ -168,6 +168,32 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
             service=context.goal_service,
         ),
     ]
+    if getattr(settings, "tool_mode", "native") != "native":
+        from synapse.runtime.ptc.middleware import build_ptc_middleware
+        from synapse.runtime.ptc.protocol import PtcLimits
+
+        # Child calls re-enter the inner handler, so policy, path normalization
+        # and intent stripping must all remain inside this middleware. HITL is
+        # after_model rather than a tool wrapper: the bridge refuses children
+        # requiring approval instead of replaying a partially executed script.
+        policy_index = next(
+            i for i, item in enumerate(middleware) if type(item).__name__ == "exclude_tools"
+        )
+        middleware.insert(policy_index, build_ptc_middleware(
+            mode=settings.tool_mode,
+            project_root=context.project_root,
+            excluded_tools=context.model_request_excluded_tools,
+            require_approval=settings.require_approval,
+            readonly=settings.readonly,
+            limits=PtcLimits(
+                timeout_seconds=settings.ptc_timeout_seconds,
+                max_calls=settings.ptc_max_calls,
+                max_parallel=settings.ptc_max_parallel,
+                max_output_bytes=settings.ptc_max_output_bytes,
+                max_result_bytes=settings.ptc_max_result_bytes,
+                max_code_bytes=settings.ptc_max_code_bytes,
+            ),
+        ))
     # Deprecated: the reversible tool-output transform middleware
     # (build_tool_output_transform_middleware / build_tool_output_usage_middleware)
     # is intentionally NOT registered for now. The pipeline and read_tool_result
