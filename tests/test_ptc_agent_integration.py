@@ -346,12 +346,7 @@ def test_code_mode_real_worker_returns_canonical_find_files_and_read_file(
 # --------------------------------------------------------------------------- #
 def test_excluded_tool_is_hidden_and_denied_from_run_code(assemble, tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("print('x')\n", encoding="utf-8")
-    code = (
-        "try:\n"
-        "    return await tools.read_file(file_path='/a.py')\n"
-        "except ToolCallError as exc:\n"
-        "    return exc.kind\n"
-    )
+    code = "return await tools.read_file(file_path='/a.py')\n"
     model, agent, _ = assemble(
         profile="dev-autopass",
         mode="both",
@@ -361,8 +356,16 @@ def test_excluded_tool_is_hidden_and_denied_from_run_code(assemble, tmp_path: Pa
     result = _invoke(agent, "excluded")
     assert "read_file" not in model.tool_name_batches[0]
     message = _run_code_message(result)
-    assert message.status == "success", message.content
-    assert _value(message) == "denied"
+    # A literal reference to an excluded tool is refused by the pre-flight check
+    # *before* the worker starts, so the run fails fast instead of midway through
+    # (the observed session's regression). A runtime-computed name still reaches
+    # the worker and is denied there -- see
+    # ``test_require_approval_denies_nested_write_and_execute``.
+    assert message.status == "error", message.content
+    payload = json.loads(message.content)
+    assert payload["error"]["kind"] == "unknown_tool"
+    assert "read_file" in payload["error"]["message"]
+    assert "excluded" in payload["error"]["message"]
 
 
 class _ToolCallRequest:
@@ -477,3 +480,86 @@ def test_autopass_nested_write_file_writes_into_workspace(assemble, tmp_path) ->
     message = _run_code_message(_invoke(agent, "autopass-write"))
     assert message.status == "success", message.content
     assert (tmp_path / "written.txt").read_text(encoding="utf-8") == "hello-ptc"
+
+
+# --------------------------------------------------------------------------- #
+# Unavailable tools are refused before the script runs (no partial side effect)
+# --------------------------------------------------------------------------- #
+def test_preflight_refuses_unavailable_tool_before_any_side_effect(assemble, tmp_path) -> None:
+    """A script naming an excluded tool must not run at all.
+    The write comes *first*: if the check happened mid-script (as it did before
+    the pre-flight), the file would already exist when the run failed.
+    """
+    code = (
+        "await tools.write_file(file_path='/side-effect.txt', content='x')\n"
+        "await tools.read_file(file_path='/a.py')\n"
+        "return 'done'\n"
+    )
+    _, agent, _ = assemble(
+        profile="dev-autopass",
+        mode="both",
+        responses=[_run_code_ai(code), DONE],
+        excluded=["read_file"],
+    )
+    message = _run_code_message(_invoke(agent, "preflight"))
+
+    assert message.status == "error", message.content
+    payload = json.loads(message.content)
+    assert payload["error"]["kind"] == "unknown_tool"
+    assert "read_file" in payload["error"]["message"]
+    assert "Available tools:" in payload["error"]["message"]
+    assert payload["logs"] == []
+    # Nothing executed: no write, and the refused tool never ran either.
+    assert not (tmp_path / "side-effect.txt").exists()
+
+
+def test_preflight_does_not_block_dynamic_tool_access(assemble, tmp_path) -> None:
+    """`tools.call(name, ...)` with a variable cannot be judged, so it still runs."""
+    code = (
+        "name = 'write_file'\n"
+        "res = await tools.call(name, {'file_path': '/dynamic.txt', 'content': 'ok'})\n"
+        "return res['content']\n"
+    )
+    _, agent, _ = assemble(
+        profile="dev-autopass", mode="both", responses=[_run_code_ai(code), DONE]
+    )
+    message = _run_code_message(_invoke(agent, "dynamic"))
+
+    assert message.status == "success", message.content
+    assert (tmp_path / "dynamic.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_tools_available_matches_the_callable_set(assemble) -> None:
+    """The script can self-check; the tuple excludes policy-denied tools."""
+    code = (
+        "return {\n"
+        "    'is_tuple': isinstance(tools.available, tuple),\n"
+        "    'has_execute': 'execute' in tools.available,\n"
+        "    'has_read_file': 'read_file' in tools.available,\n"
+        "    'count': len(tools.available),\n"
+        "}\n"
+    )
+    _, agent, _ = assemble(
+        profile="dev-autopass",
+        mode="both",
+        responses=[_run_code_ai(code), DONE],
+        excluded=["read_file"],
+    )
+    value = _value(_run_code_message(_invoke(agent, "available")))
+
+    assert value["is_tuple"] is True
+    assert value["has_read_file"] is False
+    assert value["has_execute"] is True
+    assert value["count"] > 0
+
+
+def test_injected_sdk_states_the_allowlist_and_dict_access(assemble) -> None:
+    """The prompt the model reads must forbid unlisted names and object access."""
+    model, agent, _ = assemble(profile="dev-autopass", mode="both", responses=[DONE])
+    _invoke(agent, "sdk-text")
+    text = model.system_texts[0]
+
+    assert "Only the tools listed below are callable" in text
+    assert "tools.available" in text
+    assert 'res["content"]' in text or "res['content']" in text
+    assert "res.content" not in text

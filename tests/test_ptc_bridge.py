@@ -535,7 +535,7 @@ def test_invoke_warns_when_sync_handler_outlives_the_run() -> None:
             content="late", tool_call_id=req.tool_call["id"], name=req.tool_call["name"]
         )
 
-    async def runner(*, code, tool_names, dispatch, cwd, limits):  # noqa: ARG001
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
         asyncio.ensure_future(dispatch("write_file", {}))
         bridge = holder["bridge"]
         for _ in range(500):

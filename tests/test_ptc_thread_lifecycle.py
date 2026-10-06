@@ -275,7 +275,7 @@ def test_execute_worker_outlives_the_timeout_and_is_counted() -> None:
     tool = _filesystem_tool(backend, "execute")
     holder: dict[str, Any] = {}
 
-    async def runner(*, code, tool_names, dispatch, cwd, limits):  # noqa: ARG001
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
         # Fire the blocking execute and return as a timed-out run would, without
         # waiting for the worker that cannot be cancelled.
         asyncio.ensure_future(dispatch("execute", {"command": "sleep 30"}))

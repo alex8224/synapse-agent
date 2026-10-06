@@ -373,3 +373,44 @@ def test_default_budget_is_finite_and_folds_a_large_but_sane_toolset() -> None:
     # ...but the old 24 KB budget would still have rejected it loudly.
     with pytest.raises(sdk.SdkBudgetExceeded):
         sdk.build_sdk_prompt([spec], max_bytes=24_000)
+
+
+# --------------------------------------------------------------------------- #
+# Allowlist / reverse prohibition and plain-dict envelope access
+# --------------------------------------------------------------------------- #
+def test_header_declares_the_allowlist_and_reverse_prohibition() -> None:
+    prompt = sdk.build_sdk_prompt(sdk.collect_tool_specs([read_file]))
+    lowered = prompt.lower()
+    # Only the listed tools exist; any other name -- one seen elsewhere or named
+    # in the user's prompt -- is unavailable and calling it fails.
+    assert "only the tools listed below are callable" in lowered
+    assert "elsewhere" in lowered
+    assert "user's prompt" in lowered
+    assert "unavailable" in lowered
+    # The script can self-check against the runtime allowlist.
+    assert "tools.available" in prompt
+    assert 'if "find_files" in tools.available:' in prompt
+
+
+def test_envelope_block_teaches_dict_access_not_attribute_access() -> None:
+    prompt = sdk.build_sdk_prompt(sdk.collect_tool_specs([read_file]))
+    # The envelope is a plain dict, read by subscript.
+    assert "plain ``dict``" in prompt
+    assert 'res["data"]' in prompt
+    assert 'res["content"]' in prompt
+    assert 'res["truncated"]' in prompt
+    # Attribute access is explicitly ruled out and never encouraged.
+    assert "attribute access" in prompt
+    assert "res.content" not in prompt
+    assert "res.data" not in prompt
+    # The honesty rules are preserved.
+    assert "do not assume" in prompt
+    assert "completeness is unknown" in prompt
+
+
+def test_envelope_examples_read_a_dict_after_one_await() -> None:
+    prompt = sdk.build_sdk_prompt(sdk.collect_tool_specs([read_file]))
+    assert 'await tools.find_files(pattern="**/*.py", path="/")' in prompt
+    assert '(res["data"] or {}).get("matches", [])' in prompt
+    assert 'await tools.read_file(path="README.md")' in prompt
+    assert 'print(res["content"])' in prompt

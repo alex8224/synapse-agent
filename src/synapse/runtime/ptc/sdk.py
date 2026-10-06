@@ -70,12 +70,25 @@ _JSON_TYPE_TO_PY: dict[str, str] = {
 }
 
 _ENVELOPE_BLOCK = """\
-Every successful call returns a ``ToolEnvelope``::
+Every successful call returns a ``ToolEnvelope``: a **plain ``dict``**, not an
+object. Read its fields with subscripts -- ``res["content"]``, ``res["data"]``,
+``res["truncated"]`` -- never with attribute access: a ``dict`` has no field
+attributes, so attribute access raises ``AttributeError``::
 
     class ToolEnvelope(TypedDict):
         content: str | list       # human-readable text; may be truncated
         data: Any | None          # canonical structured payload, or None
         truncated: bool | None    # True/False when known, None when unknown
+
+After one awaited call, read the envelope by key. For example::
+
+    res = await tools.find_files(pattern="**/*.py", path="/")
+    paths = [match["path"] for match in (res["data"] or {}).get("matches", [])]
+
+and for a tool that publishes no canonical payload::
+
+    res = await tools.read_file(path="README.md")
+    print(res["content"])
 
 ``data`` carries the tool's canonical machine-readable payload only when the
 tool publishes one; otherwise it is ``None`` and ``content`` holds the full
@@ -429,6 +442,17 @@ def _rules_block(*, max_calls: int | None, max_parallel: int | None) -> str:
     )
 
 
+def _whitelist_block() -> str:
+    """The explicit allowlist plus its reverse prohibition, kept short."""
+    return (
+        "**Only the tools listed below are callable.** Any other name -- one you "
+        "saw elsewhere or that the user's prompt mentions -- is unavailable, and "
+        "calling it fails. The script can check itself at runtime: "
+        "`tools.available` is a tuple of this run's callable names, for example "
+        '`if "find_files" in tools.available:`.'
+    )
+
+
 def _header(*, max_calls: int | None, max_parallel: int | None) -> str:
     return (
         "## Programmatic tool calling\n\n"
@@ -436,6 +460,7 @@ def _header(*, max_calls: int | None, max_parallel: int | None) -> str:
         "function** in a fresh local subprocess per call. That subprocess is **not** "
         "a security sandbox: it runs with the same trust as your shell. The injected "
         "names are `tools`, `asyncio`, `json` and `ToolCallError`.\n\n"
+        f"{_whitelist_block()}\n\n"
         f"{_rules_block(max_calls=max_calls, max_parallel=max_parallel)}\n\n"
         f"{_ENVELOPE_BLOCK}\n"
     )

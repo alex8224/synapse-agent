@@ -256,10 +256,23 @@ class _ToolBridge:
 
 
 class _Tools:
-    """The ``tools`` object injected into model code."""
+    """The ``tools`` object injected into model code.
 
-    def __init__(self, bridge: _ToolBridge) -> None:
+    ``available`` exposes the script's tool inventory as an immutable tuple so
+    model code can discover the valid tool names instead of guessing them.  It
+    is a read-only property: ``tools.available = ...`` raises ``AttributeError``
+    and never shadows the callable attributes (``call`` and the ``__getattr__``
+    tool proxies) the proxy provides.
+    """
+
+    def __init__(self, bridge: _ToolBridge, available: tuple[str, ...] = ()) -> None:
         self._bridge = bridge
+        self._available = available
+
+    @property
+    def available(self) -> tuple[str, ...]:
+        """Tool names the script may call, in the host-provided order."""
+        return self._available
 
     async def call(self, name: str, arguments: Any = None) -> Any:
         if not isinstance(name, str) or not name:
@@ -326,6 +339,18 @@ def _normalise_limits(raw: Mapping[str, Any]) -> dict[str, Any]:
             raw.get("max_code_bytes"), _DEFAULT_LIMITS["max_code_bytes"]
         ),
     }
+
+
+def _normalise_available_names(raw: Any, fallback: list[str]) -> tuple[str, ...]:
+    """Build the read-only ``tools.available`` inventory.
+
+    ``available_names`` (when present) is the full list of tool names the script
+    may call, while ``tool_names`` stays the registered host whitelist.  A
+    missing field falls back to ``tool_names`` so older hosts keep working, and
+    non-string entries are dropped so a malformed element never fails the run.
+    """
+    source = raw if isinstance(raw, list) else fallback
+    return tuple(name for name in source if isinstance(name, str))
 
 
 def _make_log_sender(writer: _ProtocolWriter, limits: Mapping[str, Any]) -> Callable[[str], None]:
@@ -466,10 +491,9 @@ async def _amain(
     stdin_stream: Any,
     writer: _ProtocolWriter,
     code: str,
-    tool_names: list[str],
+    available_names: tuple[str, ...],
     limits: dict[str, Any],
 ) -> int:
-    del tool_names  # the host enforces the tool-name whitelist
     send_log = _make_log_sender(writer, limits)
     log_stdout = _LogStream(send_log)
     log_stderr = _LogStream(send_log)
@@ -524,7 +548,7 @@ async def _amain(
         )
         thread.start()
 
-        value, error = await _execute(entry, _Tools(bridge))
+        value, error = await _execute(entry, _Tools(bridge, available_names))
         if error is None:
             unfinished = await _settle_unfinished(bridge)
             if unfinished:
@@ -574,6 +598,10 @@ def _run() -> int:
             or not isinstance(raw_limits, Mapping)
         ):
             raise ValueError("init frame has the wrong shape")
+        # ``available_names`` is optional for older hosts; when present it must
+        # be a list (same shape rule as ``tool_names``) or the frame is invalid.
+        if "available_names" in init and not isinstance(init["available_names"], list):
+            raise ValueError("init frame 'available_names' must be a list")
     except Exception as exc:  # noqa: BLE001 - report instead of crashing silently
         writer.send(
             {
@@ -587,13 +615,14 @@ def _run() -> int:
         )
         return 1
     limits = _normalise_limits(raw_limits)
+    available_names = _normalise_available_names(init.get("available_names"), tool_names)
     try:
         return asyncio.run(
             _amain(
                 stdin_stream=stdin_stream,
                 writer=writer,
                 code=code,
-                tool_names=tool_names,
+                available_names=available_names,
                 limits=limits,
             )
         )

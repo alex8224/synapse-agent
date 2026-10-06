@@ -76,6 +76,7 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import re
 import threading
 from collections import deque
 from collections.abc import Awaitable, Callable, Collection, Mapping
@@ -157,6 +158,27 @@ _MAX_EVENT_ARG_KEYS = 12
 _MAX_EVENT_VALUE_CHARS = 200
 _MAX_EVENT_ARGS_CHARS = 1_200
 _MAX_PREVIEW_CHARS = 400
+
+#: Upper bound on the unavailable tool names a pre-flight scan reports. The
+#: caller surfaces the first few; the cap keeps the scan's result bounded even
+#: for pathological code.
+_MAX_PREFLIGHT_NAMES = 20
+
+#: Total-character budget for :meth:`PtcBridge.denial_message`. The available-tool
+#: listing is truncated (with an explicit "and N more") to stay within it.
+_MAX_DENIAL_MESSAGE_CHARS = 400
+
+#: ``tools.<identifier>`` attribute access in generated code.
+_TOOLS_ATTR_RE = re.compile(r"\btools\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+#: The generic escape hatch ``tools.call(`` -- its first argument may be a literal.
+_TOOLS_CALL_OPEN_RE = re.compile(r"\btools\s*\.\s*call\s*\(")
+
+#: ``getattr(tools, ...)``: the tool name is computed, so the scan declines to guess.
+_GETATTR_TOOLS_RE = re.compile(r"\bgetattr\s*\(\s*tools\b")
+
+#: Attributes on the ``tools`` object that are *not* tool names.
+_TOOLS_NON_TOOL_ATTRS: frozenset[str] = frozenset({"call", "available"})
 
 
 class ToolCallError(Exception):
@@ -469,6 +491,39 @@ def _replace(obj: Any, **changes: Any) -> Any:
         return clone
 
 
+def _skip_whitespace(text: str, start: int) -> int:
+    """Index of the first non-whitespace character at or after ``start``."""
+    index = start
+    while index < len(text) and text[index] in " \t\r\n":
+        index += 1
+    return index
+
+
+def _literal_first_argument(text: str, start: int) -> str | None:
+    """The string literal that is ``tools.call``'s first argument, or ``None``.
+
+    ``start`` is the index just past the opening ``(``. Returns the literal's
+    text only when the first argument is a plain string literal followed by ``,``
+    or ``)``; returns ``None`` for a variable, an f-string, a concatenation or
+    any other non-literal, so the pre-flight scan can decline to guess instead of
+    reporting a wrong name.
+    """
+    index = _skip_whitespace(text, start)
+    if index >= len(text) or text[index] not in "\"'":
+        return None
+    quote = text[index]
+    cursor = index + 1
+    while cursor < len(text) and text[cursor] != quote:
+        cursor += 2 if text[cursor] == "\\" else 1
+    if cursor >= len(text):
+        return None
+    literal = text[index + 1 : cursor]
+    after = _skip_whitespace(text, cursor + 1)
+    if after < len(text) and text[after] not in ",)":
+        return None
+    return literal
+
+
 def nested_call_id(parent_call_id: str, seq: int) -> str:
     """A child call id that is unique under its parent ``run_code`` call."""
     return f"{parent_call_id or 'ptc'}:ptc:{seq}"
@@ -486,6 +541,9 @@ class CallContext:
     stream_writer: Any = None
     offload: bool = False
     tool_names: tuple[str, ...] = ()
+    #: Names the sandbox may call (``available_names``); the runner forwards them
+    #: so the script can self-check with ``tools.available``.
+    available: tuple[str, ...] = ()
     seq: int = 0
     calls: int = 0
 
@@ -581,6 +639,10 @@ class PtcBridge:
         """Why a child call must be refused, or ``None`` when it may proceed."""
         if not name:
             return "empty tool name"
+        if self._readonly:
+            # Read-only mode never exposes or runs ``run_code``; refusing every
+            # name keeps ``available_names`` empty and consistent with folding.
+            return f"tool '{name}' cannot be called from code in read-only mode"
         if name == RUN_CODE:
             return "recursive run_code calls are not allowed"
         if name in DENIED_TOOLS:
@@ -599,6 +661,75 @@ class PtcBridge:
         if self._require_approval and contract.needs_approval:
             return f"tool '{name}' requires approval; use the native tool"
         return None
+
+    def available_names(self, tools: Mapping[str, Any]) -> list[str]:
+        """Sorted names the sandbox may call: single source of truth for the SDK
+        allowlist, the pre-flight check, ``tools.available`` and folding."""
+        return sorted(name for name in tools if self.denial_reason(name, tools) is None)
+
+    def dispatchable_names(self, tools: Mapping[str, Any]) -> list[str]:
+        """Backward-compatible alias of :meth:`available_names`."""
+        return self.available_names(tools)
+
+    def preflight(self, code: str, tools: Mapping[str, Any]) -> list[tuple[str, str]]:
+        """Statically flag literal tool references the sandbox may not call.
+
+        Scans ``code`` for the two literal call shapes the SDK advertises --
+        ``tools.<name>`` attribute access and ``tools.call("<name>", ...)`` -- and
+        returns ``[(name, reason)]`` for every referenced name that
+        :meth:`denial_reason` refuses, de-duplicated, name-sorted and capped at
+        :data:`_MAX_PREFLIGHT_NAMES`.
+
+        The scan is deliberately conservative. When a tool name cannot be read
+        off the source -- ``getattr(tools, ...)`` or a ``tools.call(...)`` whose
+        first argument is a variable, a concatenation or an f-string -- it
+        returns ``[]`` and leaves the refusal to the runtime
+        :class:`ToolCallError`, rather than guessing. ``code`` is already bounded
+        by ``max_code_bytes``, so a regular-expression scan is sufficient; there
+        is no Python parser here.
+        """
+        text = code or ""
+        if _GETATTR_TOOLS_RE.search(text):
+            return []
+        referenced: set[str] = set()
+        for match in _TOOLS_CALL_OPEN_RE.finditer(text):
+            literal = _literal_first_argument(text, match.end())
+            if literal is None:
+                return []
+            referenced.add(literal)
+        for match in _TOOLS_ATTR_RE.finditer(text):
+            name = match.group(1)
+            if name not in _TOOLS_NON_TOOL_ATTRS:
+                referenced.add(name)
+        blocked = [
+            (name, reason)
+            for name in referenced
+            if (reason := self.denial_reason(name, tools)) is not None
+        ]
+        blocked.sort()
+        return blocked[:_MAX_PREFLIGHT_NAMES]
+
+    def denial_message(self, name: str, tools: Mapping[str, Any], reason: str) -> str:
+        """A refusal message that names the tools the sandbox may call instead.
+
+        ``reason`` is the pure :meth:`denial_reason` text; the available-tool
+        listing is appended here -- never inside ``denial_reason``, which
+        :meth:`available_names` calls -- and bounded to about
+        :data:`_MAX_DENIAL_MESSAGE_CHARS` characters, ending with an explicit
+        ``… and N more`` when names had to be dropped.
+        """
+        names = self.available_names(tools)
+        prefix = f"{reason}. Available tools: "
+        if not names:
+            return _bound(prefix + "(none)", _MAX_DENIAL_MESSAGE_CHARS)
+        total = len(names)
+        for count in range(total, 0, -1):
+            omitted = total - count
+            tail = "" if omitted == 0 else f", and {omitted} more \u2026"
+            message = prefix + ", ".join(names[:count]) + tail
+            if len(message) <= _MAX_DENIAL_MESSAGE_CHARS:
+                return message
+        return _bound(prefix + names[0], _MAX_DENIAL_MESSAGE_CHARS)
 
     def classify(self, name: str) -> str:
         """Scheduling class for ``name``: parallel read or exclusive write."""
@@ -625,6 +756,7 @@ class PtcBridge:
         result = await runner(
             code=code,
             tool_names=list(ctx.tool_names),
+            available_names=list(ctx.available),
             dispatch=self._make_dispatch(ctx),
             cwd=self._project_root,
             limits=self._limits,
@@ -675,7 +807,8 @@ class PtcBridge:
         if reason is not None:
             unregistered = tool_name not in ctx.tools and tool_name not in DENIED_TOOLS
             kind = "unknown" if unregistered else "denied"
-            error = ToolCallError(reason, kind=kind, name=tool_name)
+            message = self.denial_message(tool_name, ctx.tools, reason)
+            error = ToolCallError(message, kind=kind, name=tool_name)
             self._emit(ctx, event="started", call_id=call_id, name=tool_name, args=args)
             self._emit(
                 ctx,
@@ -684,7 +817,7 @@ class PtcBridge:
                 name=tool_name,
                 args=args,
                 status="error",
-                preview=reason,
+                preview=message,
             )
             raise error
 

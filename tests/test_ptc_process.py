@@ -351,3 +351,89 @@ def test_frame_budget_covers_combined_and_result_caps(tmp_path: Path) -> None:
     # fit inside the read limit.
     assert session._max_frame_bytes() == 1024 + process._FRAME_SLACK_BYTES
     assert session._max_frame_bytes() >= 256
+
+
+# --------------------------------------------------------------------------- #
+# available_names init-frame field
+# --------------------------------------------------------------------------- #
+
+
+def _capture_init(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tool_names: list[str],
+    available_names: list[str] | None,
+) -> dict[str, Any]:
+    """Build an init frame for a session without spawning a worker."""
+    captured: dict[str, Any] = {}
+
+    async def capture(self: Any, frame: dict[str, Any]) -> None:
+        captured.update(frame)
+
+    monkeypatch.setattr(process._Session, "_send_frame", capture)
+    session = process._Session(
+        code="return 1",
+        tool_names=tool_names,
+        available_names=available_names,
+        dispatch=_unused_dispatch,
+        cwd=tmp_path,
+        limits=PtcLimits(),
+    )
+    asyncio.run(session._send_init())
+    return captured
+
+
+def test_send_init_carries_available_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame = _capture_init(
+        tmp_path,
+        monkeypatch,
+        tool_names=["echo"],
+        available_names=["echo", "read", "write"],
+    )
+    assert frame["tool_names"] == ["echo"]
+    assert frame["available_names"] == ["echo", "read", "write"]
+
+
+def test_send_init_available_names_falls_back_to_tool_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame = _capture_init(
+        tmp_path,
+        monkeypatch,
+        tool_names=["echo", "read"],
+        available_names=None,
+    )
+    assert frame["tool_names"] == ["echo", "read"]
+    assert frame["available_names"] == ["echo", "read"]
+
+
+def test_run_code_available_names_end_to_end(tmp_path: Path) -> None:
+    result = asyncio.run(
+        process.run_code(
+            code="return list(tools.available)",
+            tool_names=["echo"],
+            available_names=["alpha", "beta"],
+            dispatch=_unused_dispatch,
+            cwd=tmp_path,
+            limits=PtcLimits(timeout_seconds=30.0),
+        )
+    )
+    assert result.get("error") is None
+    assert result["value"] == ["alpha", "beta"]
+
+
+def test_run_code_available_names_defaults_to_tool_names(tmp_path: Path) -> None:
+    result = asyncio.run(
+        process.run_code(
+            code="return list(tools.available)",
+            tool_names=["echo", "read"],
+            dispatch=_unused_dispatch,
+            cwd=tmp_path,
+            limits=PtcLimits(timeout_seconds=30.0),
+        )
+    )
+    assert result.get("error") is None
+    assert result["value"] == ["echo", "read"]

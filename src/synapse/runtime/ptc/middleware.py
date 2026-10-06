@@ -11,6 +11,9 @@
   ``synapse.runtime.ptc.process.run_code`` with a dispatch callback that
   re-enters the tool node for each child call, and returns a single JSON
   ``ToolMessage`` (its status follows the run's error),
+* pre-flights ``run_code`` code against the bridge's callable-tool allowlist and
+  refuses a literal reference to an uncallable tool *before* starting the
+  subprocess, so a policy mistake fails fast instead of midway through a run,
 * in ``code`` mode, hides the orchestratable tools from the model so only
   ``run_code`` and the non-orchestratable (approval / session-state) tools stay
   native.
@@ -29,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +63,11 @@ _MAX_ERROR_CHARS = 2_000
 #: the tool's Pydantic schema (which forbids extras) runs, so it must reject any
 #: other key here rather than silently ignoring it.
 _ALLOWED_RUN_CODE_KEYS = frozenset({"code", "intent"})
+
+#: Fields declared on the bridge's ``CallContext``. The bridge is landing an
+#: ``available`` field; the middleware passes it only when the dataclass declares
+#: it, so a checkout that predates that field still builds a valid context.
+_CALL_CONTEXT_FIELDS = frozenset(getattr(CallContext, "__dataclass_fields__", {}))
 
 _RUN_CODE_DESCRIPTION = (
     "Execute Python code that orchestrates the available tools programmatically. "
@@ -92,6 +100,16 @@ def _tool_name(tool: Any) -> str:
             return str(function.get("name") or "")
         return str(tool.get("name") or "")
     return str(getattr(tool, "name", "") or "")
+
+
+def _tool_map(tools: Iterable[Any]) -> dict[str, Any]:
+    """Index model-facing tools by name, first occurrence winning."""
+    mapping: dict[str, Any] = {}
+    for tool in tools:
+        name = _tool_name(tool)
+        if name and name not in mapping:
+            mapping[name] = tool
+    return mapping
 
 
 def _tool_call_id(tool_call: Any) -> str:
@@ -206,7 +224,8 @@ class _PtcMiddleware(AgentMiddleware):
         if not self._bridge.run_code_enabled:
             return request
         tools = list(getattr(request, "tools", None) or [])
-        specs = self._sdk_specs(tools)
+        available = set(self._bridge.available_names(_tool_map(tools)))
+        specs = self._sdk_specs(tools, available)
         prompt, fold = self._sdk_prompt(request, specs)
         changes: dict[str, Any] = {}
         if prompt:
@@ -214,21 +233,29 @@ class _PtcMiddleware(AgentMiddleware):
                 getattr(request, "system_message", None), prompt
             )
         if fold and self._mode == "code":
-            visible = [tool for tool in tools if not self._is_foldable(_tool_name(tool))]
+            visible = [
+                tool for tool in tools if not self._is_foldable(_tool_name(tool), available)
+            ]
             if len(visible) != len(tools):
                 changes["tools"] = visible
         if not changes:
             return request
         return request.override(**changes)
 
-    def _is_foldable(self, name: str) -> bool:
-        if not name or self._bridge.is_excluded(name):
-            return False
-        return self._bridge.is_orchestratable(name)
+    def _is_foldable(self, name: str, available: Collection[str]) -> bool:
+        """Whether ``name`` is folded into ``run_code`` for this request.
 
-    def _sdk_specs(self, tools: list[Any]) -> list[sdk_module.ToolSpec]:
+        Folding derives from the bridge's single allowlist
+        (:meth:`PtcBridge.available_names`): everything the sandbox may call is
+        hidden from the native tool list in code mode, and nothing else is.
+        """
+        return bool(name) and name in available
+
+    def _sdk_specs(
+        self, tools: list[Any], available: Collection[str]
+    ) -> list[sdk_module.ToolSpec]:
         return sdk_module.collect_tool_specs(
-            tool for tool in tools if self._is_foldable(_tool_name(tool))
+            tool for tool in tools if self._is_foldable(_tool_name(tool), available)
         )
 
     def _sdk_prompt(
@@ -283,6 +310,9 @@ class _PtcMiddleware(AgentMiddleware):
             return self._invalid_args_message(request)
         code, _intent = args
         ctx = self._context(request, handler, offload=True)
+        blocked = self._bridge.preflight(code, ctx.tools)
+        if blocked:
+            return self._preflight_message(request, ctx.tools, blocked)
         try:
             result = _run_coroutine_sync(self._bridge.invoke(ctx, code=code))
         except asyncio.CancelledError:
@@ -301,6 +331,9 @@ class _PtcMiddleware(AgentMiddleware):
             return self._invalid_args_message(request)
         code, _intent = args
         ctx = self._context(request, handler, offload=False)
+        blocked = self._bridge.preflight(code, ctx.tools)
+        if blocked:
+            return self._preflight_message(request, ctx.tools, blocked)
         try:
             result = await self._bridge.invoke(ctx, code=code)
         except asyncio.CancelledError:
@@ -313,22 +346,27 @@ class _PtcMiddleware(AgentMiddleware):
         runtime = getattr(request, "runtime", None)
         tools: dict[str, Any] = {}
         for tool in getattr(runtime, "tools", None) or []:
-            name = getattr(tool, "name", None)
+            name = _tool_name(tool)
             if name:
-                tools[str(name)] = tool
-        return CallContext(
-            parent_call_id=_tool_call_id(getattr(request, "tool_call", None)),
-            handler=handler,
-            request=request,
-            runtime=runtime,
-            tools=tools,
-            stream_writer=getattr(runtime, "stream_writer", None),
-            offload=offload,
+                tools[name] = tool
+        kwargs: dict[str, Any] = {
+            "parent_call_id": _tool_call_id(getattr(request, "tool_call", None)),
+            "handler": handler,
+            "request": request,
+            "runtime": runtime,
+            "tools": tools,
+            "stream_writer": getattr(runtime, "stream_writer", None),
+            "offload": offload,
             # Hand the subprocess *every* registered name: exclusion, approval and
             # recursion are enforced by bridge.denial_reason, so a denied tool is
             # not masked as an unregistered one.
-            tool_names=tuple(self._bridge.registered_names(tools)),
-        )
+            "tool_names": tuple(self._bridge.registered_names(tools)),
+        }
+        if "available" in _CALL_CONTEXT_FIELDS:
+            # The bridge reads this to build the sandbox's ``tools.available`` and
+            # to seed the process runner's callable-name allowlist.
+            kwargs["available"] = tuple(self._bridge.available_names(tools))
+        return CallContext(**kwargs)
 
     def _output_cap(self) -> int:
         """The combined byte cap the model-facing ``run_code`` message must fit."""
@@ -384,6 +422,33 @@ class _PtcMiddleware(AgentMiddleware):
         detail = _bounded_text(f"{type(exc).__name__}: {exc}")
         return ToolMessage(
             content=self._encode_error("middleware", detail),
+            tool_call_id=_tool_call_id(getattr(request, "tool_call", None)),
+            name=RUN_CODE,
+            status="error",
+        )
+
+    def _preflight_message(
+        self,
+        request: Any,
+        tools: Mapping[str, Any],
+        blocked: list[tuple[str, str]],
+    ) -> ToolMessage:
+        """Refuse a run whose code names tools the sandbox may not call.
+
+        The bridge's per-name :meth:`PtcBridge.denial_message` supplies the
+        reason plus the bounded allowlist, so the text matches a runtime refusal;
+        the message uses the same ``{logs, value, error}`` JSON contract as every
+        other error and is returned *before* the runner is started.
+        """
+        lines = [
+            _bounded_text(self._bridge.denial_message(name, tools, reason))
+            for name, reason in blocked
+        ]
+        message = _bounded_text(
+            "\n".join(lines) or "run_code references tools that are not callable"
+        )
+        return ToolMessage(
+            content=self._encode_error("unknown_tool", message),
             tool_call_id=_tool_call_id(getattr(request, "tool_call", None)),
             name=RUN_CODE,
             status="error",

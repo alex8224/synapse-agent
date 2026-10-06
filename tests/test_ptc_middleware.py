@@ -121,7 +121,7 @@ def _scripted_runner(*, concurrent: bool = False) -> Any:
     ``code`` is a JSON object ``{"calls": [[name, args], ...]}``.
     """
 
-    async def run_code(*, code, tool_names, dispatch, cwd, limits):  # noqa: ARG001
+    async def run_code(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
         spec = json.loads(code)
         calls = spec["calls"]
         results: list[Any] = []
@@ -872,3 +872,105 @@ def test_sync_timeout_does_not_wait_for_blocking_tool() -> None:
     assert entered.is_set()
     # The result must not pretend the sync handler stopped.
     assert "may still be running" in payload.get("warning", "")
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+def _run_code_request(code: str, tools: list[Any], call_id: str = "call-1") -> _FakeModelRequest:
+    """A forced ``run_code`` request whose runtime exposes ``tools``."""
+    request = _FakeModelRequest([])
+    request.runtime = SimpleNamespace(tools=list(tools), stream_writer=None)
+    request.tool_call = {
+        "name": "run_code",
+        "args": {"code": code, "intent": "orchestrate"},
+        "id": call_id,
+        "type": "tool_call",
+    }
+    return request
+
+
+def test_preflight_refusal_never_starts_the_runner() -> None:
+    started: list[str] = []
+
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
+        started.append(code)
+        return {"logs": [], "value": None}
+
+    middleware = _middleware(mode="both", runner=runner)
+    request = _run_code_request("return await tools.find_files(pattern='**/*.py')", [read_file])
+
+    def handler(req: Any) -> ToolMessage:  # pragma: no cover - must not run
+        raise AssertionError("a pre-flight refusal must not reach the handler")
+
+    result = middleware.wrap_tool_call(request, handler)
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    payload = json.loads(result.content)
+    # Same JSON error contract as every other run_code failure.
+    assert payload["logs"] == []
+    assert payload["value"] is None
+    assert payload["error"]["kind"] == "unknown_tool"
+    assert "find_files" in payload["error"]["message"]
+    # The refusal names the tools that *are* callable (bounded allowlist).
+    assert "read_file" in payload["error"]["message"]
+    # The subprocess runner was never started.
+    assert started == []
+
+
+def test_async_preflight_refusal_never_starts_the_runner() -> None:
+    started: list[str] = []
+
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
+        started.append(code)
+        return {"logs": [], "value": None}
+
+    middleware = _middleware(mode="both", runner=runner)
+    request = _run_code_request("return await tools.find_files(pattern='**/*.py')", [read_file])
+
+    async def handler(req: Any) -> ToolMessage:  # pragma: no cover - must not run
+        raise AssertionError("a pre-flight refusal must not reach the handler")
+
+    result = asyncio.run(middleware.awrap_tool_call(request, handler))
+    assert result.status == "error"
+    assert json.loads(result.content)["error"]["kind"] == "unknown_tool"
+    assert started == []
+
+
+def test_available_tool_script_is_not_preflighted() -> None:
+    started: list[str] = []
+
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
+        started.append(code)
+        return {"logs": [], "value": "ok"}
+
+    middleware = _middleware(mode="both", runner=runner)
+    code = "return await tools.read_file(path='a.txt')"
+    result = middleware.wrap_tool_call(_run_code_request(code, [read_file]), lambda r: None)
+    assert result.status == "success"
+    assert started == [code]
+
+
+def test_dynamic_tool_access_is_not_preflighted() -> None:
+    started: list[str] = []
+
+    async def runner(*, code, tool_names, dispatch, cwd, limits, **kwargs):  # noqa: ARG001
+        started.append(code)
+        return {"logs": [], "value": None}
+
+    middleware = _middleware(mode="both", runner=runner)
+    code = "name = 'find_files'\nreturn await getattr(tools, name)(pattern='**/*.py')"
+    result = middleware.wrap_tool_call(_run_code_request(code, [read_file]), lambda r: None)
+    # A dynamic reference is left to the runtime, so the runner still runs.
+    assert result.status == "success"
+    assert started == [code]
+
+
+def test_code_mode_folding_uses_the_bridge_allowlist() -> None:
+    middleware = _middleware(mode="code")
+    request = _FakeModelRequest([read_file, write_file, write_todos, mcp_probe])
+    out = middleware.wrap_model_call(request, lambda req: req)
+    # Session-state tools stay native; everything callable from code is folded.
+    assert set(_names(out)) == {"write_todos"}
+    text = _message_text(out.system_message)
+    assert "async def read_file" in text
+    assert "async def write_todos" not in text

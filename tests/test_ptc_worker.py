@@ -44,6 +44,7 @@ def run(
     *,
     dispatch: Any = None,
     tool_names: tuple[str, ...] = (),
+    available_names: list[str] | None = None,
     limits: PtcLimits | None = None,
     cwd: Path | None = None,
 ) -> dict[str, Any]:
@@ -51,12 +52,49 @@ def run(
         return await run_code(
             code=code,
             tool_names=list(tool_names),
+            available_names=available_names,
             dispatch=dispatch or _no_tools,
             cwd=cwd or Path.cwd(),
             limits=limits or PtcLimits(timeout_seconds=30.0),
         )
 
     return asyncio.run(_invoke())
+def _run_worker_init(init: dict[str, Any], *, cwd: Path) -> list[dict[str, Any]]:
+    """Spawn the real worker and feed it a hand-built ``init`` frame.
+
+    Unlike :func:`run` this bypasses ``run_code`` so a test can omit or corrupt
+    the ``available_names`` field and assert the worker's own frame handling.
+    """
+    payload = _encode(init) + b"\n"
+    proc = subprocess.run(
+        process._worker_command(),
+        input=payload,
+        capture_output=True,
+        cwd=str(cwd),
+        env=process._build_env(),
+        timeout=30,
+    )
+    frames: list[dict[str, Any]] = []
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        stripped = line.strip()
+        if stripped:
+            frames.append(json.loads(stripped))
+    return frames
+
+
+def _result_frame(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    for frame in frames:
+        if frame.get("type") == "result":
+            return frame
+    raise AssertionError(f"no result frame in {frames!r}")
+
+
+_AVAILABLE_PROBE = (
+    "return {\n"
+    "    'available': list(tools.available),\n"
+    "    'is_tuple': isinstance(tools.available, tuple),\n"
+    "}\n"
+)
 
 
 def test_unicode_value_and_logs(tmp_path: Path) -> None:
@@ -298,6 +336,104 @@ def test_scrubbed_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert result["value"]["secret"] is None
     assert result["value"]["pythonpath"] is None
     assert result["value"]["has_path"] is True
+
+
+# --------------------------------------------------------------------------- #
+# tools.available inventory (script self-inspection)
+# --------------------------------------------------------------------------- #
+
+
+def test_tools_available_comes_from_init_frame(tmp_path: Path) -> None:
+    """``tools.available`` reflects the init frame's ``available_names`` order."""
+    result = run(
+        _AVAILABLE_PROBE,
+        tool_names=("alpha",),
+        available_names=["gamma", "beta", "alpha"],
+        cwd=tmp_path,
+    )
+    assert result.get("error") is None
+    assert result["value"] == {
+        "available": ["gamma", "beta", "alpha"],
+        "is_tuple": True,
+    }
+
+
+def test_tools_available_falls_back_to_tool_names(tmp_path: Path) -> None:
+    """An init frame without ``available_names`` mirrors ``tool_names``."""
+    frames = _run_worker_init(
+        {
+            "type": "init",
+            "code": _AVAILABLE_PROBE,
+            "tool_names": ["echo", "read"],
+            "limits": {},
+        },
+        cwd=tmp_path,
+    )
+    result = _result_frame(frames)
+    assert result.get("error") is None
+    assert result["value"] == {"available": ["echo", "read"], "is_tuple": True}
+
+
+def test_tools_available_drops_non_string_entries(tmp_path: Path) -> None:
+    """A malformed element is dropped instead of failing the run."""
+    frames = _run_worker_init(
+        {
+            "type": "init",
+            "code": _AVAILABLE_PROBE,
+            "tool_names": ["echo"],
+            "available_names": ["read", 7, None, "write"],
+            "limits": {},
+        },
+        cwd=tmp_path,
+    )
+    result = _result_frame(frames)
+    assert result.get("error") is None
+    assert result["value"] == {"available": ["read", "write"], "is_tuple": True}
+
+
+def test_tools_available_is_read_only(tmp_path: Path) -> None:
+    """Assigning ``tools.available`` cannot shadow the callable proxy."""
+    code = (
+        "before = list(tools.available)\n"
+        "try:\n"
+        "    tools.available = ['hacked']\n"
+        "except Exception as exc:\n"
+        "    assignment_error = type(exc).__name__\n"
+        "else:\n"
+        "    assignment_error = None\n"
+        "return {\n"
+        "    'before': before,\n"
+        "    'after': list(tools.available),\n"
+        "    'assignment_error': assignment_error,\n"
+        "    'call_ok': callable(tools.call),\n"
+        "}\n"
+    )
+    result = run(code, tool_names=("echo",), available_names=["echo"], cwd=tmp_path)
+    assert result.get("error") is None
+    assert result["value"]["before"] == ["echo"]
+    assert result["value"]["after"] == ["echo"]
+    assert result["value"]["assignment_error"] == "AttributeError"
+    assert result["value"]["call_ok"] is True
+
+
+def test_init_frame_available_names_wrong_shape_is_protocol_error(
+    tmp_path: Path,
+) -> None:
+    """A non-list ``available_names`` is a protocol error, not a crash."""
+    frames = _run_worker_init(
+        {
+            "type": "init",
+            "code": _AVAILABLE_PROBE,
+            "tool_names": ["echo"],
+            "available_names": "not-a-list",
+            "limits": {},
+        },
+        cwd=tmp_path,
+    )
+    result = _result_frame(frames)
+    assert result["value"] is None
+    assert result["error"]["kind"] == "protocol_error"
+    assert "available_names" in result["error"]["message"]
 
 
 # --------------------------------------------------------------------------- #

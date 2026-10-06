@@ -115,9 +115,16 @@ stdin/stdout 上通信，帧大小有界。子进程是**一次性的**：跑完
 | 名字 | 说明 |
 |---|---|
 | `tools` | 工具代理对象。`await tools.<name>(**kwargs)` 调用一个工具；`await tools.call("<name>", {...})` 用于名字或参数名不是合法 Python 标识符的场景。两者都是**协程，必须 `await`**。 |
+| `tools.available` | 本次运行**可调用**工具名的元组（只读）。可用它自查：`if "find_files" in tools.available:`。 |
 | `asyncio` | 标准库 `asyncio`，用于 `gather` 等并发编排。 |
 | `json` | 标准库 `json`。 |
 | `ToolCallError` | 工具调用失败时抛出的异常类型。 |
+
+**只有 SDK 里列出的工具可调用。** 其他名字——包括你在别处见过的、或用户提示里提到的——都
+不存在，调用它会失败。若脚本里出现**字面量**形式的不可用工具名（`tools.<name>` 或
+`tools.call("<name>", ...)`），整段运行会在**启动子进程之前**被拒绝，返回
+`kind="unknown_tool"` 并附上可用工具清单，因此不会产生"先写文件、再报错"的半执行状态。
+用变量动态取名字（`tools.call(name, ...)`）无法静态判定，只能在运行期抛 `ToolCallError`。
 
 ### 结果 envelope
 
@@ -133,6 +140,8 @@ stdin/stdout 上通信，帧大小有界。子进程是**一次性的**：跑完
 
 - `data` 只在工具**发布了规范载荷**时才非空：`find_files`、`search_files` 以及带
   `structuredContent` 的 MCP 工具会发布，`read_file` 等不发布。
+- envelope 是**普通 dict，不是对象**：用 `res["content"]` / `res["data"]` / `res["truncated"]`
+  取值，不要写 `res.content`。
 - **不要猜 `data` 的形状**：当它是 `None` 时去读 `content`，不要假设 `data["matches"]`
   一定存在。
 - `truncated` 为 `None` 表示**完整性未知**，不能当成「完整」。

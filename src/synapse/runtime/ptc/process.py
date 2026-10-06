@@ -25,7 +25,7 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -342,6 +342,7 @@ class _Session:
         *,
         code: str,
         tool_names: list[str],
+        available_names: Sequence[str] | None = None,
         dispatch: Callable[[str, dict[str, Any]], Awaitable[Any]],
         cwd: Path,
         limits: PtcLimits,
@@ -349,6 +350,12 @@ class _Session:
         self._code = code
         self._tool_names = list(tool_names)
         self._tool_name_set = set(tool_names)
+        # ``tool_names`` stays the registered host whitelist; ``available_names``
+        # is the inventory the script self-inspects through ``tools.available``.
+        # A ``None`` value keeps older callers working by mirroring ``tool_names``.
+        self._available_names = (
+            list(available_names) if available_names is not None else list(tool_names)
+        )
         self._dispatch = dispatch
         self._cwd = cwd
         self._limits = limits
@@ -449,6 +456,7 @@ class _Session:
                 "type": FRAME_INIT,
                 "code": self._code,
                 "tool_names": list(self._tool_names),
+                "available_names": list(self._available_names),
                 "limits": self._limits.as_frame(),
             }
         )
@@ -786,6 +794,7 @@ async def run_code(
     *,
     code: str,
     tool_names: list[str],
+    available_names: Sequence[str] | None = None,
     dispatch: Callable[[str, dict[str, Any]], Awaitable[Any]],
     cwd: Path,
     limits: PtcLimits,
@@ -795,7 +804,10 @@ async def run_code(
     Returns ``{"logs": list[str], "value": JSON | None, "error"?: {...}}``.
     ``code`` is the body of an ``async`` function: top-level ``await`` and
     ``return`` are valid, and the injected names are ``tools``, ``asyncio``,
-    ``json`` and ``ToolCallError``.  A user cancellation
+    ``json`` and ``ToolCallError``.  ``tool_names`` stays the registered host
+    whitelist, while ``available_names`` is the inventory the script
+    self-inspects through ``tools.available``; a ``None`` value (the default)
+    mirrors ``tool_names`` so existing callers are unchanged.  A user cancellation
     (``asyncio.CancelledError``) always propagates; it is never converted into
     an error dict.
 
@@ -824,6 +836,7 @@ async def run_code(
     session = _Session(
         code=code,
         tool_names=list(tool_names),
+        available_names=available_names,
         dispatch=dispatch,
         cwd=Path(cwd),
         limits=limits,
