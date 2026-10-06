@@ -71,6 +71,13 @@ _CALL_CONTEXT_FIELDS = frozenset(getattr(CallContext, "__dataclass_fields__", {}
 
 _RUN_CODE_DESCRIPTION = (
     "Execute Python code that orchestrates the available tools programmatically. "
+    "When available and permitted, use it by default for read-only work -- "
+    "analyzing code, running read-only commands, finding files, reading files, "
+    "paginating, filtering or aggregating results, including a single read-only call. "
+    "Batch known independent queries and run them concurrently within the configured "
+    "limit; return bounded relevant results. Return to the model when the next step "
+    "needs interpretation. Keep state-changing calls native when visible; never "
+    "bypass approval or tool restrictions. "
     "The code runs as the body of an async function in a fresh local subprocess "
     "(not a security sandbox) and may call the tools documented in the "
     "programmatic tool-calling SDK. Returns JSON with `logs`, `value` and an "

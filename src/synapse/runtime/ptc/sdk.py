@@ -71,15 +71,24 @@ _JSON_TYPE_TO_PY: dict[str, str] = {
 
 _SELECTION_BLOCK = """\
 When to use `run_code`:
-* Prefer it for batching tool calls, mechanical pagination/filtering/aggregation,
-  or substantially reducing tool output before returning it to the model.
-* When native tools are visible, use them directly for a single command/read or
-  exploratory steps whose next action requires model judgment. Do not wrap a
-  single `execute` call merely to run a script; `execute` can already do that.
-* Batch only steps already known or mechanically determined from tool results.
-  Return to the model when interpretation or planning is needed.
-* If a needed tool is hidden in code mode, use a minimal `run_code` call; do not
-  invent extra batching. Follow explicit user requests to use `run_code`.
+* When available and permitted, use `run_code` by default for read-only work:
+  analyzing code, running read-only commands, finding files, reading files,
+  and mechanical pagination/filtering/aggregation or reducing tool output.
+  This includes a single read-only call: use a minimal `run_code` wrapper,
+  even when the native tool is visible. Do not invent extra calls to make a batch.
+* Before each read-only call, check for other known independent queries. If two
+  or more are ready, you must batch them in one `run_code` and run them
+  concurrently with `asyncio.gather`, within the configured concurrency limit.
+  Batch known or mechanically determined steps to save model round-trips;
+  return bounded relevant results, including evidence needed for model judgment.
+* When the next step needs interpretation or planning, end the current block
+  and return to the model. This limits the batch, not the use of `run_code`
+  for the next read-only call.
+* Keep edits and other state-changing calls native when visible. If a needed
+  tool is hidden in code mode, use a minimal `run_code` call only when permitted.
+  Never bypass approval or tool restrictions. If `run_code` is unavailable or
+  a tool cannot be orchestrated, use the available native tool instead.
+  Follow explicit user requests to use `run_code`.
 """
 
 _ENVELOPE_BLOCK = """\

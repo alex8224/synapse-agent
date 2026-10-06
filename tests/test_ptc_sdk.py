@@ -96,14 +96,25 @@ def test_sdk_prompt_teaches_when_to_use_run_code(compact: bool) -> None:
     builder = sdk.build_compact_sdk_prompt if compact else sdk.build_sdk_prompt
     prompt = builder(specs)
     assert "When to use `run_code`:" in prompt
-    assert "batching tool calls" in prompt
+    # Read-only work defaults to PTC, even for one visible native tool.
+    assert "use `run_code` by default for read-only work" in prompt
+    assert "analyzing code, running read-only commands, finding files" in prompt
+    assert "single read-only call: use a minimal `run_code` wrapper" in prompt
+    assert "even when the native tool is visible" in prompt
+    assert "Do not invent extra calls" in prompt
+    # Known independent queries must be batched, within the runtime's limit.
+    assert "Before each read-only call" in prompt
+    assert "you must batch them in one `run_code`" in prompt
+    assert "concurrently with `asyncio.gather`" in prompt
+    assert "within the configured concurrency limit" in prompt
     assert "mechanical pagination/filtering/aggregation" in prompt
     assert "reducing tool output" in prompt
-    assert "When native tools are visible, use them directly" in prompt
-    assert "single command/read" in prompt
-    assert "requires model judgment" in prompt
-    assert "single `execute` call merely to run a script" in prompt
-    assert "Return to the model when interpretation or planning is needed" in prompt
+    assert "including evidence needed for model judgment" in prompt
+    assert "This limits the batch, not the use of `run_code`" in prompt
+    assert "Keep edits and other state-changing calls native when visible" in prompt
+    assert "Never bypass approval or tool restrictions" in prompt
+    assert "If `run_code` is unavailable" in prompt
+    assert "Do not wrap a single" not in prompt
     assert "hidden in code mode" in prompt
     assert "minimal `run_code` call" in prompt
     assert "Follow explicit user requests" in prompt

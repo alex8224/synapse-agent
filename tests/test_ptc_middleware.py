@@ -195,6 +195,22 @@ def test_both_mode_registers_run_code() -> None:
     assert [tool_.name for tool_ in middleware.tools] == ["run_code"]
 
 
+def test_run_code_description_states_read_only_default() -> None:
+    """The tool description and SDK must advertise the same read-only default."""
+    middleware = _middleware(mode="both")
+    description = middleware.tools[0].description
+
+    assert "use it by default for read-only work" in description
+    assert "analyzing code, running read-only commands, finding files" in description
+    assert "including a single read-only call" in description
+    assert "Batch known independent queries" in description
+    assert "run them concurrently within the configured limit" in description
+    assert "Return to the model when the next step needs interpretation" in description
+    assert "Keep state-changing calls native when visible" in description
+    assert "never bypass approval or tool restrictions" in description
+    assert "not a security sandbox" in description
+
+
 def test_native_mode_registers_nothing() -> None:
     middleware = _middleware(mode="native")
     assert list(middleware.tools) == []
@@ -265,6 +281,9 @@ def test_sdk_prompt_is_injected_into_system_message() -> None:
     text = _message_text(out.system_message)
     assert "Programmatic tool calling" in text
     assert "async def read_file(*, path: str) -> ToolEnvelope:" in text
+    assert "use `run_code` by default for read-only work" in text
+    assert "single read-only call: use a minimal `run_code` wrapper" in text
+    assert "you must batch them in one `run_code`" in text
 
 
 def test_sdk_prompt_is_added_as_a_new_block() -> None:
