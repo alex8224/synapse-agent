@@ -7,9 +7,11 @@ end to end.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -171,6 +173,91 @@ def test_tools_call_non_mapping_arguments(tmp_path: Path) -> None:
     result = run(code, tool_names=("echo",), cwd=tmp_path)
     assert result.get("error") is None
     assert "mapping" in str(result["value"])
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "'''\nalpha\n  beta\n'''",
+        '"""\n    intentional indentation\n\n  trailing spaces  \n"""',
+        "r'''\nC:\\work\\script.py\n'''",
+        "f'''\nvalue={1 + 2}\n'''",
+        "b'''\nalpha\n  beta\n'''",
+        "'''alpha\\\nbeta'''",
+    ],
+)
+def test_multiline_literals_preserve_values(tmp_path: Path, literal: str) -> None:
+    """Wrapping an async body must not change literal whitespace or escapes."""
+    expected = eval(literal)  # Fixed test literals, never model-authored code.
+    code = f"payload = {literal}\nreturn payload"
+    if isinstance(expected, bytes):
+        code += ".decode('utf-8')"
+        expected = expected.decode("utf-8")
+    result = run(code, cwd=tmp_path)
+    assert result.get("error") is None
+    assert result["value"] == expected
+
+
+@pytest.mark.parametrize("language", ["python", "powershell"])
+def test_embedded_script_execution_preserves_indentation(tmp_path: Path, language: str) -> None:
+    """Exercise the Python and PowerShell failure paths from real PTC sessions."""
+    if language == "python":
+        code = (
+            "script = '''\nimport json\n"
+            "for value in [7]:\n    print(json.dumps({'value': value}))\n'''\n"
+            "return await tools.execute(command=script)"
+        )
+        expected = '{"value": 7}'
+    else:
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        if shell is None:
+            pytest.skip("PowerShell is not installed")
+        code = (
+            "script = '''\nalpha\n  beta\n'''\n"
+            'command = "$s = @\'\\n" + script + "\'@\\nWrite-Output $s"\n'
+            "return await tools.execute(command=command)"
+        )
+        expected = "alpha\n  beta"
+
+    async def dispatch(name: str, arguments: dict[str, Any]) -> str:
+        assert name == "execute"
+        if language == "python":
+            argv = [sys.executable, "-c", arguments["command"]]
+        else:
+            argv = [shell, "-NoProfile", "-NonInteractive", "-Command", arguments["command"]]
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=tmp_path,
+            timeout=15,
+        )
+        assert completed.returncode == 0, completed.stderr or "embedded script failed"
+        return completed.stdout.strip("\r\n")
+
+    result = run(code, dispatch=dispatch, tool_names=("execute",), cwd=tmp_path)
+    assert result.get("error") is None
+    assert result["value"] == expected
+
+
+@pytest.mark.parametrize("code", ["", " \n\t", "# comment only\n"])
+def test_empty_body_returns_none(tmp_path: Path, code: str) -> None:
+    result = run(code, cwd=tmp_path)
+    assert result.get("error") is None
+    assert result["value"] is None
+
+
+def test_compile_entry_preserves_source_line_numbers() -> None:
+    code = "payload = '''\nalpha\n'''\nreturn ("
+    with pytest.raises(SyntaxError) as original:
+        ast.parse(code, filename="<ptc>")
+    entry, error = worker_module._compile_entry(code)
+    assert entry is None
+    assert error is not None
+    assert error["kind"] == "syntax_error"
+    assert f"(line {original.value.lineno})" in error["message"]
 
 
 def test_logging_is_captured(tmp_path: Path) -> None:

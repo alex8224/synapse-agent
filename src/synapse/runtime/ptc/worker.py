@@ -21,6 +21,7 @@ already started may still finish and is not rolled back.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import io
@@ -29,7 +30,6 @@ import json
 import logging
 import os
 import sys
-import textwrap
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -380,14 +380,21 @@ def _make_log_sender(writer: _ProtocolWriter, limits: Mapping[str, Any]) -> Call
 
 
 def _compile_entry(code: str) -> tuple[Any, dict[str, str] | None]:
-    """Wrap model code as an async function body and compile it."""
-    body = textwrap.indent(code, "    ") if code.strip() else "    return None"
-    source = (
-        "async def __synapse_ptc_entry__(tools, asyncio, json, ToolCallError):\n"
-        f"{body}\n"
-    )
+    """Wrap an async body without rewriting literals or source line numbers."""
     try:
-        compiled = compile(source, "<ptc>", "exec")
+        # Text indentation also changes multiline string contents, breaking
+        # embedded Python scripts and PowerShell here-string terminators.
+        # Parse the original source, then move its statements into an async
+        # function; compilation validates top-level await/return in that scope.
+        body = ast.parse(code, filename="<ptc>").body
+        module = ast.parse(
+            "async def __synapse_ptc_entry__(tools, asyncio, json, ToolCallError):\n    pass\n",
+            filename="<ptc>",
+        )
+        entry = module.body[0]
+        assert isinstance(entry, ast.AsyncFunctionDef)
+        entry.body = body or [ast.Pass()]
+        compiled = compile(ast.fix_missing_locations(module), "<ptc>", "exec")
     except SyntaxError as exc:
         return None, {
             "kind": "syntax_error",

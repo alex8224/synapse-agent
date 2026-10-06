@@ -69,6 +69,19 @@ _JSON_TYPE_TO_PY: dict[str, str] = {
     "null": "None",
 }
 
+_SELECTION_BLOCK = """\
+When to use `run_code`:
+* Prefer it for batching tool calls, mechanical pagination/filtering/aggregation,
+  or substantially reducing tool output before returning it to the model.
+* When native tools are visible, use them directly for a single command/read or
+  exploratory steps whose next action requires model judgment. Do not wrap a
+  single `execute` call merely to run a script; `execute` can already do that.
+* Batch only steps already known or mechanically determined from tool results.
+  Return to the model when interpretation or planning is needed.
+* If a needed tool is hidden in code mode, use a minimal `run_code` call; do not
+  invent extra batching. Follow explicit user requests to use `run_code`.
+"""
+
 _ENVELOPE_BLOCK = """\
 Every successful call returns a ``ToolEnvelope``: a **plain ``dict``**, not an
 object. Read its fields with subscripts -- ``res["content"]``, ``res["data"]``,
@@ -460,6 +473,7 @@ def _header(*, max_calls: int | None, max_parallel: int | None) -> str:
         "function** in a fresh local subprocess per call. That subprocess is **not** "
         "a security sandbox: it runs with the same trust as your shell. The injected "
         "names are `tools`, `asyncio`, `json` and `ToolCallError`.\n\n"
+        f"{_SELECTION_BLOCK}\n"
         f"{_whitelist_block()}\n\n"
         f"{_rules_block(max_calls=max_calls, max_parallel=max_parallel)}\n\n"
         f"{_ENVELOPE_BLOCK}\n"
@@ -509,6 +523,7 @@ def build_compact_sdk_prompt(
         "budget. Call tools from `run_code` with `await tools.call(name, args)`; the "
         "exact parameter JSON Schema for each tool is in its native tool definition, "
         "which stays visible in this request.\n\n"
+        f"{_SELECTION_BLOCK}\n"
         f"{_ENVELOPE_BLOCK}\n"
         "Registered tools"
     )

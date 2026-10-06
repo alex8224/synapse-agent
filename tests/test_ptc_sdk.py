@@ -90,6 +90,36 @@ def test_build_sdk_prompt_teaches_the_worker_surface() -> None:
     assert "not" in prompt and "security sandbox" in prompt
 
 
+@pytest.mark.parametrize("compact", [False, True])
+def test_sdk_prompt_teaches_when_to_use_run_code(compact: bool) -> None:
+    specs = sdk.collect_tool_specs([read_file])
+    builder = sdk.build_compact_sdk_prompt if compact else sdk.build_sdk_prompt
+    prompt = builder(specs)
+    assert "When to use `run_code`:" in prompt
+    assert "batching tool calls" in prompt
+    assert "mechanical pagination/filtering/aggregation" in prompt
+    assert "reducing tool output" in prompt
+    assert "When native tools are visible, use them directly" in prompt
+    assert "single command/read" in prompt
+    assert "requires model judgment" in prompt
+    assert "single `execute` call merely to run a script" in prompt
+    assert "Return to the model when interpretation or planning is needed" in prompt
+    assert "hidden in code mode" in prompt
+    assert "minimal `run_code` call" in prompt
+    assert "Follow explicit user requests" in prompt
+
+
+def test_compact_prompt_preserves_selection_guidance_when_names_are_trimmed() -> None:
+    specs = [
+        sdk.ToolSpec(name=f"tool_{index:03d}", description="x" * 400, input_schema={})
+        for index in range(500)
+    ]
+    prompt = sdk.build_compact_sdk_prompt(specs)
+    assert len(prompt.encode("utf-8")) <= sdk.COMPACT_MAX_BYTES
+    assert sdk._SELECTION_BLOCK in prompt
+    assert "of 500 tools are listed" in prompt
+
+
 def test_build_sdk_prompt_reports_call_and_concurrency_budget() -> None:
     prompt = sdk.build_sdk_prompt(sdk.collect_tool_specs([read_file]), max_calls=7, max_parallel=3)
     assert "at most 7 calls" in prompt
