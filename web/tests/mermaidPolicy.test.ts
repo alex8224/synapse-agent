@@ -9,11 +9,85 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DIAGRAM_EDGE_STROKE_WIDTH,
+  DIAGRAM_PAGE_INK_DARK,
   DIRECTIVE_RE,
+  MERMAID_THEME,
+  MERMAID_THEME_VARIABLES,
   MAX_DIAGRAM_CHARS,
+  diagramPaletteFor,
   describeMermaidError,
   rejectionReason,
 } from '../src/markdown/mermaid.ts';
+
+test('a dark document theme selects the dark diagram palette', () => {
+  assert.equal(diagramPaletteFor('fluent-dark'), 'dark');
+});
+
+test('the light theme and the shipped fallback use the light diagram palette', () => {
+  for (const theme of ['fluent-light', null, undefined]) {
+    assert.equal(diagramPaletteFor(theme ?? null), 'light', String(theme));
+  }
+});
+
+test('an unknown theme is treated as light, never as a dark guess', () => {
+  for (const theme of ['', 'solarized', 'dark-ish', 'dark']) {
+    // Only the shipped `*-dark` names opt into the dark palette; anything else
+    // keeps the light one so a typo cannot darken the diagram by accident.
+    assert.equal(diagramPaletteFor(theme), 'light', theme);
+  }
+});
+
+test('both console themes draw with mermaid’s own default palette', () => {
+  // The blocks are the same drawing in either theme; only the connectors differ.
+  assert.equal(MERMAID_THEME, 'default');
+});
+
+test('the light theme is left exactly as mermaid ships it', () => {
+  // Light was never the problem, and an empty table is also what clears the dark
+  // overrides when the console switches back (mermaid merges the config it is
+  // re-initialized with, so omitting the key would keep the dark values).
+  assert.deepEqual(MERMAID_THEME_VARIABLES.light, {});
+});
+
+test('dark overrides only the roles drawn on the page, never a block', () => {
+  // An exact list, because every entry is a claim that the role is painted on the
+  // page rather than on a light block.  A fill in here (mainBkg, nodeBorder,
+  // edgeLabelBackground, ...) is how the light theme got painted dark once.
+  assert.deepEqual(Object.keys(MERMAID_THEME_VARIABLES.dark).sort(), [
+    'arrowheadColor',
+    'defaultLinkColor',
+    'emArrowhead',
+    'emRelationStroke',
+    'lineColor',
+    'loopTextColor',
+    'relationColor',
+    'signalColor',
+    'signalTextColor',
+    'specialStateColor',
+    'strokeWidth',
+    'taskTextOutsideColor',
+    'transitionColor',
+  ]);
+});
+
+test('every page-drawn role is light, because the default palette’s are near-black', () => {
+  // The palette strokes its connectors and writes their labels in #333333 (and
+  // black), which is invisible on the console's dark surfaces.
+  for (const role of Object.keys(MERMAID_THEME_VARIABLES.dark)) {
+    if (role === 'strokeWidth') continue;
+    assert.equal(MERMAID_THEME_VARIABLES.dark[role], DIAGRAM_PAGE_INK_DARK, role);
+  }
+  assert.equal(DIAGRAM_PAGE_INK_DARK, 'lightgrey');
+});
+
+test('dark connectors are widened so they survive the downscale', () => {
+  // mermaid's own themes set `strokeWidth: 1`, and the flowchart CSS reads
+  // `stroke-width: ${strokeWidth ?? 2}px`.  The diagram is then scaled to fit the
+  // column, so one unit anti-aliases away.
+  assert.equal(MERMAID_THEME_VARIABLES.dark.strokeWidth, DIAGRAM_EDGE_STROKE_WIDTH);
+  assert.equal(DIAGRAM_EDGE_STROKE_WIDTH > 1, true);
+});
 
 test('an ordinary diagram is accepted', () => {
   assert.equal(rejectionReason('sequenceDiagram\n  A->>B: hi'), null);

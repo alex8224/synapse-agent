@@ -3,10 +3,16 @@ import DOMPurify from 'dompurify';
 import { CodeBlock } from './CodeBlock.tsx';
 import { GeneratedHtml } from './GeneratedHtml.tsx';
 import {
+  MERMAID_THEME,
+  MERMAID_THEME_VARIABLES,
   MAX_DIAGRAM_CHARS,
+  currentDataTheme,
   describeMermaidError,
+  diagramPaletteFor,
   rejectionReason,
 } from '../markdown/mermaid.ts';
+import type { DiagramPalette } from '../markdown/mermaid.ts';
+import { useAppearanceStore } from '../stores/appearance.ts';
 
 type Phase =
   | { status: 'idle' }
@@ -32,6 +38,10 @@ let diagramSeq = 0;
  * `htmlLabels: false` keeps labels out of `foreignObject`, and
  * `suppressErrorRendering` makes a bad diagram reject instead of injecting
  * mermaid's error graphic.
+ *
+ * The palette is *not* set here: mermaid bakes the theme into the SVG, so the
+ * one it should draw with depends on the document at render time (see
+ * {@link prepareMermaid}).
  */
 let mermaidPromise: Promise<MermaidApi> | null = null;
 
@@ -39,15 +49,9 @@ function loadMermaid(): Promise<MermaidApi> {
   mermaidPromise ??= import('mermaid')
     .then((module) => {
       const api = module.default;
-      api.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        htmlLabels: false,
-        theme: 'default',
-        fontFamily: 'inherit',
-        suppressErrorRendering: true,
-        maxTextSize: MAX_DIAGRAM_CHARS,
-      });
+      // A baseline only; the render path re-initializes with the palette the
+      // document is actually in before every draw.
+      api.initialize({ ...MERMAID_BASE_CONFIG, theme: MERMAID_THEME });
       return api;
     })
     .catch((error: unknown) => {
@@ -57,6 +61,41 @@ function loadMermaid(): Promise<MermaidApi> {
       throw error;
     });
   return mermaidPromise;
+}
+
+/** Render-independent mermaid settings; the palette is layered on per render. */
+const MERMAID_BASE_CONFIG = {
+  startOnLoad: false,
+  securityLevel: 'strict' as const,
+  htmlLabels: false,
+  fontFamily: 'inherit',
+  suppressErrorRendering: true,
+  maxTextSize: MAX_DIAGRAM_CHARS,
+};
+
+/**
+ * The mermaid runtime configured for one palette.
+ *
+ * mermaid's `render` takes no per-call config (v12), so the palette is applied
+ * by `initialize` immediately before rendering.  The call is cheap -- it merges
+ * one object -- and it is what lets a diagram follow a theme switch without a
+ * reload.
+ *
+ * An earlier revision resolved the palette from the console's own CSS tokens
+ * and cached it per palette.  That cache was wrong: the `light` entry was filled
+ * on the first diagram, whatever theme was active at the time, so a session
+ * first drawn in dark mode cached dark colours under `light` and then painted
+ * every light-theme diagram dark.  The palette is a constant now, and there is
+ * nothing to resolve or cache; only the connectors vary with the console theme.
+ */
+async function prepareMermaid(palette: DiagramPalette): Promise<MermaidApi> {
+  const api = await loadMermaid();
+  api.initialize({
+    ...MERMAID_BASE_CONFIG,
+    theme: MERMAID_THEME,
+    themeVariables: MERMAID_THEME_VARIABLES[palette],
+  });
+  return api;
 }
 
 /**
@@ -105,9 +144,24 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   // The last *completed* render, tagged with the source it came from.  The
   // displayed phase is then derived during render instead of being pushed into
   // state from the effect, so a new diagram never flashes the previous one.
-  const [rendered, setRendered] = useState<{ source: string; phase: Phase } | null>(null);
+  const [rendered, setRendered] = useState<{
+    source: string;
+    palette: DiagramPalette;
+    phase: Phase;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
+
+  // The palette is baked into the SVG, so the diagram has to be redrawn when the
+  // document theme changes.  Subscribe to the appearance store (whose switches
+  // rewrite `data-theme`) and resolve the palette from the DOM, matching what
+  // `diagramPaletteFor` reads.  `appearance` is in the selector so a switch
+  // re-renders even while it stays `system`.
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const palette = diagramPaletteFor(currentDataTheme());
+  // `appearance` is a deliberate dependency: it is the store signal that the
+  // resolved `data-theme` may have changed under a stable value of `palette`.
+  void appearance;
 
   const source = code.trim();
   const rejected = rejectionReason(source);
@@ -115,7 +169,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     ? { status: 'idle' }
     : rejected !== null
       ? { status: 'failed', reason: rejected }
-      : rendered !== null && rendered.source === source
+      : rendered !== null && rendered.source === source && rendered.palette === palette
         ? rendered.phase
         : { status: 'rendering' };
 
@@ -129,13 +183,17 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     void (async () => {
       try {
         if (host === null) throw new Error('渲染容器不可用');
-        const mermaid = await loadMermaid();
+        const mermaid = await prepareMermaid(palette);
         const { svg } = await mermaid.render(id, source, host);
         if (cancelled) return;
-        setRendered({ source, phase: { status: 'ready', svg: sanitizeSvg(svg) } });
+        setRendered({ source, palette, phase: { status: 'ready', svg: sanitizeSvg(svg) } });
       } catch (error: unknown) {
         if (!cancelled) {
-          setRendered({ source, phase: { status: 'failed', reason: describeMermaidError(error) } });
+          setRendered({
+            source,
+            palette,
+            phase: { status: 'failed', reason: describeMermaidError(error) },
+          });
         }
       } finally {
         // mermaid leaves its own copy (and any error graphic) in the render
@@ -146,7 +204,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     return () => {
       cancelled = true;
     };
-  }, [source, streaming]);
+  }, [source, streaming, palette]);
 
   const copy = (): void => {
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
