@@ -267,6 +267,36 @@ test('the window chrome and the flyouts carry their material', () => {
   }
 });
 
+test('the bottom terminal shares the pane material instead of painting its own fill', () => {
+  // The integrated terminal is the second reading surface of the workspace column,
+  // so it takes the *pane* fill: the pane's translucency (and the "正文阅读区衬底浓度"
+  // slider in the settings) then covers the terminal and the chat pane above it
+  // alike, and the two read as one sheet of glass.  What breaks that is a fill of
+  // the terminal's own -- the panel's old opaque body, or xterm's opaque theme
+  // background, which is what hid the material before.
+  const read = (name: string): string =>
+    readFileSync(join(webRoot, 'src', 'components', 'terminal', name), 'utf8');
+  const panel = read('BottomTerminalPanel.tsx');
+  assert.ok(panel.includes('material-pane'), 'the terminal panel must take the pane fill');
+  assert.ok(panel.includes('terminal-pane'), 'the terminal panel must carry the terminal-pane class');
+  assert.equal(panel.includes('bg-canvas'), false, 'an opaque body fill would hide the material');
+  assert.equal(panel.includes('backdrop-blur'), false, 'nothing scrolls behind the panel to blur');
+  const xterm = read('XtermView.tsx');
+  assert.ok(xterm.includes('allowTransparency: true'), 'xterm must be allowed to keep the alpha');
+  assert.ok(
+    xterm.includes("background: 'rgba(0, 0, 0, 0)'"),
+    'the terminal must paint no background of its own',
+  );
+  assert.ok(
+    styles.includes('.xterm-viewport'),
+    'index.css must explicitly override xterm viewport opacity',
+  );
+  assert.ok(
+    styles.includes('--tauri-terminal-opacity'),
+    'index.css must support fine-tuning terminal pane opacity',
+  );
+});
+
 test('the console draws one focus ring, from the accent role', () => {
   assert.ok(
     /:where\([^)]*\):focus-visible\s*\{[^}]*outline:[^}]*rgb\(var\(--focus-ring\)\)/.test(styles),

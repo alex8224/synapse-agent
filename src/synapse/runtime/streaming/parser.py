@@ -31,6 +31,7 @@ from synapse.runtime.streaming import (
     TurnTerminalPayload,
 )
 from synapse.runtime.streaming.adapters import sink_supports_tool_items
+from synapse.runtime.streaming.ptc_events import PtcToolTracker
 from synapse.runtime.streaming.runtime import (
     _iter_stream_events,
     checkpointer_supports_async,
@@ -136,6 +137,9 @@ def stream_agent(
     # keep the bulk ``tool_result`` path for their own rendering.
     use_tool_items = runtime_only or sink_supports_tool_items(sink)
     pending_tool_items: list[Any] = []
+    # PTC sandbox children arrive as ``custom`` events; the tracker owns their
+    # parent/child bookkeeping and the bounded orphan queue.
+    ptc_tracker = PtcToolTracker()
     tool_group_seq = 0
     # Nested subagent events are interleaved. Keep labels, pending items, and
     # parent task ownership scoped by LangGraph namespace.
@@ -403,6 +407,14 @@ def stream_agent(
                     sink.activity_update("model", "waiting for model")
                 continue
 
+            if mode == "custom":
+                # PTC tool lifecycle only. A custom payload is never a model
+                # message, so it can neither become history nor repaint the
+                # answer; unrecognized shapes are dropped by the tracker.
+                if use_tool_items:
+                    ptc_tracker.handle(chunk, pending_tool_items, sink)
+                continue
+
             in_sub = bool(ns)
 
             if mode == "messages":
@@ -611,6 +623,12 @@ def stream_agent(
                                     preview=preview,
                                     error=err,
                                 )
+                                # The parent's result is the sandbox's terminal
+                                # event: seal any child that never reported back
+                                # so it cannot keep a running spinner.
+                                ptc_tracker.finish_parent_children(
+                                    item, pending_tool_items, sink
+                                )
                                 # A finished subagent must not keep a stale
                                 # transient stage (reasoning/answering/…).
                                 if item.name == "task":
@@ -793,6 +811,11 @@ def stream_agent(
                                     parent_task_items[item.call_id] = item.id
                                     current_parent_task_ids.add(item.call_id)
                                 sink.tool_item_started(item)
+                                # A PTC child may have raced ahead of its parent
+                                # row; flush the bounded orphan queue now.
+                                ptc_tracker.handle_parent_started(
+                                    item, pending_tool_items, sink
+                                )
                         if any(n == "task" for n in names):
                             sink.activity_start(
                                 "subagent",

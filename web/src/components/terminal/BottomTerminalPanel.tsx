@@ -7,7 +7,7 @@
  * - Multi-tab terminal management (+ new, x close, switch)
  * - Split terminal view (side-by-side) for concurrent workflows
  * - Maximize/restore full height immersion
- * - Fluent Design 2 Mica/Acrylic surface and subtle shadows
+ * - Frosted glass acrylic pane material, fine-tuned via the settings vibrancy sliders
  * - Action toolbar: clear screen, send output to composer, close
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -140,11 +140,22 @@ export const BottomTerminalPanel: React.FC = () => {
 
   const panelHeight = isMaximized ? 'calc(100% - 42px)' : `${height}px`;
 
+  /*
+    The panel takes the *pane* material rather than a chrome fill of its own: it is
+    the second reading surface of the workspace column, so the same translucent fill
+    -- fine-tuned via the "终端衬底浓度" slider (or "正文阅读区衬底浓度") -- covers the
+    terminal, letting the frosted glass and OS acrylic shine through cleanly.
+
+    No blur here either: nothing scrolls behind the panel, so it would blur nothing
+    while still making the panel a backdrop root for the xterm inside it.  The
+    terminal also paints no fill of its own (`XtermView`): an opaque background
+    would be the one thing that hides the material.
+  */
   return (
     <div
       inert={!open}
       style={{ height: open ? panelHeight : '0px' }}
-      className={`material-chrome relative w-full shrink-0 flex flex-col overflow-hidden select-none border-t border-line shadow-panel backdrop-blur-md ${
+      className={`material-pane terminal-pane relative w-full shrink-0 flex flex-col overflow-hidden select-none border-t border-line shadow-panel ${
         open ? 'opacity-100' : 'opacity-0 pointer-events-none border-t-0'
       } ${isDragging ? '' : 'transition-[height] duration-250 ease-[cubic-bezier(0,0,0,1)]'}`}
     >
@@ -164,7 +175,7 @@ export const BottomTerminalPanel: React.FC = () => {
           if ((e.target as HTMLElement).closest('button')) return;
           toggleMaximize();
         }}
-        className="flex h-9 items-center justify-between border-b border-line/70 bg-surface/90 px-2.5 pt-0.5 select-none shrink-0 backdrop-blur-sm"
+        className="flex h-9 items-center justify-between border-b border-line/70 bg-surface/40 px-2.5 pt-0.5 select-none shrink-0"
       >
         {/* Left: Session Tabs */}
         <div className="flex items-center gap-1 overflow-x-auto fluent-scrollbar min-w-0 pr-2">
@@ -250,7 +261,7 @@ export const BottomTerminalPanel: React.FC = () => {
       </div>
 
       {/* Terminal View Body: Keep-Alive all sessions in DOM */}
-      <div className="flex-1 flex overflow-hidden bg-canvas relative">
+      <div className="flex-1 flex overflow-hidden relative">
         {sessions.length > 0 ? (
           sessions.map((session) => {
             const isActive = session.id === activeSession?.id;

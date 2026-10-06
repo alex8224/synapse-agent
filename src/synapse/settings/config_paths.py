@@ -42,6 +42,25 @@ THEMES_FILENAME = "themes.json"
 AGENTS_DIRNAME = "agents"
 
 
+def validate_ptc_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """Validate PTC overrides before the layered loader's ``model_copy``.
+
+    Reuse the Settings field annotations and constraints rather than maintaining
+    another set of limits. Import lazily because schema imports this module.
+    Invalid budgets must fail before a worker is launched, including overrides
+    supplied by a caller rather than read from a settings file.
+    """
+    from pydantic import TypeAdapter
+
+    from synapse.settings.schema import Settings
+
+    return {
+        name: TypeAdapter(field.rebuild_annotation()).validate_python(values[name])
+        for name, field in Settings.model_fields.items()
+        if name in values and (name == "tool_mode" or name.startswith("ptc_"))
+    }
+
+
 def user_config_dir() -> Path:
     return (Path.home() / SYNAPSE_DIRNAME).expanduser().resolve()
 

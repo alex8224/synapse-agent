@@ -804,6 +804,15 @@ html[data-tauri='true'][data-theme='fluent-light'] .material-pane {
   background-color: rgba(255, 255, 255, var(--tauri-pane-opacity, 0.58)) !important;
 }
 
+/* Terminal frosted glass pane: fine-tuned via terminalOpacity, falls back to paneOpacity */
+html[data-tauri='true'] .terminal-pane {
+  background-color: rgba(18, 22, 31, var(--tauri-terminal-opacity, var(--tauri-pane-opacity, 0.58))) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .terminal-pane {
+  background-color: rgba(255, 255, 255, var(--tauri-terminal-opacity, var(--tauri-pane-opacity, 0.58))) !important;
+}
+
 /* Chrome layer (sidebar rail & auxiliary dock) */
 html[data-tauri='true'] .material-chrome {
   background-color: rgba(20, 24, 34, 0.28) !important;
@@ -989,6 +998,12 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
   }
   .material-pane {
     background-color: var(--material-pane);
+  }
+  .terminal-pane {
+    background-color: rgb(var(--surface) / var(--tauri-terminal-opacity, var(--tauri-pane-opacity, 0.58)));
+  }
+  html[data-theme='fluent-light'] .terminal-pane {
+    background-color: rgb(251 253 255 / var(--tauri-terminal-opacity, var(--tauri-pane-opacity, 0.58)));
   }
   .material-chrome {
     background-color: var(--material-chrome);
@@ -1473,4 +1488,16 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
   .ui-icon-button, .ui-icon-button.ui-compact { width: 44px; }
   nav .opacity-0.group-hover\:opacity-100 { opacity: 1; }
   .ui-field { font-size: 16px; }
+}
+
+/*
+  Terminal transparency: overrides xterm's hardcoded opaque background (.xterm-viewport
+  has background-color: #000 in @xterm/xterm/css/xterm.css).  Removing it allows the
+  underlying .terminal-pane frosted glass / acrylic material to shine through cleanly.
+*/
+.xterm,
+.xterm .xterm-viewport,
+.xterm .xterm-screen,
+.xterm .xterm-scrollable-element {
+  background-color: transparent !important;
 }

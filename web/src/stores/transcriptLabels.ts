@@ -319,8 +319,23 @@ export interface SingleToolItem {
   tool: ToolItemView;
 }
 
+/**
+ * A non-subagent parent's own nested calls, as one collapsible card.
+ *
+ * A `run_code` sandbox reports the tool calls it made as nested items
+ * (`sub`/`parentId`), exactly like a subagent does, but it is *not* a subagent:
+ * it has no persona and no dispatched task prompt.  The two group kinds are
+ * therefore distinct, so a run_code call is never painted with the subagent's
+ * persona card or counted as one.
+ */
+export interface RunCodeToolGroup {
+  type: 'run_code';
+  parent: ToolItemView;
+  tools: ToolItemView[];
+}
+
 /** What one item of a tool batch renders as. */
-export type ToolRenderNode = SingleToolItem | SubagentToolGroup;
+export type ToolRenderNode = SingleToolItem | SubagentToolGroup | RunCodeToolGroup;
 
 /**
  * Fold a flat tool batch into render nodes.
@@ -335,8 +350,16 @@ export type ToolRenderNode = SingleToolItem | SubagentToolGroup;
  */
 export function groupToolsForView(tools: ToolItemView[]): ToolRenderNode[] {
   const nodes: ToolRenderNode[] = [];
-  const subagentGroupsByParentId = new Map<string, SubagentToolGroup>();
-  let activeSubagent: SubagentToolGroup | null = null;
+  const groupsByParentId = new Map<string, SubagentToolGroup | RunCodeToolGroup>();
+  let activeGroup: SubagentToolGroup | RunCodeToolGroup | null = null;
+
+  const bindGroup = (
+    tool: ToolItemView,
+    group: SubagentToolGroup | RunCodeToolGroup,
+  ): void => {
+    if (tool.id) groupsByParentId.set(tool.id, group);
+    if (tool.callId) groupsByParentId.set(tool.callId, group);
+  };
 
   for (const t of tools) {
     if (t.name === 'task' || (t.subagentName && !t.sub)) {
@@ -356,19 +379,30 @@ export function groupToolsForView(tools: ToolItemView[]): ToolRenderNode[] {
         tools: [],
       };
       nodes.push(groupNode);
-      if (t.id) subagentGroupsByParentId.set(t.id, groupNode);
-      if (t.callId) subagentGroupsByParentId.set(t.callId, groupNode);
-      activeSubagent = groupNode;
+      bindGroup(t, groupNode);
+      activeGroup = groupNode;
+      continue;
+    }
+
+    if (t.name === 'run_code' && !t.sub) {
+      // The sandbox's own calls nest under the call that ran them, but the group
+      // stays a plain tool group: `run_code` is not a subagent.
+      const groupNode: RunCodeToolGroup = { type: 'run_code', parent: t, tools: [] };
+      nodes.push(groupNode);
+      bindGroup(t, groupNode);
+      activeGroup = groupNode;
       continue;
     }
 
     if (t.sub || t.parentId) {
-      let targetGroup: SubagentToolGroup | undefined;
+      let targetGroup: SubagentToolGroup | RunCodeToolGroup | undefined;
       if (t.parentId) {
-        targetGroup = subagentGroupsByParentId.get(t.parentId);
+        targetGroup = groupsByParentId.get(t.parentId);
       }
-      if (!targetGroup) {
-        targetGroup = activeSubagent ?? undefined;
+      // An explicit parent that is not in this batch must not be re-homed onto an
+      // unrelated open group (a run_code child would otherwise join a task).
+      if (!targetGroup && !t.parentId) {
+        targetGroup = activeGroup ?? undefined;
       }
       if (targetGroup) {
         targetGroup.tools.push(t);
@@ -377,7 +411,7 @@ export function groupToolsForView(tools: ToolItemView[]): ToolRenderNode[] {
     }
 
     nodes.push({ type: 'single', tool: t });
-    activeSubagent = null;
+    activeGroup = null;
   }
 
   return nodes;

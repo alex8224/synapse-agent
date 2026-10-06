@@ -357,6 +357,7 @@ Three ways to talk to it:
 - **Direct Codex OAuth** — sign in with the Codex-compatible browser flow or import an existing Codex grant. No API key required; tokens refresh automatically.
 - **Your model, your choice** — OpenAI-compatible providers via `models.json` profiles (OpenAI, DeepSeek, local gateways, and more), including a persistent WebSocket mode.
 - **MCP built in** — attach MCP servers and their tools appear in the agent automatically.
+- **Programmatic tool calling (PTC)** — in `both`/`code` mode the model can orchestrate many tool calls from one `run_code(code, intent)` block inside a one-shot local subprocess (ideal for batching MCP calls). Off by default (`native`); not a security sandbox.
 - **Sessions that resume** — SQLite checkpoints, a global project catalog across all your projects, and a lightweight paged transcript so even huge sessions reopen fast.
 - **Memory and skills** — `AGENTS.md` memory plus Agent Skills (`skills/**`) that load only when relevant.
 - **Sub-agents** — built-in `researcher`, `tester`, and `reviewer` roles for parallel delegation, plus user-defined subagents from `.synapse/agents/*.md`. Each runs in its own context against the shared workspace, and the global tool policy (minimal filesystem / read-only) is always enforced.
@@ -468,6 +469,7 @@ For a zero-config Codex experience, use the OAuth profile — see [Models](docs/
 | [Configuration](docs/config.md) | Layered settings, environment variables, paths |
 | [Models](docs/models.md) | Provider profiles, OAuth, Fast tier, WebSocket mode |
 | [MCP](docs/mcp.md) | Attaching and managing MCP servers |
+| [PTC](docs/ptc.md) | Programmatic tool calling: `run_code`, modes, limits, safety |
 | [Sessions](docs/sessions.md) | Checkpoints, resume, transcript paging |
 | [Skills](docs/skills.md) | Bundled skills and the Agent Skills format |
 | [Permissions](docs/permissions.md) | Read-only mode and approval flows |

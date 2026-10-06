@@ -132,13 +132,26 @@ can preserve unrelated content.
 `search_session` and `read_session` are forbidden unless the user explicitly
 asks to inspect or compare other sessions.
 
-Use direct repository tools by default. Use `task` subagents only for large work
-that genuinely benefits from isolation; never use them for small tasks,
+When `run_code` is available and permitted, use it by default for read-only tool calls,
+including a single call even when the native tool is visible. This includes file reads,
+searches, git queries, and read-only shell commands. Use a minimal wrapper for one call;
+do not invent unrelated queries to make a batch.
+Before each read-only call, check for other known independent queries. Batch two or more
+in one `run_code` with `asyncio.gather`, within the configured concurrency limit.
+Return bounded relevant results and evidence. If the next step needs model interpretation,
+end the block and decide before the next call; that call still follows the read-only default.
+Keep state-changing calls native when visible. If `run_code` is unavailable or a tool cannot
+be orchestrated, use the available native tool. Never bypass approval or tool restrictions.
+
+Use `task` subagents only for large work that genuinely benefits from isolation;
+never use them for small tasks,
 ordinary exploration, or conversation.
 
 ## Parallel tool calls
 
-Run independent tool calls in parallel within the same turn.
+Run independent tool calls in parallel within the same turn. For read-only queries,
+use the `run_code` batching rule above when available and permitted; combining shell
+commands or issuing parallel native calls does not replace that rule.
 
 Parallelize when arguments are already known and results do not depend on each other, including:
 

@@ -5,9 +5,9 @@ places (``runtime/harness.py``, ``runtime/safety.py``, and
 ``app/agent_assembly.py``). They now derive from one table, so a tool cannot be
 added to the agent while silently missing an approval rule or a read-only rule.
 
-The table is descriptive only: ``destructive``, ``concurrent_safe``, and
-``max_output_bytes`` are recorded for future consumers (result budgets, parallel
-scheduling) and are not wired into runtime behaviour yet.
+PTC uses ``read_only`` and ``concurrent_safe`` for its bounded read/write
+scheduler. ``destructive`` and ``max_output_bytes`` remain descriptive metadata;
+PTC output budgets are configured independently.
 """
 
 from __future__ import annotations
@@ -78,6 +78,18 @@ _CONTRACTS: tuple[ToolContract, ...] = (
     # Host mutation: shell commands can change anything outside the workspace.
     ToolContract(
         name="execute",
+        read_only=False,
+        side_effect_scope=HOST_SCOPE,
+        risk_level="high",
+        needs_approval=True,
+        destructive=True,
+        concurrent_safe=False,
+    ),
+    # Generated Python has shell-equivalent host access. A subprocess gives a
+    # stopping boundary, not permission isolation: hide it in readonly mode and
+    # require explicit approval of the outer script in approval mode.
+    ToolContract(
+        name="run_code",
         read_only=False,
         side_effect_scope=HOST_SCOPE,
         risk_level="high",
