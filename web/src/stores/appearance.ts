@@ -41,12 +41,15 @@ export interface VibrancyConfig {
   paneOpacity: number;
   /** Backdrop blur radius in pixels (8 - 40, default 24) */
   blurRadius: number;
+  /** Terminal pane opacity (0.10 - 0.95, default 0.58) */
+  terminalOpacity?: number;
 }
 
 export const DEFAULT_VIBRANCY: VibrancyConfig = {
   shellOpacity: 0.70,
   paneOpacity: 0.58,
   blurRadius: 24,
+  terminalOpacity: 0.58,
 };
 
 /** Where vibrancy / frosted glass preferences are persisted. */
@@ -144,6 +147,8 @@ export function applyVibrancy(config: VibrancyConfig): void {
   const root = document.documentElement;
   root.style.setProperty('--tauri-shell-opacity', config.shellOpacity.toFixed(2));
   root.style.setProperty('--tauri-pane-opacity', config.paneOpacity.toFixed(2));
+  const termOpacity = config.terminalOpacity ?? config.paneOpacity;
+  root.style.setProperty('--tauri-terminal-opacity', termOpacity.toFixed(2));
   root.style.setProperty('--tauri-blur-radius', `${Math.round(config.blurRadius)}px`);
 }
 
@@ -229,7 +234,11 @@ export function readStoredVibrancy(): VibrancyConfig {
       typeof p.blurRadius === 'number' && p.blurRadius >= 4 && p.blurRadius <= 60
         ? p.blurRadius
         : DEFAULT_VIBRANCY.blurRadius;
-    return { shellOpacity, paneOpacity, blurRadius };
+    const terminalOpacity =
+      typeof p.terminalOpacity === 'number' && p.terminalOpacity >= 0.1 && p.terminalOpacity <= 1
+        ? p.terminalOpacity
+        : (typeof p.paneOpacity === 'number' ? p.paneOpacity : DEFAULT_VIBRANCY.terminalOpacity ?? 0.58);
+    return { shellOpacity, paneOpacity, blurRadius, terminalOpacity };
   } catch {
     return { ...DEFAULT_VIBRANCY };
   }
