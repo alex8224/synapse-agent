@@ -6,6 +6,29 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.56
+
+### New Features
+
+- **Programmatic Tool Calling**: Add `run_code(code, intent)`, an opt-in tool mode (`tool_mode = native | both | code`) that lets the model orchestrate many tool calls inside one model turn from a one-shot local Python subprocess. The script reaches real tools, including MCP tools, through an injected `tools` object, and the host returns one bounded envelope per call. Read-only work defaults to it, a single call included. `docs/ptc.md` documents the mode and states plainly that the subprocess is a crash-isolation and deterministic-I/O boundary, not an OS permission sandbox, so `readonly` disables it.
+- **Console Quick Switcher**: Add a Fluent 2 quick switcher for session switching with a live activity dashboard, project scoping tabs and prefetched project sessions, and cap the default recent-session list.
+- **Mermaid Lightbox**: Open a transcript diagram in a full-screen viewer, with a palette that stays legible in the dark theme.
+- **Console Shell Polish**: Slide the sidebar drawer on the same animation as the right dock and default it to collapsed, and render the integrated terminal on the frosted pane material.
+
+### Bug Fixes
+
+- **Session Reasoning Scope**: Keep the reasoning level session-scoped. A session switch now resolves a session's model and reasoning axes from the pristine project baseline instead of mutating the live settings object, so the previous session's level no longer survives into the next one, and a session without a level of its own falls back to the project's default rather than inheriting one.
+- **PTC Guardrails**: Refuse a script that names an unavailable tool before it runs, preserve embedded script literals, and steer the model toward `run_code` in the tool description and the prompt.
+- **Dark-Theme Diagrams**: Fix Mermaid diagram legibility in the dark theme.
+
+### Engineering
+
+- Add the `synapse.runtime.ptc` package (worker, process, bridge, scheduler, SDK, protocol, middleware) with the streaming `ptc_events` projection, and cover it with a dedicated test suite for the bridge, middleware, worker, process, SDK, scheduler, tool results, thread lifecycle, preflight checks and agent integration.
+- Validate `tool_mode` and the `ptc_*` budget overrides through the Settings field annotations before a worker is launched, including caller-supplied overrides.
+- Add `synapse.sessions.session_binding` as the single resolution step for a session's model and reasoning axes, shared by the TUI and the daemon.
+- Document PTC and refresh the config, models and sessions docs, adding `docs/ptc.md` to the mkdocs navigation.
+- Ignore test-written CLI state (`.s8-cli-state/`) and executable checksum files (`*.exe.sha256`).
+
 ## v0.1.55
 
 ### New Features
