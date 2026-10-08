@@ -96,28 +96,30 @@ def test_sdk_prompt_teaches_when_to_use_run_code(compact: bool) -> None:
     builder = sdk.build_compact_sdk_prompt if compact else sdk.build_sdk_prompt
     prompt = builder(specs)
     assert "When to use `run_code`:" in prompt
-    # Read-only work defaults to PTC, even for one visible native tool.
-    assert "use `run_code` by default for read-only work" in prompt
-    assert "analyzing code, running read-only commands, finding files" in prompt
-    assert "single read-only call: use a minimal `run_code` wrapper" in prompt
-    assert "even when the native tool is visible" in prompt
-    assert "Do not invent extra calls" in prompt
-    # Known independent queries must be batched, within the runtime's limit.
-    assert "Before each read-only call" in prompt
-    assert "you must batch them in one `run_code`" in prompt
-    assert "concurrently with `asyncio.gather`" in prompt
-    assert "within the configured concurrency limit" in prompt
-    assert "mechanical pagination/filtering/aggregation" in prompt
-    assert "reducing tool output" in prompt
-    assert "including evidence needed for model judgment" in prompt
-    assert "This limits the batch, not the use of `run_code`" in prompt
+    assert "Use a visible native tool directly for a single simple call" in prompt
+    assert "single `execute` merely to run a script" in prompt
+    assert "Prefer PTC when it saves model round-trips" in prompt
+    assert "chain result-driven calls" in prompt
+    assert "Continue mechanical dependencies in the same block" in prompt
+    assert "bounded detail reads" in prompt
+    assert "Batch independent calls with `asyncio.gather`" in prompt
+    assert "await dependent stages in order" in prompt
+    assert "Host contracts decide actual parallelism" in prompt
+    assert "unknown-contract tools are exclusive" in prompt
+    assert "semantic judgment" in prompt
+    assert "unknown result shapes" in prompt
+    assert "do not stop just after discovery" in prompt
+    assert "Use published `data` schemas" in prompt
+    assert "stop on non-advancing cursors" in prompt
+    assert "completeness/unknown status" in prompt
+    assert "never retry denied calls" in prompt
+    assert "no cross-call variables" in prompt
     assert "Keep edits and other state-changing calls native when visible" in prompt
     assert "Never bypass approval or tool restrictions" in prompt
-    assert "If `run_code` is unavailable" in prompt
-    assert "Do not wrap a single" not in prompt
     assert "hidden in code mode" in prompt
     assert "minimal `run_code` call" in prompt
     assert "Follow explicit user requests" in prompt
+    assert "use `run_code` by default for read-only work" not in prompt
 
 
 def test_compact_prompt_preserves_selection_guidance_when_names_are_trimmed() -> None:

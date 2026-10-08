@@ -124,6 +124,116 @@ def test_await_gather_and_logs(tmp_path: Path) -> None:
     assert "start" in "\n".join(result["logs"])
 
 
+def _doc_example(heading: str) -> str:
+    """Run the published orchestration recipe, not a separate test-only copy."""
+    document = (Path(__file__).resolve().parents[1] / "docs" / "ptc.md").read_text(
+        encoding="utf-8"
+    )
+    section = document.split(f"### {heading}", 1)[1]
+    return section.split("```python\n", 1)[1].split("\n```", 1)[0]
+
+
+@pytest.mark.parametrize("scenario", ["end", "budget", "stalled", "unknown"])
+def test_doc_bounded_pagination(tmp_path: Path, scenario: str) -> None:
+    offsets: list[int] = []
+
+    async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        assert name == "find_files"
+        assert arguments["path"] == "/src"
+        assert arguments["max_results"] == 50
+        offset = arguments["offset"]
+        offsets.append(offset)
+        next_offset = offset if scenario == "stalled" else offset + 50
+        if scenario in {"end", "unknown"} and len(offsets) == 2:
+            next_offset = None
+        return {
+            "content": "raw output must not be dumped",
+            "data": {
+                "matches": [
+                    {"path": "/src/shared.py", "is_dir": False},
+                    {"path": f"/src/f{offset}.py", "is_dir": False},
+                ],
+                "offset": offset,
+                "next_offset": next_offset,
+            },
+            "truncated": None if scenario == "unknown" else next_offset is not None,
+        }
+
+    result = run(
+        _doc_example("有界分页与分组"),
+        dispatch=dispatch,
+        tool_names=("find_files",),
+        cwd=tmp_path,
+    )
+    assert result.get("error") is None
+    value = result["value"]
+    expected_calls = {"end": 2, "budget": 3, "stalled": 1, "unknown": 2}[scenario]
+    assert offsets == [50 * index for index in range(expected_calls)]
+    assert value["pages"] == expected_calls
+    assert value["files_seen"] == expected_calls + 1
+    assert value["by_top_dir"] == [["src", expected_calls + 1]]
+    assert value["complete"] is {"end": True, "budget": False, "stalled": False}.get(
+        scenario
+    )
+    assert value["reason"] == {
+        "end": "end",
+        "budget": "page_budget",
+        "stalled": "invalid_cursor",
+        "unknown": "completeness_unknown_or_truncated",
+    }[scenario]
+
+
+@pytest.mark.parametrize("unknown_data", [False, True])
+def test_doc_result_driven_detail_reads(tmp_path: Path, unknown_data: bool) -> None:
+    discovered = False
+    reads: list[dict[str, Any]] = []
+
+    async def dispatch(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        nonlocal discovered
+        if name == "search_files":
+            discovered = True
+            matches = [
+                {"path": f"/src/f{index}.py", "line": 20, "text": "def main():"}
+                for index in range(10)
+            ]
+            matches.append({"path": "/src/f0.py", "line": 90, "text": "def main():"})
+            return {
+                "content": "not a machine-readable result",
+                "data": None if unknown_data else {"matches": matches, "next_offset": 30},
+                "truncated": True,
+            }
+        assert name == "read_file"
+        assert discovered
+        reads.append(arguments)
+        if arguments["file_path"] == "/src/f1.py":
+            raise ValueError("detail unavailable")
+        return {"content": "evidence" * 200, "data": None, "truncated": None}
+
+    result = run(
+        _doc_example("搜索后按命中结果读取证据"),
+        dispatch=dispatch,
+        tool_names=("search_files", "read_file"),
+        cwd=tmp_path,
+    )
+    assert result.get("error") is None
+    value = result["value"]
+    if unknown_data:
+        assert reads == []
+        assert value == {"complete": None, "reason": "unknown_data_shape"}
+        return
+    assert len(reads) == 8
+    assert {item["file_path"] for item in reads} == {f"/src/f{i}.py" for i in range(8)}
+    assert all(item["offset"] == 14 and item["limit"] == 40 for item in reads)
+    assert value["discovery_complete"] is False
+    assert value["selection_limited"] is True
+    assert value["next_offset"] == 30
+    assert value["files_in_page"] == 10
+    assert len(value["evidence"]) == 8
+    assert "error" in value["evidence"][1]
+    assert all(len(item["excerpt"]) == 1200 for item in value["evidence"] if "excerpt" in item)
+    assert all(item["truncated"] is None for item in value["evidence"] if "excerpt" in item)
+
+
 def test_tools_call_with_mapping(tmp_path: Path) -> None:
     async def dispatch(name: str, arguments: dict[str, Any]) -> Any:
         return arguments["value"]

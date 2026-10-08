@@ -23,23 +23,27 @@ def test_build_system_prompt_injects_powershell_rules(tmp_path: Path):
     assert "PowerShell here-string" in prompt
 
 
-def test_default_prompt_uses_run_code_for_read_only_calls(tmp_path: Path, monkeypatch) -> None:
+def test_default_prompt_selects_ptc_for_orchestration(tmp_path: Path, monkeypatch) -> None:
     from synapse.content import prompts as prompts_mod
 
     monkeypatch.setattr(prompts_mod, "user_config_dir", lambda: tmp_path / "missing-user")
     prompt = build_system_prompt(tmp_path)
 
     assert "When `run_code` is available and permitted" in prompt
-    assert "use it by default for read-only tool calls" in prompt
-    assert "including a single call even when the native tool is visible" in prompt
-    assert "Before each read-only call" in prompt
-    assert "in one `run_code` with `asyncio.gather`" in prompt
-    assert "within the configured concurrency limit" in prompt
-    assert "that call still follows the read-only default" in prompt
-    assert "If `run_code` is unavailable or a tool cannot" in prompt
+    assert "Use a visible native tool directly for a single simple call" in prompt
+    assert "do not wrap one `execute`" in prompt
+    assert "dependency chains, bounded pagination/filtering/aggregation" in prompt
+    assert "Continue mechanical dependencies in one block" in prompt
+    assert "do not require another model turn" in prompt
+    assert "Batch independent calls with `asyncio.gather`" in prompt
+    assert "await dependent stages in order" in prompt
+    assert "unknown-contract tools remain exclusive" in prompt
+    assert "stop on non-advancing cursors" in prompt
+    assert "never retry denied calls or writes" in prompt
+    assert "hidden in code mode" in prompt
+    assert "Follow explicit user requests" in prompt
     assert "Never bypass approval or tool restrictions" in prompt
-    assert "parallel native calls does not replace that rule" in prompt
-    assert "Use direct repository tools by default" not in prompt
+    assert "including a single call even when the native tool is visible" not in prompt
 
 
 def test_default_prompt_describes_search_glob_as_include_filter(
