@@ -4,10 +4,12 @@ import {
   CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
   DataUsage20Regular,
   BranchFork16Regular,
+  BranchFork20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ConsoleActions } from './ConsoleActions.tsx';
+import { RunningSessionHolders } from './RunningSessionHolders.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   SESSION_TITLE_MAX,
@@ -86,6 +88,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
     sessionSearch,
     loadMoreSessionSearch,
     renameSession,
+    forkSessionFrom,
     deleteSession,
     sessionActionError,
     sessionNotice,
@@ -118,6 +121,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
       sessionSearch: state.sessionSearch,
       loadMoreSessionSearch: state.loadMoreSessionSearch,
       renameSession: state.renameSession,
+      forkSessionFrom: state.forkSessionFrom,
       deleteSession: state.deleteSession,
       sessionActionError: state.sessionActionError,
       sessionNotice: state.sessionNotice,
@@ -151,6 +155,9 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   // is what names the session it deletes.
   const [deleting, setDeleting] = useState<{ threadId: string; title: string } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  // The row whose fork is on the wire: its button turns into the console's shared
+  // in-flight spinner and stops accepting a second click.
+  const [forkingThreadId, setForkingThreadId] = useState<string | null>(null);
 
   // Ctrl+K bumps a token instead of reaching into the DOM from the App shell,
   // so a collapsed sidebar is expanded by the same store update.
@@ -185,6 +192,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   const commitRename = async (threadId: string, draft: string) => {
     const accepted = await renameSession(threadId, draft);
     if (accepted) setRenaming(null);
+  };
+
+  // Forking is additive, so it needs no confirmation -- but it does move the
+  // console (the child is attached, and a row of another project takes the
+  // console to that project), so it must not run twice for one row.
+  const forkRow = async (projectId: string, threadId: string) => {
+    if (forkingThreadId !== null) return;
+    setForkingThreadId(threadId);
+    try {
+      await forkSessionFrom({ project_id: projectId, thread_id: threadId });
+    } finally {
+      setForkingThreadId(null);
+    }
   };
 
   const confirmDelete = async (target: { threadId: string; title: string }) => {
@@ -257,6 +277,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
         >
           <Search20Regular aria-hidden="true" />
         </button>
+        <RunningSessionHolders onNavigate={onNavigate} />
         <div className="mt-auto flex flex-col items-center gap-1">
           <ConsoleActions orientation="column" />
           {/* The rail carries the same app-level entry points as the expanded
@@ -567,6 +588,25 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                               </button>
                               {/* Write actions stay in the layout but only surface on
                                   hover/focus: they are not status readouts. */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void forkRow(project.project_id, sess.thread_id);
+                                }}
+                                disabled={forkingThreadId === sess.thread_id}
+                                title="从该会话分叉出新会话（继承已完成的对话）"
+                                aria-label={`分叉会话：${sess.title}`}
+                                className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                              >
+                                {forkingThreadId === sess.thread_id ? (
+                                  <SpinnerIos20Regular
+                                    aria-hidden="true"
+                                    className="animate-spin text-blue-500"
+                                  />
+                                ) : (
+                                  <BranchFork20Regular aria-hidden="true" />
+                                )}
+                              </button>
                               <button
                                 type="button"
                                 onClick={() =>

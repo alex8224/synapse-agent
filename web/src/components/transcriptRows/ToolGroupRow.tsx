@@ -14,6 +14,9 @@ import type { ToolItemView } from '../../stores/historyMapper.ts';
 import {
   groupToolsForView,
   isTerminalTool,
+  runCodeFailureReason,
+  runCodeInput,
+  runCodeOutput,
   toolCommand,
   toolDetailParams,
   toolDisplayIntent,
@@ -417,16 +420,20 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     const expanded = subagentExpansions[key] === true;
     const running = node.parent.status === 'running'
       || node.tools.some((s) => s.status === 'running' || s.status === 'pending');
-    const parentFailed = node.parent.error || node.parent.status === 'failed';
+    const resultFailure = runCodeFailureReason(node.parent.preview);
+    const parentFailed = node.parent.error || node.parent.status === 'failed' || resultFailure !== '';
     const failedSteps = node.tools.filter((s) => s.error || s.status === 'failed').length;
     const intent = toolDisplayIntent(node.parent);
+    const code = expanded ? runCodeInput(node.parent) : '';
+    const output = expanded ? runCodeOutput(node.parent.preview) : '';
+    const failureReason = resultFailure || toolFailureReason(node.parent.status, node.parent.error);
     return (
       <div key={key} className="rounded-control border border-line bg-raised">
         <button
           type="button"
           onClick={() => actions.onToggleSubagent(message.id, key)}
           aria-expanded={expanded}
-          title={expanded ? '收起调用步骤' : '展开调用步骤'}
+          title={expanded ? '收起代码、输出与调用步骤' : '展开代码、输出与调用步骤'}
           className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-pressed"
         >
           <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-control border border-line bg-sunken text-gray-600">
@@ -466,14 +473,41 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
           inert={!expanded}
         >
           <div className="fluent-accordion-content">
-            <div className="border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
-              {node.tools.map((t) => (
-                <div key={t.id} className="relative">{renderToolRow(t, true)}</div>
-              ))}
-              {node.tools.length === 0 && running && (
-                <div className="font-mono text-[10px] text-gray-400">等待调用…</div>
-              )}
-            </div>
+            {/* Highlight only an opened call; its parent input/output exist even without child calls. */}
+            {expanded && (
+              <div className="min-w-0 border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
+                <div className="font-mono text-[10px] text-gray-400">
+                  运行时预览，长输入或输出可能已截断。
+                </div>
+                <section aria-label="run_code 输入代码">
+                  <div className="font-mono text-[10px] text-gray-500">输入代码 · Python</div>
+                  {code !== '' ? (
+                    <CodeBlock lang="python" code={code} />
+                  ) : (
+                    <div className="text-xs text-gray-400">输入代码未保留在此预览中。</div>
+                  )}
+                </section>
+                {node.tools.length > 0 && (
+                  <div className="font-mono text-[10px] text-gray-500">嵌套工具调用</div>
+                )}
+                {node.tools.map((t) => (
+                  <div key={t.id} className="relative">{renderToolRow(t, true)}</div>
+                ))}
+                <section aria-label="run_code 执行输出">
+                  <div className="font-mono text-[10px] text-gray-500">执行输出 · logs / value / error</div>
+                  {failureReason !== '' && (
+                    <div className="whitespace-pre-wrap break-all text-xs text-red-600">{failureReason}</div>
+                  )}
+                  {output !== '' ? (
+                    <CodeBlock lang="json" code={output} />
+                  ) : (
+                    <div className="text-xs text-gray-400">
+                      {running ? '执行中，等待输出…' : '此预览中没有执行输出。'}
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
           </div>
         </div>
       </div>

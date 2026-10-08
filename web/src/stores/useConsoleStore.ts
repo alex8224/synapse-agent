@@ -692,6 +692,16 @@ interface ConsoleStore {
    * runtime (tool calls are kept as a summary).
    */
   forkSession: (turnId?: string) => Promise<void>;
+  /**
+   * Fork one listed session (the sidebar's per-row action) and attach to the child.
+   *
+   * The source is opened first when the console is not attached to it, because
+   * the runtime only forks a session it already holds a loaded agent for.  The
+   * child lives in the source's project, so the console is pointed at that
+   * project before attaching.  Returns whether the runtime accepted the fork; a
+   * refusal is reported on the session alert and changes nothing.
+   */
+  forkSessionFrom: (source: SessionRef) => Promise<boolean>;
   fetchSessions: () => Promise<void>;
   // Session list pagination (explicit paging; no unbounded auto paging).
   sessionsNextOffset: number | null;
@@ -2307,6 +2317,82 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
 }
 
 /**
+ * Whether the runtime already holds a loaded agent for `source`.
+ *
+ * The console can only answer this from its own state: the session it is
+ * attached to, or a background view whose watch is still registered, is a
+ * session the runtime has open.  A stale view (`subscriptionId === null`) proves
+ * nothing about the server, so it counts as closed.
+ */
+function sessionIsOpen(source: SessionRef): boolean {
+  const state = useConsoleStore.getState();
+  const current = state.currentSession;
+  if (current.project_id === source.project_id && current.thread_id === source.thread_id) {
+    return true;
+  }
+  const view = state.backgroundViews[sessionKey(source)];
+  return view !== undefined && view.subscriptionId !== null;
+}
+
+/**
+ * Fork `source` into a fresh session and attach the console to the child.
+ *
+ * The child inherits the parent's completed conversation as text (the runtime
+ * projects it and drops tool outputs, keeping the calls as a summary) and is
+ * recorded with the parent's thread id as provenance, which the sidebar labels.
+ *
+ * `source` must be *open* in the runtime: a fork reads the parent's durable
+ * messages through its loaded agent, and an unopened source is refused rather
+ * than copying nothing.  The sidebar lists sessions nobody has opened, so a
+ * source the console is not attached to is opened first -- that is what makes
+ * "fork this row" work at all, at the price of loading that session's agent.
+ *
+ * The child always belongs to the source's project, so the console is pointed at
+ * that project before attaching: header, tree and transcript must agree about
+ * which project is being worked in.  Returns whether the fork was accepted; a
+ * refusal is reported on the session alert and leaves the console where it was.
+ */
+async function forkInto(source: SessionRef, turnId: string | undefined): Promise<boolean> {
+  const store = useConsoleStore;
+  const client = requireRuntimeClient();
+  if (!client || source.project_id === '' || source.thread_id === '') return false;
+  // Forking leaves the session on screen the same way a new session does: stop
+  // any in-flight upload bound to the session being left.
+  store.getState().cancelAttachments();
+  const refuse = (err: unknown, fallback: string): null => {
+    console.error('Failed to fork session:', err);
+    store.setState({ sessionActionError: describeSessionActionError(err, fallback) });
+    return null;
+  };
+  if (!sessionIsOpen(source)) {
+    const opened = await client
+      .openSession(source)
+      .catch((err: unknown) => refuse(err, '分叉会话失败：无法打开源会话'));
+    if (opened === null) return false;
+  }
+  const forked = await client
+    .forkSession({
+      source,
+      ...(turnId ? { through_turn: turnId } : {}),
+    })
+    .catch((err: unknown) => refuse(err, '分叉会话失败'));
+  if (forked === null) return false;
+  const child: SessionRef = forked.session;
+  if (child.project_id !== store.getState().activeProjectId) {
+    // A newer switch superseded this one: never attach a child to the wrong project.
+    if (!(await activateProject(child.project_id))) return false;
+  }
+  // Read the list the child now belongs to *before* attaching: it carries the
+  // server-derived title and the lineage the row is marked with, so the header
+  // never shows a placeholder for a session the server has already named.
+  await store.getState().fetchSessions();
+  const title = sessionTitleFrom(store.getState().sessions, child.thread_id);
+  store.setState({ sessionActionError: null });
+  await attachToSession(child, title ?? undefined);
+  return true;
+}
+
+/**
  * The turn ids worth probing for durable coverage: every turn with a buffered
  * event plus the current active turn, capped at the server's probe limit.
  */
@@ -3076,45 +3162,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     }
   },
   forkSession: async (turnId) => {
-    const client = requireRuntimeClient();
-    if (!client) return;
     const { currentSession } = get();
-    if (currentSession.project_id === '' || currentSession.thread_id === '') return;
-    // Forking leaves the current session the same way a new session does: stop
-    // any in-flight upload bound to the session being left.
-    get().cancelAttachments();
-    const forked = await client
-      .forkSession({
-        source: currentSession,
-        ...(turnId ? { through_turn: turnId } : {}),
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to fork session:', err);
-        set({ sessionActionError: describeSessionActionError(err, '分叉会话失败') });
-        return null;
-      });
-    if (forked === null) return;
-    const nextSession: SessionRef = forked.session;
-    const newTitle = displaySessionTitle(null, nextSession.thread_id);
-    // Show the child in the sidebar immediately; `attachToSession` re-reads the
-    // authoritative list afterwards.
-    set((s) => ({
-      sessions: [
-        {
-          thread_id: nextSession.thread_id,
-          title: newTitle,
-          updated_at: new Date().toISOString(),
-          time_label: '刚刚',
-          forked_from_thread_id: forked.forked_from,
-        },
-        ...s.sessions.filter((item) => item.thread_id !== nextSession.thread_id),
-      ],
-      sessionsTotal: s.sessionsTotal + 1,
-      sessionActionError: null,
-    }));
-    await attachToSession(nextSession, newTitle);
-    await get().fetchSessions();
+    await forkInto(currentSession, turnId);
   },
+  forkSessionFrom: async (source) => forkInto(source, undefined),
   fetchSessions: async () => {
     const client = requireRuntimeClient();
     if (!client) return;

@@ -190,3 +190,49 @@ export function matchesProject(entry: ProjectLabelSource, query: string): boolea
     projectLabel(entry).toLowerCase().includes(needle)
   );
 }
+
+/**
+ * Extract 1-2 characters (Chinese characters or English word) as a compact Identicon
+ * for running session holders in the collapsed sidebar rail.
+ */
+
+/**
+ * Extract 1-2 characters (Chinese characters or English word) as a compact Identicon
+ * for running session holders in the collapsed sidebar rail.
+ */
+
+/**
+ * Extract 1-2 characters (Chinese characters or English word) as a compact Identicon
+ * for running session holders in the collapsed sidebar rail.
+ */
+export function getIdenticon(title: string, projectName: string): string {
+  if (!title || title.trim() === '') {
+    return (projectName ? projectName.slice(0, 2) : '#').toUpperCase();
+  }
+  let clean = title.trim();
+  clean = clean.replace(/^[\[【(（][^\]】)）]+[\]】)）]/, '').trim();
+  clean = clean.replace(/^(修复|重构|优化|实现|新增|排查|测试)[:：\s]+/, '').trim();
+  if (!clean) clean = title.trim();
+
+  // If starts with English letters / digits, grab the leading word / identifier
+  const leadingWordMatch = clean.match(/^[a-zA-Z0-9*+-]+/);
+  if (leadingWordMatch) {
+    const w = leadingWordMatch[0];
+    return w.length <= 4 ? w.toUpperCase() : w.slice(0, 2).toUpperCase();
+  }
+
+  // If starts with CJK, grab first 1-2 Chinese characters
+  const leadingCjkMatch = clean.match(/^[\u4e00-\u9fa5]+/);
+  if (leadingCjkMatch) {
+    return leadingCjkMatch[0].slice(0, 2);
+  }
+
+  // Fallback: any CJK characters in title
+  const anyCjk = clean.match(/[\u4e00-\u9fa5]/g);
+  if (anyCjk && anyCjk.length > 0) {
+    return anyCjk.slice(0, 2).join('');
+  }
+
+  // Fallback: first 2 characters
+  return clean.slice(0, 2).toUpperCase();
+}

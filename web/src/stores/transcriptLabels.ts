@@ -27,7 +27,11 @@ export function toolStatusLabel(status: string): string {
  * Read a string field out of a Python `repr` dictionary by string scanning.
  * Handles escape sequences and both single and double quotes.
  */
-export function reprField(preview: string | null | undefined, keys: readonly string[]): string {
+export function reprField(
+  preview: string | null | undefined,
+  keys: readonly string[],
+  trim = true,
+): string {
   if (!preview) return '';
   for (const key of keys) {
     let at = preview.indexOf(`'${key}': `);
@@ -47,7 +51,23 @@ export function reprField(preview: string | null | undefined, keys: readonly str
       if (char === '\\') {
         const escaped = preview[index + 1];
         if (escaped === undefined) break;
-        value += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped === 'r' ? '\r' : escaped;
+        const width = escaped === 'x' ? 2 : escaped === 'u' ? 4 : escaped === 'U' ? 8 : 0;
+        if (width > 0) {
+          const hex = preview.slice(index + 2, index + 2 + width);
+          const point = Number.parseInt(hex, 16);
+          if (hex.length === width && /^[\da-f]+$/i.test(hex) && point <= 0x10ffff) {
+            value += String.fromCodePoint(point);
+            index += width + 2;
+            continue;
+          }
+          // A preview may stop in the middle of an escape; don't invent its missing bytes.
+          value += '\\' + escaped;
+        } else {
+          const escapes: Record<string, string> = {
+            n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f', v: '\v',
+          };
+          value += escapes[escaped] ?? escaped;
+        }
         index += 2;
         continue;
       }
@@ -55,7 +75,7 @@ export function reprField(preview: string | null | undefined, keys: readonly str
       value += char;
       index += 1;
     }
-    if (value.trim() !== '') return value.trim();
+    if (value.trim() !== '') return trim ? value.trim() : value;
   }
   return '';
 }
@@ -452,4 +472,38 @@ export function toolCommand(tool: Pick<ToolItemView, 'args' | 'argsPreview'>): s
     return '';
   }
   return reprField(tool.argsPreview, COMMAND_KEYS);
+}
+
+/** The Python body, preserving indentation and trailing whitespace unlike a command label. */
+export function runCodeInput(tool: Pick<ToolItemView, 'args' | 'argsPreview'>): string {
+  if (typeof tool.args?.code === 'string') return tool.args.code;
+  return reprField(tool.argsPreview, ['code'], false);
+}
+
+/** Pretty-print a complete result envelope; never repair or hide a truncated preview. */
+export function runCodeOutput(preview: string | null | undefined): string {
+  if (!preview) return '';
+  try {
+    return JSON.stringify(JSON.parse(preview), null, 2);
+  } catch {
+    // The runtime bounds previews, so an incomplete JSON result must remain observable verbatim.
+    return preview;
+  }
+}
+
+/** Some legacy runtime summaries mark JSON failures as successful: trust a complete envelope. */
+export function runCodeFailureReason(preview: string | null | undefined): string {
+  if (!preview) return '';
+  try {
+    const result: unknown = JSON.parse(preview);
+    if (!result || typeof result !== 'object' || !('error' in result)) return '';
+    const error = result.error;
+    if (!error || typeof error !== 'object') return '';
+    const kind = 'kind' in error && typeof error.kind === 'string' ? error.kind : '';
+    const message = 'message' in error && typeof error.message === 'string' ? error.message : '';
+    return [kind, message].filter(Boolean).join(': ') || 'run_code 执行失败';
+  } catch {
+    // A truncated envelope is not evidence of either success or failure.
+    return '';
+  }
 }

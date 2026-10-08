@@ -6,6 +6,27 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.57
+
+### New Features
+
+- **Sidebar Session Holders**: Add compact bookmark-style session holder icons in the collapsed 44px sidebar rail for active, pending approval, and the 5 most recently ended sessions, allowing instant one-click switching.
+- **Stable Holder Positioning**: Keep each session holder's original slot stable when selected or across status transitions without jumping to the top, showing an in-place Fluent navigation indicator pill and active ring.
+- **Theme-Adaptive Palettes**: Derive all holder background and text color tokens strictly from semantic Fluent CSS variables, ensuring automatic high-contrast theme switching across light and dark modes.
+- **Session Forking**: Add a dedicated fork button on sidebar session rows to branch out new independent sessions from completed conversations.
+
+### Bug Fixes
+
+- **Recent Session Retention**: Retain up to 5 recently finished sessions with FIFO eviction and `localStorage` persistence, transitioning status badges cleanly to emerald checkmarks.
+- **Cross-Project Session Recovery**: Fix stream view restoration and background status synchronization when switching across sessions and projects via sidebar holders.
+- **Transcript Tool Group Details**: Refine the presentation, scrolling, and collapsible interactions of programmatic tool call details in transcript rows.
+
+### Engineering
+
+- Add unit tests for `syncSessionOrder`, `recordEndedSession`, and `runningSessionHolders`.
+- Ensure strict adherence to Fluent 2 desktop interaction guidelines and TypeScript compiler checks.
+- Package the updated web console assets for production distribution.
+
 ## v0.1.56
 
 ### New Features

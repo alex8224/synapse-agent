@@ -6,6 +6,12 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
 
 ## 集成终端与聊天响应
 
+展开聊天中的 `run_code` 调用卡片，可以按顺序查看 **输入代码（Python 语法高亮）**、
+**嵌套工具调用**和 **执行输出（JSON 语法高亮，包含 `logs` / `value` / `error`）**。
+输入在调用运行时即可查看；输出在执行结束后显示，完整 JSON 会格式化，截断或非 JSON 输出保留原文。
+代码块支持复制与滚动；折叠时不挂载输入输出代码块。展示使用运行时提供的有界预览，
+长输入或输出可能已截断，历史记录中未保留的内容不会被补造。
+
 桌面端通过底栏终端入口或 `Ctrl` + 反引号打开集成终端，支持通过 `Ctrl` + `Shift` + 反引号或双击面板标题栏切换最大化／还原。
 聊天输出时仍可输入命令、接收终端输出；终端内的 `Ctrl+C` 发给 shell，不会取消 Agent 回合。
 
@@ -266,9 +272,12 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 调用同样以嵌套项（`sub` / `parentId`）送回，所以它们也折进发起它们的那次调用之下——但分组类型是
 `run_code`，不是 `subagent`：卡头是一条普通工具行（`run_code` 名 + 模型给的意图 + `N 步骤` + 状态徽标），
 没有子代理的人格图标、`@名` 标签、目标与下发提词，也不计入子代理统计；卡体沿用同一条竖直导轨列出沙箱
-自己的每一步。`task` 的子代理卡片与统计保持原样。分组时先按 `parentId` 的 item id / call id 归位，若该父
+的输入 Python 代码、自己的每一步，以及最终 JSON 输出；没有嵌套调用时也能查看父调用的输入输出。
+结果 envelope 中的 `error` 会显示为失败状态和错误原因。`task` 的子代理卡片与统计保持原样。
+分组时先按 `parentId` 的 item id / call id 归位，若该父
 行不在本批里（例如投影丢了链接）则退回平铺行，**绝不**把 `run_code` 的步骤挂到旁边仍打开的任务分组里。
-规则由 `tests/transcriptLabels.test.ts` 守护。
+规则由 `tests/transcriptLabels.test.ts` 与 `tests/runCodeDetails.test.ts` 守护；真实浏览器验收运行
+`node --test tests/runCodeDetails.verify.ts`，覆盖高亮、折叠、实时更新、失败与截断输出。
 
 ## Git 分支与历史（右侧栏「分支」页）
 
@@ -718,6 +727,7 @@ color"）。manifest 改不动，所以首帧由它兜底，运行时的切换�
 |---|---|---|
 | 项目列表 | `runtime.project.list` | 可见项目枚举（服务端计算可见集合、先过滤再分页，`limit` 1..100）；`GET /api/projects` 仍是 deprecated 兼容路由，不是业务入口 |
 | 新建 | `runtime.session.create` | 只写入会话元数据，`thread_id` 由服务端 `allocate_thread_id` 分配并返回，前端不再自行生成 id；随后仍走原有 `runtime.session.open` + watch 路径 |
+| 分叉 | `runtime.session.fork` | 会话行悬停/聚焦时出现的分叉按钮从**该行**的会话分出一个新会话，并把控制台切到子会话（转录区每条助手回答旁的「从此处分叉新会话」是同一动作的**轮次级**入口：只继承该轮之前的内容）。服务端只 fork **已打开**的会话（它通过已加载的 agent 读父会话的持久消息），而侧栏里没人打开过的行在 runtime 里没有 agent，所以前端先对该行 `runtime.session.open` 再 fork——这是「点一行就能分叉」的代价：会加载那个会话的 agent（idempotent，已打开的会话直接复用）。子会话始终属于**源行所在的项目**：跨项目分叉会先把控制台切到那个项目再 attach，表头、项目树与转录区不会各自指向不同项目。子会话继承父会话已完成对话的**文本**（tool 输出被丢弃、tool 调用保留为摘要），标题由服务端派生为 `Fork of <父标题>`，行上带 `forked_from_thread_id` 标记（tooltip 是父 `thread_id`）；被拒时只在会话提示条上报原因，不 attach、不改列表 |
 | 重命名 | `runtime.session.rename` | 标题 1–120 字符，空白或超长在本地与服务端都会被拒绝 |
 | 删除 | `runtime.session.delete` | 删除会话记录**及其全部对话历史**：元数据与 goal 之外，checkpoint（含子代理命名空间）、transcript projection、全文检索索引与该会话的回滚快照都被清除。此前只删记录、历史留在磁盘上，结果是已删会话仍能被关键字搜到——「删了又冒出来」的来源就是检索索引（`search_session` 的全文分支不查元数据表）。确认框因此写明「不可恢复」，并按服务端的 `retained_history` / `purge_failures` 如实提示：有存储拒绝时点出名字（可用 `synapse sessions purge` 补清），不宣称已清干净。确认是一个居中模态框（`SessionDeleteDialog`：Portal + 遮罩 + 焦点陷阱，Esc 或点遮罩关闭），在正文里写出目标会话的标题与 `thread_id`，只有「删除」一个决策按钮——默认焦点落在标题栏的关闭控件上，所以刚打开时按 Enter 只会关掉它；运行中的会话由服务端原子拒绝（`conflict`），前端不会自动 cancel，被拒时模态框保持打开并就地显示原因 |
 | 搜索 | `runtime.session.search` | 服务端元数据搜索（title/summary/thread_id/model），不是对话全文搜索；分页与服务端一致，输入竞态由 generation 计数丢弃过期结果 |
