@@ -6,6 +6,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { Portal } from './Portal.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel, sessionTitleFrom, getIdenticon } from '../stores/sessionList.ts';
+import { lastUserMessageText, lastAssistantReplyText } from '../stores/sessionPreview.ts';
+import type { TranscriptMessage } from '../stores/historyMapper.ts';
 import { sessionKey } from '../stores/sessionViews.ts';
 import {
   type HolderStatus,
@@ -47,6 +49,19 @@ const FluentSessionTooltip: React.FC<{
     return () => clearInterval(interval);
   }, [item.startedAt, item.status]);
 
+  // 只在悬浮窗挂载（悬停）期间订阅该会话的转录，避免侧栏在流式输出时每帧重算。
+  const lastReply = useConsoleStore((state) => {
+    const isCurrent =
+      state.currentSession.project_id === item.projectId &&
+      state.currentSession.thread_id === item.threadId;
+    const sessionMessages: readonly TranscriptMessage[] | null | undefined = isCurrent
+      ? state.messages
+      : state.backgroundViews[
+          sessionKey({ project_id: item.projectId, thread_id: item.threadId })
+        ]?.messages;
+    return lastAssistantReplyText(sessionMessages);
+  });
+
   if (!targetRect) return null;
 
   // 定位：紧随书签右侧 8px 处，垂直方向与书签对齐
@@ -73,7 +88,7 @@ const FluentSessionTooltip: React.FC<{
               </>
             ) : isCompleted ? (
               <>
-                <span className="h-2 w-2 rounded-full bg-emerald-500 flex items-center justify-center text-[7px] text-white">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 flex items-center justify-center text-[7px] text-surface font-bold">
                   ✓
                 </span>
                 <span className="text-emerald-600">已结束</span>
@@ -120,6 +135,16 @@ const FluentSessionTooltip: React.FC<{
             {item.currentActivity}
           </div>
         )}
+
+        {/* 最后一个轮次的模型回复（如有） */}
+        {lastReply !== '' && (
+          <div className="mt-2 pt-2 border-t border-line">
+            <div className="text-[10px] font-semibold text-gray-500 mb-0.5">最新回复</div>
+            <div className="text-[11px] text-gray-700 leading-relaxed line-clamp-3 whitespace-pre-wrap break-words">
+              {lastReply}
+            </div>
+          </div>
+        )}
       </div>
     </Portal>
   );
@@ -136,6 +161,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
     projectSessions,
     projects,
     sessionTitle,
+    currentLastUserText,
     switchProject,
   } = useConsoleStore(
     useShallow((state) => ({
@@ -148,6 +174,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
       projectSessions: state.projectSessions,
       projects: state.projects,
       sessionTitle: state.sessionTitle,
+      currentLastUserText: lastUserMessageText(state.messages),
       switchProject: state.switchProject,
     })),
   );
@@ -207,6 +234,19 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
       return threadId.length > 8 ? threadId.slice(0, 8) : threadId;
     };
 
+    // 只取「最后一次用户提交的文本」这一个字符串：转录数组本身不是依赖，
+    // 否则每次流式增量都会重建 memo 并重扫整段转录。
+    const resolveLastUserText = (projectId: string, threadId: string): string => {
+      if (
+        projectId === currentSession.project_id &&
+        threadId === currentSession.thread_id
+      ) {
+        return currentLastUserText;
+      }
+      const view = backgroundViews[sessionKey({ project_id: projectId, thread_id: threadId })];
+      return lastUserMessageText(view?.messages);
+    };
+
     // 1. Current active session
     if (
       currentSession.thread_id !== '' &&
@@ -216,6 +256,8 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
       currentActiveKeys.add(key);
       const title = resolveTitle(currentSession.project_id, currentSession.thread_id);
       const projectName = resolveProjectName(currentSession.project_id);
+      const lastUser = resolveLastUserText(currentSession.project_id, currentSession.thread_id);
+      const iconSource = lastUser || title;
       candidateMap.set(key, {
         key,
         projectId: currentSession.project_id,
@@ -224,7 +266,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
         isCurrent: true,
         title,
         projectName,
-        identicon: getIdenticon(title, projectName),
+        identicon: getIdenticon(iconSource, projectName),
         currentActivity: activity?.detail || (runtimeStatus === 'running' ? '正在执行任务...' : '等待审批确认'),
         startedAt: activity?.startedAt,
       });
@@ -244,6 +286,8 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
       currentActiveKeys.add(key);
       const title = resolveTitle(projectId, threadId);
       const projectName = resolveProjectName(projectId);
+      const lastUser = lastUserMessageText(view.messages);
+      const iconSource = lastUser || title;
       candidateMap.set(key, {
         key,
         projectId,
@@ -252,7 +296,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
         isCurrent: false,
         title,
         projectName,
-        identicon: getIdenticon(title, projectName),
+        identicon: getIdenticon(iconSource, projectName),
         currentActivity: view.activity?.detail || (view.runtimeStatus === 'running' ? '后台执行中...' : '等待审批确认'),
         startedAt: view.activity?.startedAt,
       });
@@ -286,6 +330,8 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
         const isCurrent =
           rec.projectId === currentSession.project_id &&
           rec.threadId === currentSession.thread_id;
+        const lastUser = resolveLastUserText(rec.projectId, rec.threadId);
+        const iconSource = lastUser || title;
         candidateMap.set(rec.key, {
           key: rec.key,
           projectId: rec.projectId,
@@ -294,7 +340,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
           isCurrent,
           title,
           projectName,
-          identicon: getIdenticon(title, projectName),
+          identicon: getIdenticon(iconSource, projectName),
           currentActivity: '已结束',
         });
       }
@@ -324,6 +370,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
     projectSessions,
     projects,
     sessionTitle,
+    currentLastUserText,
     recentEnded,
   ]);
 
@@ -413,7 +460,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
                 {isApproval ? (
                   <span className="h-2 w-2 rounded-full bg-amber-500" />
                 ) : isCompleted ? (
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 flex items-center justify-center text-[7px] text-white">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 flex items-center justify-center text-[7px] text-surface font-bold">
                     ✓
                   </span>
                 ) : (
