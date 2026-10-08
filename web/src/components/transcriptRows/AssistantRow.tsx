@@ -17,8 +17,8 @@ import { useCopyFlag } from './useCopyFlag.ts';
 export const AssistantRow = React.memo(function AssistantRow({ message, actions }: RowRenderProps) {
   const [copied, copy] = useCopyFlag();
   return (
-    <div className="flex max-w-[80%] flex-col items-start gap-1.5">
-      <div className="text-base leading-relaxed font-sans text-gray-900">
+    <div className="flex max-w-[80%] flex-col items-start gap-1.5 w-full min-w-0">
+      <div className="text-base leading-relaxed font-sans text-gray-900 w-full min-w-0">
         <Markdown text={message.content ?? ''} />
       </div>
       <div className="flex items-center gap-1.5 pt-0.5">

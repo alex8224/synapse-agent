@@ -165,12 +165,16 @@ try {
   await check('switching back re-fits the diagram to the card',
     `${renderedWidth('wide')} <= ${stage('wide')}.clientWidth + 1`);
 
-  // --- the tall diagram is bounded by the stage, not by the row ---------------
-  await check('a tall diagram is capped at the stage height',
+  // --- the tall diagram: default is full-height; can be limited to cap ---------------
+  await check('by default a tall diagram displays full height without vertical scrollbar',
+    `${stage('tall')}.scrollHeight <= ${stage('tall')}.clientHeight + 2`);
+  await run(`${card('tall')}.querySelector('[data-diagram-full-height]').click()`);
+  await settle();
+  await check('a tall diagram is capped at the stage height when limited',
     `${stage('tall')}.clientHeight <= ${STAGE_CAP} + 1`);
   await check('the cap is what bounds it: fitted, the drawing is taller than the cap',
     `${naturalHeight('tall')} * (${stage('tall')}.clientWidth / ${naturalWidth('tall')}) > ${STAGE_CAP} + 20`);
-  await check('and it scrolls inside the card',
+  await check('and it scrolls inside the card when limited',
     `${stage('tall')}.scrollHeight > ${stage('tall')}.clientHeight + 1`);
   await check('the card reports the size it drew',
     `!!${card('tall')}.querySelector('[data-diagram-size]')`);

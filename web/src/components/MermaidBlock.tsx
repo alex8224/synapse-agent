@@ -142,6 +142,7 @@ interface DiagramView {
   source: string;
   zoomed: boolean;
   actual: boolean;
+  fullHeight: boolean;
   /** The stage's height when the viewer opened, so the row cannot collapse. */
   placeholder: number | null;
 }
@@ -203,9 +204,10 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   const mine = view !== null && view.source === source ? view : null;
   const zoomed = mine?.zoomed ?? false;
   const actualSize = mine?.actual ?? false;
+  const fullHeight = mine?.fullHeight ?? true;
   const placeholder = mine?.placeholder ?? null;
   const setViewFlags = (next: Partial<Omit<DiagramView, 'source'>>): void => {
-    setView({ source, zoomed, actual: actualSize, placeholder, ...next });
+    setView({ source, zoomed, actual: actualSize, fullHeight, placeholder, ...next });
   };
 
   /**
@@ -315,7 +317,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   return (
     <>
       {host}
-      <div className="my-2 overflow-hidden rounded-control border border-line bg-surface">
+      <div className="my-2 w-full max-w-full min-w-0 overflow-hidden rounded-control border border-line bg-surface">
         <div className="flex items-center justify-between gap-2 border-b border-line bg-sunken px-2.5 py-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
@@ -338,6 +340,15 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
                   className={control}
                 >
                   {actualSize ? '适应宽度' : '原始大小'}
+                </button>
+                <button
+                  type="button"
+                  data-diagram-full-height
+                  onClick={() => setViewFlags({ fullHeight: !fullHeight })}
+                  title={fullHeight ? '限制图形最大高度以节省阅读空间' : '展开为图形完整高度'}
+                  className={control}
+                >
+                  {fullHeight ? '限制高度' : '展开高度'}
                 </button>
                 <button
                   type="button"
@@ -364,7 +375,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
           ref={stageRef}
           data-diagram-stage
           style={zoomed && placeholder !== null ? { height: placeholder } : undefined}
-          className="fluent-scrollbar max-h-[28rem] overflow-auto px-3 py-3"
+          className={`fluent-scrollbar ${fullHeight ? 'max-h-none' : 'max-h-[28rem]'} w-full max-w-full min-w-0 overflow-auto px-3 py-3`}
         >
           {/* Exactly one copy exists: while the viewer is open it is the one in
               the overlay, so no mermaid id is ever duplicated in the document. */}
