@@ -71,24 +71,27 @@ _JSON_TYPE_TO_PY: dict[str, str] = {
 
 _SELECTION_BLOCK = """\
 When to use `run_code`:
-* When available and permitted, use `run_code` by default for read-only work:
-  analyzing code, running read-only commands, finding files, reading files,
-  and mechanical pagination/filtering/aggregation or reducing tool output.
-  This includes a single read-only call: use a minimal `run_code` wrapper,
-  even when the native tool is visible. Do not invent extra calls to make a batch.
-* Before each read-only call, check for other known independent queries. If two
-  or more are ready, you must batch them in one `run_code` and run them
-  concurrently with `asyncio.gather`, within the configured concurrency limit.
-  Batch known or mechanically determined steps to save model round-trips;
-  return bounded relevant results, including evidence needed for model judgment.
-* When the next step needs interpretation or planning, end the current block
-  and return to the model. This limits the batch, not the use of `run_code`
-  for the next read-only call.
+* Use a visible native tool directly for a single simple call. Do not wrap a
+  single `execute` merely to run a script, or invent calls to make a batch.
+* Prefer PTC when it saves model round-trips or substantially reduces output:
+  batch related queries, chain result-driven calls, or paginate/filter/aggregate.
+  Continue mechanical dependencies in the same block: search -> paths/IDs/URLs
+  -> bounded detail reads -> deduplicate/group/rank -> return evidence.
+* Batch independent calls with `asyncio.gather` within the configured concurrency
+  limit; await dependent stages in order. Host contracts decide actual parallelism:
+  `execute` and unknown-contract tools are exclusive, even inside `gather`.
+* Paths, cursors, IDs and explicit filters are mechanical, not new planning.
+  Return to the model for semantic judgment (e.g. root cause or a repair choice),
+  unknown result shapes, or exhausted budgets; do not stop just after discovery.
+* Use published `data` schemas; do not guess or parse unstable text to invent one.
+  Bound calls/pages/items/output, stop on non-advancing cursors, preserve partial
+  results and completeness/unknown status. Return concise evidence, not raw dumps.
+  Retry only known transient read failures, boundedly; never retry denied calls
+  or writes automatically. A fresh subprocess has no cross-call variables.
 * Keep edits and other state-changing calls native when visible. If a needed
   tool is hidden in code mode, use a minimal `run_code` call only when permitted.
-  Never bypass approval or tool restrictions. If `run_code` is unavailable or
-  a tool cannot be orchestrated, use the available native tool instead.
-  Follow explicit user requests to use `run_code`.
+  Never bypass approval or tool restrictions. If PTC is unavailable or a tool
+  cannot be orchestrated, use native tools. Follow explicit user requests.
 """
 
 _ENVELOPE_BLOCK = """\

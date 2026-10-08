@@ -195,20 +195,24 @@ def test_both_mode_registers_run_code() -> None:
     assert [tool_.name for tool_ in middleware.tools] == ["run_code"]
 
 
-def test_run_code_description_states_read_only_default() -> None:
-    """The tool description and SDK must advertise the same read-only default."""
+def test_run_code_description_states_orchestration_policy() -> None:
+    """The tool description and SDK must distinguish useful PTC from wrappers."""
     middleware = _middleware(mode="both")
     description = middleware.tools[0].description
 
-    assert "use it by default for read-only work" in description
-    assert "analyzing code, running read-only commands, finding files" in description
-    assert "including a single read-only call" in description
-    assert "Batch known independent queries" in description
-    assert "run them concurrently within the configured limit" in description
-    assert "Return to the model when the next step needs interpretation" in description
-    assert "Keep state-changing calls native when visible" in description
+    assert "Use a visible native tool directly for a single simple call" in description
+    assert "result-driven dependency chains" in description
+    assert "Continue mechanical steps in one block" in description
+    assert "semantic judgment or unknown result shapes" in description
+    assert "await dependent stages in order" in description
+    assert "Host contracts decide actual parallelism" in description
+    assert "unknown-contract tools remain exclusive" in description
+    assert "Use published data schemas" in description
+    assert "report partial results and completeness" in description
+    assert "state-changing calls native when visible" in description
     assert "never bypass approval or tool restrictions" in description
     assert "not a security sandbox" in description
+    assert "including a single read-only call" not in description
 
 
 def test_native_mode_registers_nothing() -> None:
@@ -281,9 +285,9 @@ def test_sdk_prompt_is_injected_into_system_message() -> None:
     text = _message_text(out.system_message)
     assert "Programmatic tool calling" in text
     assert "async def read_file(*, path: str) -> ToolEnvelope:" in text
-    assert "use `run_code` by default for read-only work" in text
-    assert "single read-only call: use a minimal `run_code` wrapper" in text
-    assert "you must batch them in one `run_code`" in text
+    assert "Use a visible native tool directly for a single simple call" in text
+    assert "Continue mechanical dependencies in the same block" in text
+    assert "Batch independent calls with `asyncio.gather`" in text
 
 
 def test_sdk_prompt_is_added_as_a_new_block() -> None:

@@ -16,17 +16,21 @@ PTC（Programmatic Tool Calling，程序化工具调用）让模型在一次模�
 
 ## 适用场景
 
-PTC 的核心价值是**把一段可机械编排的工作压进一次模型回合**。可用且获准时，**只读调用默认使用它，单次调用也不例外**：
+PTC 的核心价值是**把一段可机械编排的工作压进一次模型回合**，而不是给每次工具调用加一层包装。
+**原生工具可见时，单次简单调用直接使用原生工具**；只有确实能减少模型往返或显著压缩输出时才优先用 PTC：
 
-- **只读分析（默认）**：分析代码、执行只读命令、查找文件、读取文件，在代码里翻页、过滤、
-  计数、汇总，返回有界的相关结果与判断所需证据——把 N 次模型往返收敛成 1 次。
-- **批量 MCP 调用**：一次 `run_code` 里并发查询多个 MCP 工具（例如同时对多个词条调用
-  `docs__search`），把结果聚合后再返回，省掉多轮往返。
-- **机械的聚合与分页**：在代码里翻页、去重、取 top-N，避免把整页原始输出都塞进模型上下文。
+- **结果驱动的依赖链**：搜索 → 从规范结果提取路径、ID 或 URL → 分批获取详情 → 去重、
+  分组、排序 → 返回证据。后一步参数来自前一步，不必每一步都交回模型。
+- **相关查询的批量编排**：在一次 `run_code` 里提交相关查询，聚合后返回；实际并行能力由
+  工具契约决定，不是写了 `gather` 就一定并行。
+- **有界分页与归约**：跟随返回的游标，在页数、条目数、调用数和输出预算内完成处理；
+  返回汇总与必要证据，而不是把所有原始结果再次打印给模型。
 
 它**不是**用来替代 Agent 自己的规划循环：Agent 仍然决定「做什么」，PTC 只负责把其中
 **一段可机械编排的工作**用代码跑完。需要审批、需要写会话状态、需要返回图状态的工具不适合
 放进 PTC（见下文「工具编排规则」）。
+提取路径、跟随游标、应用用户给定的筛选条件属于机械步骤；判断根因、选择修复方案属于语义判断，
+应交回模型。遇到未知结果结构或预算耗尽时也应停止，报告已获得的部分结果。
 
 ### 如何选择工具
 
@@ -34,20 +38,24 @@ PTC 的核心价值是**把一段可机械编排的工作压进一次模型回�
 
 | 场景 | 建议 |
 |---|---|
-| **只读任务**：分析代码、执行只读命令、查找/读取文件、分页/过滤/聚合 | 可用且获准时，**默认用 `run_code`**；返回有界的相关结果，保留模型判断所需证据。 |
-| **单次只读调用**，包括原生工具可见时 | 仍使用最小 `run_code` 包装，不为凑批量增加无关查询。 |
-| 两个及以上已知、独立的查询 | 每次只读调用前检查是否能合并；必须在同一次 `run_code` 中用 `asyncio.gather` 并发，遵守配置的并发上限（默认 8）。 |
-| 已知的一批调用、机械分页/过滤/聚合 | 在同一次 `run_code` 中编排；依赖前一步结果的机械步骤按顺序执行。 |
-| 下一步需要模型解释或规划 | 结束当前代码块，交回模型再决定；下一次只读调用仍默认走 `run_code`。 |
+| 单次简单调用，原生工具可见 | 直接调用原生工具；不要仅为执行脚本而包装一次 `execute`，不为凑批量增加无关查询。 |
+| 相关的独立查询 | 能减少模型往返时优先用 PTC；用 `asyncio.gather` 批量提交，遵守并发上限（默认 8）和工具契约。 |
+| 下一步参数可从结果机械确定 | 在同一块内继续依赖链；阶段之间顺序 `await`，各阶段内部可批量提交独立查询。 |
+| 分页、过滤、关联、聚合或显著的输出归约 | 优先 PTC；使用已发布的 `data` schema，限制工作量和输出，标注完整性。 |
+| 下一步需要语义判断、结果结构未知或预算耗尽 | 结束代码块，返回必要证据、失败信息及部分结果，再由模型决定。 |
 | 写/编辑类调用，以及任何会改变状态的操作 | 原生工具可见时保持原生调用；`code` 模式下工具被隐藏时，仅在获准情况下用最小 `run_code` 调用。不得绕过审批或工具限制。 |
 | `run_code` 不可用，或目标工具不可编排 | 使用可用的原生工具；不更改模式或绕过限制。 |
 
 用户明确要求使用 `run_code` 时遵循该要求。以上规则通过提示引导工具选择，不是运行时强制拦截；权限检查仍独立生效。
+`code` 模式下原生工具被折叠时，单次调用仍可能需要最小包装，这是工具可见性例外，而不是要求制造批次。
 
-内置基础系统提示使用同样的条件式默认规则；PTC 中间件还会在每次模型请求的系统消息中
+内置基础系统提示使用同样的选择规则；PTC 中间件还会在每次模型请求的系统消息中
 追加完整或精简 SDK，因此已存在的外部 `system_prompt.md` 也能收到新的 PTC 指引。
-外部提示文件不会被自动覆盖；若其中有“默认直接调用”或“单次不包装”等旧规则，应手动删除冲突条款。
-仅把命令用 `;` 串联或并行调用原生工具，不能替代可用且获准时的只读 `run_code` 默认规则。
+外部提示文件不会被自动覆盖；若其中仍要求“所有只读调用默认包装，单次也不例外”，应手动删除冲突条款。
+
+不要猜测结果 schema，或从不稳定文本中拼出未经确认的结构。分页遇到不前进的游标时停止；
+仅对已知的瞬态只读失败做有界重试，不自动重试拒绝、权限错误或写操作。
+每次运行都是新子进程，不存在跨 `run_code` 调用的 Python 变量。
 
 ## 启用
 
@@ -210,49 +218,104 @@ Python 脚本和 PowerShell here-string 内容会保持原样。语法错误行�
   始终发生在顶层，避免嵌套调用触发 LangGraph checkpoint 重放。
 - **调度**：只读并发安全的工具最多 `ptc_max_parallel` 个并行；写工具和**未知契约的工具**
   （例如没有只读契约的 MCP 工具）默认**串行**（独占），以免并发写互相踩踏。
+  通用 `execute` 的契约不是只读且不保证并发安全，因此即便放进 `gather`，也仍然独占执行。
+  批量提交可以减少模型往返，但不能据此宣称 shell 执行加速。
 
 ## 示例
 
-下面每段都可以直接作为 `run_code` 的 `code` 传入。
+下面每段都可以直接作为 `run_code` 的 `code` 传入；工具必须在当前 SDK 中可用。
+单次简单文件读取直接用原生 `read_file`，无需使用这里的包装。
 
-**聚合匹配到的文件（返回截断状态，不假称全部）：**
+### 有界分页与分组
 
-```python
-res = await tools.find_files(pattern="**/*.py", path="/", max_results=20)
-data = res["data"] or {}
-paths = [m["path"] for m in data.get("matches", [])]
-print(f"page returned {len(paths)} paths")
-if data.get("next_offset") is not None:
-    print(f"more pages available; next_offset={data['next_offset']}")
-return {"paths": paths, "truncated": res["truncated"]}
-```
-
-> 这里用 `path="/"` + `max_results=20` 只在工作区里取一页，**不会遍历整台机器**；`truncated`
-> 与 `next_offset` 会如实告诉模型这一页不是全部。
-
-**读取文件（`read_file` 没有规范 `data`，读 `content`）：**
+跟随 `find_files` 的规范游标，最多取 3 页，每页 50 条；去重后只返回顶层目录计数。
+预算耗尽或游标异常时返回部分汇总，完整性未知时不假称全部。
 
 ```python
-doc = await tools.read_file(file_path="/README.md")
-# read_file 不发布规范载荷：data 为 None，直接读 content。
-text = doc["content"] if isinstance(doc["content"], str) else json.dumps(doc["content"])
-print(text[:200])
-return {"bytes": len(text.encode("utf-8"))}
+from collections import Counter
+
+offset, pages = 0, 0
+paths = set()
+complete, reason = False, "page_budget"
+unknown = False
+for _ in range(3):
+    res = await tools.find_files(
+        pattern="**/*.py", path="/src", max_results=50, offset=offset,
+    )
+    pages += 1
+    data = res["data"]
+    if not isinstance(data, dict):
+        complete, reason = None, "unknown_data_shape"
+        break
+    paths.update(m["path"] for m in data["matches"] if not m["is_dir"])
+    unknown = unknown or res["truncated"] is None
+    next_offset = data["next_offset"]
+    if next_offset is None:
+        complete = None if unknown else not res["truncated"]
+        reason = "end" if complete is True else "completeness_unknown_or_truncated"
+        offset = None
+        break
+    if next_offset <= offset or next_offset > 1000:
+        reason = "invalid_cursor"
+        break
+    offset = next_offset
+
+groups = Counter(p.lstrip("/").split("/")[0] for p in paths)
+return {
+    "files_seen": len(paths), "by_top_dir": groups.most_common(12),
+    "groups_limited": len(groups) > 12, "pages": pages,
+    "complete": complete, "reason": reason, "next_offset": offset,
+}
 ```
 
-**用 `search_files` 的规范 `data`：**
+### 搜索后按命中结果读取证据
+
+第二阶段的路径和行号来自第一阶段，不需要模型逐个挑选；这里的固定规则是每个文件取首个命中，
+最多读 8 个文件，每批 4 个，每个文件只取命中附近 40 行、返回至多 1200 字符。
+例子的批次大小不改变宿主配置的并发上限。这里只准备证据，根因和修复方案仍交回模型判断。
 
 ```python
 res = await tools.search_files(
-    pattern="def main",
-    path="/src",
-    output_mode="content",
-    max_results=50,
+    pattern="def main", path="/src", output_mode="content", max_results=30,
 )
-data = res["data"] or {}
-for match in data.get("matches", []):
-    print(f"{match['path']}:{match['line']}: {match['text']}")
-return {"matches": len(data.get("matches", [])), "output_mode": data.get("output_mode")}
+data = res["data"]
+if not isinstance(data, dict):
+    return {"complete": None, "reason": "unknown_data_shape"}
+
+by_path = {}
+for match in data["matches"]:
+    by_path.setdefault(match["path"], match)
+selected = list(by_path.values())[:8]
+
+async def read_evidence(match):
+    try:
+        doc = await tools.read_file(
+            file_path=match["path"], offset=max(0, match["line"] - 6), limit=40,
+        )
+    except ToolCallError as exc:
+        return {"path": match["path"], "error": {"kind": exc.kind, "message": exc.message}}
+    text = doc["content"]
+    if not isinstance(text, str):
+        return {"path": match["path"], "error": {"kind": "unknown_content_shape"}}
+    return {
+        "path": match["path"], "line": match["line"], "excerpt": text[:1200],
+        "preview_limited": len(text) > 1200, "truncated": doc["truncated"],
+    }
+
+evidence = []
+for start in range(0, len(selected), 4):
+    evidence.extend(await asyncio.gather(
+        *(read_evidence(m) for m in selected[start:start + 4])
+    ))
+discovery_complete = (
+    False if data["next_offset"] is not None or res["truncated"] is True
+    else None if res["truncated"] is None else True
+)
+return {
+    "discovery_complete": discovery_complete, "next_offset": data["next_offset"],
+    "files_in_page": len(by_path), "selection_limited": len(by_path) > len(selected),
+    "evidence": evidence,
+}
 ```
 
 **并发读取多个文件：**
@@ -263,7 +326,7 @@ docs = await asyncio.gather(*(tools.read_file(file_path=p) for p in files))
 return [d["content"][:80] for d in docs]
 ```
 
-**批量 MCP 调用（PTC 的主场）：**
+**批量 MCP 调用：**
 
 下例的 `docs__search` 是占位工具名，须替换为当前 SDK 中真实注册的工具。
 `gather` 表达批量提交；没有并发安全契约的 MCP 工具仍会被宿主串行执行。
