@@ -15,6 +15,7 @@ import {
   MENTION_KIND_ICON,
   MENTION_KIND_LABEL,
   rankMentions,
+  sessionMention,
   SKILL_MENTIONS,
   skillMention,
   type MentionEntry,
@@ -162,7 +163,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     null,
   );
 
-  const { client, workspacePath, rpcReady, listSkills, currentSession } = useConsoleStore(
+  const { client, workspacePath, rpcReady, listSkills, currentSession, sessions, fetchSessions } = useConsoleStore(
     // Only what a directory read needs: a reasoning delta must never re-render
     // the surface the reader is typing into.
     useShallow((state) => ({
@@ -171,6 +172,8 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       rpcReady: state.connectionState === 'connected',
       listSkills: state.listSkills,
       currentSession: state.currentSession,
+      sessions: state.sessions,
+      fetchSessions: state.fetchSessions,
     })),
   );
 
@@ -256,6 +259,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     };
   }, [handleRef, snapshot, reset, restore, focus, insertSpoken]);
 
+  const sessionMentions = useMemo(() => {
+    const list = currentSession
+      ? sessions.filter((s) => s.thread_id !== currentSession.thread_id)
+      : sessions;
+    return list.map(sessionMention);
+  }, [sessions, currentSession]);
+
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(
     (query: string): MentionEntry[] => {
@@ -264,10 +274,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
         (entry) => needle === '' || entry.detail.toLowerCase().includes(needle),
       );
       const activeSkills = skills.length > 0 ? skills : SKILL_MENTIONS;
-      const statics = rankMentions([...activeSkills, ...CONTEXT_MENTIONS], query);
-      return [...matched, ...statics];
+      const rankedSessions = rankMentions(sessionMentions, query);
+      const rankedSkills = rankMentions(activeSkills, query);
+      const rankedContexts = rankMentions(CONTEXT_MENTIONS, query);
+      return [...matched, ...rankedSessions, ...rankedSkills, ...rankedContexts];
     },
-    [files, skills],
+    [files, skills, sessionMentions],
   );
 
   /** Open, update or close the `@` list for the caret's current position. */
@@ -380,6 +392,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       active = false;
     };
   }, [mention, listSkills, currentSession.project_id]);
+
+  useEffect(() => {
+    if (mention === null) return;
+    if (sessions.length === 0) {
+      void fetchSessions();
+    }
+  }, [mention, sessions.length, fetchSessions]);
 
   /** Insert the rows the store just accepted as pills at the caret. */
   const mountImagePills = useCallback(

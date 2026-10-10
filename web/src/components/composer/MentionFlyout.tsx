@@ -93,7 +93,7 @@ export const MentionFlyout: React.FC<MentionFlyoutProps> = ({
           {entries.length === 0 && loading && (
             <p className="px-3 py-3 text-[12px] text-gray-500">正在读取工作区文件…</p>
           )}
-          {(['file', 'skill', 'context'] as const).map((kind) => {
+          {(['file', 'session', 'skill', 'context'] as const).map((kind) => {
             const rows = entries.filter((entry) => entry.kind === kind);
             if (rows.length === 0) return null;
             return (

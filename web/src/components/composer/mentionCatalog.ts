@@ -22,7 +22,7 @@
  */
 
 import type { ComposerPillKind } from './composerDocument.ts';
-import { Database20Regular, DocumentText20Regular, PuzzlePiece20Regular } from '@fluentui/react-icons';
+import { Database20Regular, DocumentText20Regular, History20Regular, PuzzlePiece20Regular } from '@fluentui/react-icons';
 import type { ComponentType } from 'react';
 
 /** One offerable mention. */
@@ -38,9 +38,28 @@ export interface MentionEntry {
   token: string;
 }
 
+/** Build a session mention from a session row. */
+export function sessionMention(session: {
+  thread_id: string;
+  title: string;
+  time_label?: string;
+  updated_at?: string;
+}): MentionEntry {
+  const displayTitle = session.title?.trim() || session.thread_id.slice(0, 8);
+  const detail = session.time_label || session.updated_at || session.thread_id;
+  return {
+    kind: 'session',
+    id: `session:${session.thread_id}`,
+    label: displayTitle,
+    detail,
+    token: `@session:${session.thread_id}`,
+  };
+}
+
 /** The section a kind is rendered under, in flyout order. */
 export const MENTION_GROUP_TITLE: Record<MentionEntry['kind'], string> = {
   file: '工作区文件',
+  session: '历史会话',
   skill: 'Agent 技能',
   context: '运行上下文',
 };
@@ -48,6 +67,7 @@ export const MENTION_GROUP_TITLE: Record<MentionEntry['kind'], string> = {
 /** Short label shown at the right edge of a row. */
 export const MENTION_KIND_LABEL: Record<MentionEntry['kind'], string> = {
   file: '文件',
+  session: '会话',
   skill: '技能',
   context: '上下文',
 };
@@ -71,6 +91,7 @@ export const MENTION_KIND_ICON: Record<
   }>
 > = {
   file: DocumentText20Regular,
+  session: History20Regular,
   skill: PuzzlePiece20Regular,
   context: Database20Regular,
 };
@@ -134,13 +155,6 @@ export const CONTEXT_MENTIONS: readonly MentionEntry[] = [
     label: 'git:diff',
     detail: '当前工作区尚未提交的代码变更',
     token: '@context:git_diff',
-  },
-  {
-    kind: 'context',
-    id: 'context:session_recent',
-    label: 'session:recent',
-    detail: '当前会话最近几轮的关键结论',
-    token: '@context:session_recent',
   },
 ];
 

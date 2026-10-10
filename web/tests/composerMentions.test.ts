@@ -20,6 +20,7 @@ import {
   MENTION_GROUP_TITLE,
   MENTION_KIND_LABEL,
   rankMentions,
+  sessionMention,
   SKILL_MENTIONS,
 } from '../src/components/composer/mentionCatalog.ts';
 
@@ -48,6 +49,19 @@ test('a file mention serializes as its workspace path', () => {
   assert.equal(entry.detail, 'src/synapse/app/agent.py');
   // A path at the workspace root has no directory to strip.
   assert.equal(fileMention('README.md').label, 'README.md');
+});
+
+test('a session mention serializes as its thread token', () => {
+  const entry = sessionMention({
+    thread_id: 't-12345678-abcd',
+    title: '修复登录问题',
+    time_label: '昨天 15:30',
+  });
+  assert.equal(entry.kind, 'session');
+  assert.equal(entry.token, '@session:t-12345678-abcd');
+  assert.equal(entry.label, '修复登录问题');
+  assert.equal(entry.detail, '昨天 15:30');
+  assert.match(entry.token, /^@session:[a-zA-Z0-9_-]+$/);
 });
 
 test('the shipped skills are all offered by the flyout', () => {
@@ -93,7 +107,7 @@ test('an empty query offers everything and a miss offers nothing', () => {
 });
 
 test('every kind has a group title and a row label', () => {
-  for (const kind of ['file', 'skill', 'context'] as const) {
+  for (const kind of ['file', 'session', 'skill', 'context'] as const) {
     assert.ok(MENTION_GROUP_TITLE[kind].length > 0, `${kind} needs a group title`);
     assert.ok(MENTION_KIND_LABEL[kind].length > 0, `${kind} needs a row label`);
   }
