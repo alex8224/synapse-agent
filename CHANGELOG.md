@@ -6,6 +6,28 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.58
+
+### New Features
+
+- **Post-Turn Action Suggestions**: Add a suggestion bar above the composer that offers the next actions once a turn ends. A stateless `POST /api/turn-suggestions` route validates the payload, resolves the target project, and returns a bounded list of follow-ups whose prompt can be inserted or submitted directly.
+- **Configurable Suggestion Model**: Drive those suggestions with a dedicated lightweight profile instead of the session model. Set `suggestion_model` at the top level of `models.json`, in `settings.json`, or through `AGENT_SUGGESTION_MODEL`; resolution falls back from settings to the registry, then to the session model, `active_model`, and the registry default, skipping any alias the registry does not know.
+- **Session `@` Mentions**: Reference a specific session from the composer's mention catalog.
+- **Bookmarks Follow the Latest Turn**: Derive the collapsed rail's identicon from the session's last user message, and show the last model reply in the hover flyout.
+- **Result-Driven PTC Orchestration**: Prompt and SDK guidance now prefer result-driven `run_code` orchestration over single-call wrappers, read-only single calls included.
+
+### Bug Fixes
+
+- **Turn Suggestion Re-render Loop**: Stabilize the `TurnSuggestionBar` selector so the bar no longer re-renders indefinitely.
+- **Project-Local Suggestion Config**: `_default_model_invoker` passed `project_root=` to `load_settings`, which only reads the `workspace` override, so a project's `.synapse/` layer was silently ignored when resolving the suggestion model.
+- **Mermaid Diagram Height**: Default diagrams to full height and stop the actual-size viewer from overflowing the page.
+
+### Engineering
+
+- Add tests for the turn-suggestion store and bar, the mention catalog and serialization, session previews, and the PTC worker, and extend the settings, layered-config, and turn-suggestion suites.
+- Document `suggestion_model` in `docs/config.md` and `docs/models.md`, the session-preview derivation in `web/README.md`, and the refreshed PTC guidance in `docs/ptc.md`.
+- Build and package the updated web console assets for production distribution.
+
 ## v0.1.57
 
 ### New Features
