@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   CONSOLE_CSRF_HEADER,
@@ -230,4 +232,19 @@ test('fetchTurnSuggestions sends CSRF header and degrades to empty list on error
   );
   assert.deepEqual(onError, []);
   assert.deepEqual(parseTurnSuggestionsPayload(null), []);
+});
+
+test('TurnSuggestionBar keeps object-allocating derivations out of useShallow selector', () => {
+  const source = readFileSync(
+    fileURLToPath(new URL('../src/components/composer/TurnSuggestionBar.tsx', import.meta.url)),
+    'utf8',
+  );
+  const shallowMatch = /useShallow\(\(state\)\s*=>\s*\(\{([\s\S]*?)\}\)\)/.exec(source);
+  assert.ok(shallowMatch !== null, 'TurnSuggestionBar should subscribe with a flat useShallow object');
+  const selectorBody = shallowMatch[1];
+  assert.ok(
+    !selectorBody.includes('extractLastTurnSnapshot(') && !selectorBody.includes('latestTodos('),
+    'useShallow selector must not allocate fresh snapshot/todo objects on each getSnapshot call',
+  );
+  assert.ok(source.includes('useMemo('), 'Derived turn snapshots must be memoized outside useShallow');
 });

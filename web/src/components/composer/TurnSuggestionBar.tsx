@@ -1,7 +1,8 @@
 import { Dismiss16Regular, Sparkle20Regular } from '@fluentui/react-icons';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { fetchTurnSuggestions } from '../../client/turnSuggestions.ts';
+import type { TranscriptMessage } from '../../stores/historyMapper.ts';
 import { latestTodos } from '../../stores/todoView.ts';
 import {
   buildRuleSuggestions,
@@ -20,6 +21,8 @@ export interface TurnSuggestionBarProps {
 }
 
 const MAX_CACHED_TURNS = 16;
+const EMPTY_MESSAGES: readonly TranscriptMessage[] = [];
+const modelSuggestionCache = new Map<string, ModelSuggestionInput[]>();
 
 /**
  * Post-turn action reminder strip rendered directly above the composer input.
@@ -40,39 +43,34 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
     modelName,
     goal,
     settledTurnIds,
-    snapshot,
-    todos,
+    messages,
   } = useConsoleStore(
-    useShallow((state) => {
-      if (state.runtimeStatus === 'running' || state.pendingApproval !== null) {
-        return {
-          pairingState: state.pairingState,
-          runtimeStatus: state.runtimeStatus,
-          pendingApproval: state.pendingApproval,
-          currentSession: state.currentSession,
-          modelName: state.modelName,
-          goal: state.goal,
-          settledTurnIds: state.settledTurnIds,
-          snapshot: null,
-          todos: null,
-        };
-      }
-      return {
-        pairingState: state.pairingState,
-        runtimeStatus: state.runtimeStatus,
-        pendingApproval: state.pendingApproval,
-        currentSession: state.currentSession,
-        modelName: state.modelName,
-        goal: state.goal,
-        settledTurnIds: state.settledTurnIds,
-        snapshot: extractLastTurnSnapshot(
-          state.messages,
-          state.runtimeStatus,
-          state.pendingApproval,
-        ),
-        todos: latestTodos(state.messages),
-      };
-    }),
+    // Selector values must remain referentially stable for `useShallow` /
+    // `useSyncExternalStore`; derive snapshots via `useMemo` below instead of
+    // allocating fresh objects inside the selector.
+    useShallow((state) => ({
+      pairingState: state.pairingState,
+      runtimeStatus: state.runtimeStatus,
+      pendingApproval: state.pendingApproval,
+      currentSession: state.currentSession,
+      modelName: state.modelName,
+      goal: state.goal,
+      settledTurnIds: state.settledTurnIds,
+      messages:
+        state.runtimeStatus === 'running' || state.pendingApproval !== null
+          ? EMPTY_MESSAGES
+          : state.messages,
+    })),
+  );
+
+  const snapshot = useMemo(
+    () => extractLastTurnSnapshot(messages, runtimeStatus, pendingApproval),
+    [messages, runtimeStatus, pendingApproval],
+  );
+
+  const todos = useMemo(
+    () => (snapshot === null ? null : latestTodos(messages)),
+    [messages, snapshot],
   );
 
   const turnScopeKey =
@@ -85,7 +83,6 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
     key: string;
     items: ModelSuggestionInput[];
   } | null>(null);
-  const cacheRef = useRef<Map<string, ModelSuggestionInput[]>>(new Map());
 
   const isLiveSettledTurn = Boolean(
     snapshot !== null &&
@@ -93,39 +90,40 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
       settledTurnIds?.includes(snapshot.turnId),
   );
 
+  const snapshotOutcome = snapshot?.outcome ?? null;
+  const snapshotUserPrompt = snapshot?.userPrompt ?? '';
+  const snapshotConclusion = snapshot?.conclusion ?? '';
+
   useEffect(() => {
     if (
       hidden ||
       pairingState !== 'paired' ||
-      snapshot === null ||
       turnScopeKey === null ||
       dismissedKey === turnScopeKey ||
-      snapshot.outcome !== 'completed' ||
-      snapshot.conclusion === '' ||
+      snapshotOutcome !== 'completed' ||
+      snapshotConclusion === '' ||
       !isLiveSettledTurn
     ) {
       return;
     }
 
-    const cached = cacheRef.current.get(turnScopeKey);
-    if (cached !== undefined) {
-      setModelResult({ key: turnScopeKey, items: cached });
+    if (modelSuggestionCache.has(turnScopeKey)) {
       return;
     }
 
     let cancelled = false;
     const key = turnScopeKey;
     void fetchTurnSuggestions({
-      user_prompt: snapshot.userPrompt,
-      conclusion: snapshot.conclusion,
+      user_prompt: snapshotUserPrompt,
+      conclusion: snapshotConclusion,
       project_id: currentSession.project_id,
       model: modelName || null,
     }).then((items) => {
-      if (cacheRef.current.size >= MAX_CACHED_TURNS) {
-        const oldest = cacheRef.current.keys().next().value;
-        if (oldest !== undefined) cacheRef.current.delete(oldest);
+      if (modelSuggestionCache.size >= MAX_CACHED_TURNS) {
+        const oldest = modelSuggestionCache.keys().next().value;
+        if (oldest !== undefined) modelSuggestionCache.delete(oldest);
       }
-      cacheRef.current.set(key, items);
+      modelSuggestionCache.set(key, items);
       if (!cancelled) {
         setModelResult({ key, items });
       }
@@ -137,9 +135,11 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
   }, [
     hidden,
     pairingState,
-    snapshot,
     turnScopeKey,
     dismissedKey,
+    snapshotOutcome,
+    snapshotUserPrompt,
+    snapshotConclusion,
     isLiveSettledTurn,
     currentSession.project_id,
     modelName,
@@ -149,7 +149,11 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
     if (snapshot === null || turnScopeKey === null) return [];
     const ruleActions = buildRuleSuggestions(snapshot, todos, goal);
     const activeModelInputs =
-      modelResult !== null && modelResult.key === turnScopeKey ? modelResult.items : [];
+      (modelResult !== null && modelResult.key === turnScopeKey
+        ? modelResult.items
+        : undefined) ??
+      modelSuggestionCache.get(turnScopeKey) ??
+      [];
     const modelActions = normalizeModelSuggestions(activeModelInputs);
     return mergeSuggestedActions(ruleActions, modelActions);
   }, [snapshot, turnScopeKey, todos, goal, modelResult]);
