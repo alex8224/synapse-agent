@@ -286,3 +286,17 @@ def test_minimal_filesystem_tools_defaults_and_env(monkeypatch):
     settings_on = Settings(_env_file=None)
     assert settings_on.minimal_filesystem_tools is True
     assert settings_on.minimal_filesystem_excluded_tools == ["search_files", "write_file"]
+
+
+def test_suggestion_model_default_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_SUGGESTION_MODEL", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.suggestion_model is None
+
+    monkeypatch.setenv("AGENT_SUGGESTION_MODEL", '  "fast-mini"  ')
+    configured = Settings(_env_file=None)
+    assert configured.suggestion_model == "fast-mini"
+
+    monkeypatch.setenv("AGENT_SUGGESTION_MODEL", "   ")
+    blank = Settings(_env_file=None)
+    assert blank.suggestion_model is None

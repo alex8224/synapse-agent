@@ -37,6 +37,7 @@ Synapse 使用 **Pydantic Settings** 实现分层配置系统。
 | `AGENT_MODELS_CONFIG` | — | `models.json` 路径（覆盖默认） |
 | `MODELS_JSON` | — | 内联 JSON（替代文件） |
 | `AGENT_ACTIVE_MODEL` | — | 活跃模型 profile 别名 |
+| `AGENT_SUGGESTION_MODEL` | — | 轮次结束建议使用的轻量模型 profile 别名（未配置时回退到当前会话模型） |
 | `VISION_MODEL` | — | 独立视觉模型的 OpenAI 兼容配置 |
 
 ### 工作区

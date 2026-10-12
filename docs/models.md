@@ -72,6 +72,7 @@ MODEL=openai:gpt-4.1
 | 字段 | 说明 |
 |---|---|
 | `default` | 默认使用的模型 profile 别名 |
+| `suggestion_model` | 轮次结束建议使用的轻量模型 profile 别名（可选，未配置时回退到当前会话模型） |
 | `thinking_levels` | 允许的思考级别列表 |
 | `default_thinking` | 默认思考级别 |
 

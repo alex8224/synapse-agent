@@ -154,6 +154,8 @@ class ModelRegistry:
     default_thinking: str | None = None
     # Independent image-to-text model configuration from models.json.
     vision_model: dict[str, Any] | None = None
+    # Optional fast/low-cost profile alias (or provider:model) for turn suggestions.
+    suggestion_model: str | None = None
 
     def list_names(self) -> list[str]:
         return sorted(self.profiles)
@@ -668,6 +670,14 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         # Backward-compatible convenience: allow the vision endpoint to live
         # alongside primary model profiles under models.vision_model.
         vision_model = dict(raw_models["vision_model"])
+    raw_suggestion_model = data.get("suggestion_model")
+    if raw_suggestion_model is not None and not isinstance(raw_suggestion_model, str):
+        raise ValueError("suggestion_model must be a profile name string")
+    suggestion_model = (
+        str(expand_env_string(raw_suggestion_model)).strip() or None
+        if isinstance(raw_suggestion_model, str)
+        else None
+    )
 
     profiles: dict[str, ModelProfile] = {}
     for name, cfg in raw_models.items():
@@ -779,6 +789,7 @@ def _profiles_from_mapping(data: dict[str, Any]) -> ModelRegistry:
         default=default,
         headers=global_headers,
         vision_model=dict(vision_model) if vision_model else None,
+        suggestion_model=suggestion_model,
         thinking_levels=thinking_levels,
         default_thinking=default_thinking,
     )
@@ -908,6 +919,11 @@ def merge_model_registries(
         if override.default_thinking not in (None, "")
         else base.default_thinking
     )
+    suggestion_model = (
+        override.suggestion_model
+        if override.suggestion_model not in (None, "")
+        else base.suggestion_model
+    )
     return ModelRegistry(
         profiles=profiles,
         default=default,
@@ -917,6 +933,7 @@ def merge_model_registries(
             if base.vision_model and override.vision_model
             else override.vision_model or base.vision_model
         ),
+        suggestion_model=suggestion_model,
         thinking_levels=thinking_levels,
         default_thinking=default_thinking,
     )
@@ -1065,6 +1082,8 @@ def apply_models_config_to_settings(settings: Any) -> Any:
         "active_model": profile.name,
         "model": profile.model,
     }
+    if not getattr(settings, "suggestion_model", None) and reg.suggestion_model:
+        updates["suggestion_model"] = reg.suggestion_model
     if profile.base_url:
         updates["openai_base_url"] = profile.base_url
     if profile.enable_thinking is not None:

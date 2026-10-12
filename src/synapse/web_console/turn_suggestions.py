@@ -135,6 +135,51 @@ def parse_model_suggestions_json(raw_text: str) -> list[dict[str, str]]:
     return results
 
 
+def resolve_suggestion_model(
+    settings: Any,
+    registry: Any,
+    session_model_alias: str | None = None,
+) -> str | None:
+    """Resolve the model profile alias to use for turn suggestions.
+
+    Priority order:
+      1. ``settings.suggestion_model`` (``settings.json`` / ``AGENT_SUGGESTION_MODEL``)
+      2. ``registry.suggestion_model`` (``models.json`` top-level ``suggestion_model``)
+      3. ``session_model_alias`` (current session model from the console)
+      4. ``settings.active_model``
+      5. ``registry.default``
+
+    If a higher-priority candidate cannot be resolved in ``registry``, fall back
+    to the next candidate so a stale ``suggestion_model`` never breaks suggestions.
+    """
+    candidates = (
+        getattr(settings, "suggestion_model", None),
+        getattr(registry, "suggestion_model", None),
+        session_model_alias,
+        getattr(settings, "active_model", None),
+        getattr(registry, "default", None),
+    )
+    first_non_empty: str | None = None
+    for raw in candidates:
+        if not isinstance(raw, str):
+            continue
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        if first_non_empty is None:
+            first_non_empty = candidate
+        try:
+            registry.get(candidate)
+            return candidate
+        except KeyError:
+            logger.debug(
+                "turn suggestions candidate model %r not found in registry; falling back",
+                candidate,
+            )
+            continue
+    return first_non_empty
+
+
 async def _default_model_invoker(
     workspace: Path,
     model_alias: str | None,
@@ -148,10 +193,10 @@ async def _default_model_invoker(
     from synapse.settings.schema import load_settings
 
     def _build_model() -> Any:
-        settings = load_settings(project_root=workspace)
+        settings = load_settings(workspace=workspace)
         reg = registry_from_settings(settings)
-        chosen = model_alias or settings.active_model
-        return reg.build_chat_model(chosen)
+        chosen = resolve_suggestion_model(settings, reg, model_alias)
+        return reg.build_chat_model(chosen, enable_thinking=False)
 
     chat_model = await asyncio.to_thread(_build_model)
     human_body = (

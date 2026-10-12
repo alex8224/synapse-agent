@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     models_json: str | None = Field(default=None, validation_alias="MODELS_JSON")
     # Selected profile alias (optional; falls back to model / registry default)
     active_model: str | None = Field(default=None, validation_alias="AGENT_ACTIVE_MODEL")
+    # Optional fast/low-cost model profile alias (or provider:model) for post-turn
+    # action suggestions; falls back to the current session model when unset.
+    suggestion_model: str | None = Field(
+        default=None, validation_alias="AGENT_SUGGESTION_MODEL"
+    )
     # Turbo mode: route all OpenAI-compatible model traffic through a local
     # headroom-turbo proxy. The profile's original base_url is forwarded via the
     # x-headroom-base-url header so the proxy compresses and relays. Requires no
@@ -467,7 +472,13 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("openai_api_key", "anthropic_api_key", "openai_base_url", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "anthropic_api_key",
+        "openai_base_url",
+        "suggestion_model",
+        mode="before",
+    )
     @classmethod
     def _strip_secret_like(cls, value: object) -> object:
         if isinstance(value, str):
@@ -686,6 +697,10 @@ def _load_settings_impl(
             ):
                 if pk in updates and updates[pk] is not None:
                     updates[pk] = Path(str(updates[pk])).expanduser()
+            if "suggestion_model" in updates and isinstance(updates["suggestion_model"], str):
+                updates["suggestion_model"] = (
+                    updates["suggestion_model"].strip().strip("\"'") or None
+                )
             # Layered JSON bypasses Pydantic field validators via model_copy;
             # validate the reasoning overrides explicitly so a hand-edited file
             # cannot smuggle an invalid level into the model factory.

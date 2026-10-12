@@ -376,3 +376,60 @@ def test_merge_profiles_inherit_key():
     assert m.model == "openai:b"
     assert m.api_key == "k1"
     assert m.base_url == "http://b"
+
+
+def test_suggestion_model_layered_models_and_settings_json(tmp_path, monkeypatch):
+    home = tmp_path / "home" / ".synapse"
+    home.mkdir(parents=True)
+    (home / "models.json").write_text(
+        json.dumps(
+            {
+                "default": "main",
+                "suggestion_model": "user-fast",
+                "models": {
+                    "main": {"model": "openai:gpt-5", "api_key": "k"},
+                    "user-fast": {"model": "openai:gpt-4o-mini", "api_key": "k"},
+                    "proj-fast": {"model": "openai:gpt-4.1-mini", "api_key": "k"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    proj = tmp_path / "proj"
+    (proj / ".synapse").mkdir(parents=True)
+    (proj / ".synapse" / "models.json").write_text(
+        json.dumps(
+            {
+                "default": "main",
+                "suggestion_model": "proj-fast",
+                "models": {
+                    "main": {"model": "openai:gpt-5", "api_key": "k"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir",
+        lambda: home.resolve(),
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.executable_config_dirs",
+        lambda: [],
+    )
+    monkeypatch.delenv("AGENT_SUGGESTION_MODEL", raising=False)
+
+    # Project models.json suggestion_model overrides user models.json suggestion_model
+    settings_from_models = load_settings(workspace=proj.resolve())
+    reg = load_merged_models_registry(settings_from_models)
+    assert reg is not None
+    assert reg.suggestion_model == "proj-fast"
+    assert settings_from_models.suggestion_model == "proj-fast"
+
+    # settings.json suggestion_model takes precedence over models.json suggestion_model
+    (proj / ".synapse" / "settings.json").write_text(
+        '{"suggestion_model": "user-fast"}',
+        encoding="utf-8",
+    )
+    settings_from_file = load_settings(workspace=proj.resolve())
+    assert settings_from_file.suggestion_model == "user-fast"

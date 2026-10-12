@@ -9,13 +9,18 @@ from typing import Any
 import pytest
 from aiohttp import ClientSession, CookieJar
 
+from synapse.models.profile import ModelProfile
+from synapse.models.registry import ModelRegistry
+from synapse.settings.schema import Settings
 from synapse.web_console.config import WebConsoleConfig
 from synapse.web_console.host import ProjectView, WebConsoleHost
 from synapse.web_console.security import CONSOLE_HEADER_NAME, CONSOLE_HEADER_VALUE
 from synapse.web_console.turn_suggestions import (
     TurnSuggestionsError,
+    _default_model_invoker,
     generate_turn_suggestions,
     parse_model_suggestions_json,
+    resolve_suggestion_model,
 )
 
 TOKEN = "daemon-secret-token-0ab3f9"
@@ -202,3 +207,133 @@ def test_turn_suggestions_http_route_guards_and_response(tmp_path: Path) -> None
             await host.close()
 
     _run(run())
+
+
+def test_resolve_suggestion_model_priority_and_fallback() -> None:
+    registry = ModelRegistry(
+        profiles={
+            "main-pro": ModelProfile(name="main-pro", model="openai:gpt-5"),
+            "session-sonnet": ModelProfile(
+                name="session-sonnet", model="anthropic:claude-sonnet-4"
+            ),
+            "fast-mini": ModelProfile(name="fast-mini", model="openai:gpt-4.1-mini"),
+            "reg-mini": ModelProfile(name="reg-mini", model="openai:gpt-4o-mini"),
+        },
+        default="main-pro",
+        suggestion_model="reg-mini",
+    )
+
+    # 1. settings.suggestion_model has highest priority over registry & session model
+    settings_with_suggestion = Settings(
+        _env_file=None,
+        active_model="main-pro",
+        suggestion_model="fast-mini",
+    )
+    assert (
+        resolve_suggestion_model(
+            settings_with_suggestion, registry, "session-sonnet"
+        )
+        == "fast-mini"
+    )
+
+    # 2. registry.suggestion_model wins when settings.suggestion_model is unset
+    settings_no_suggestion = Settings(_env_file=None, active_model="main-pro")
+    assert (
+        resolve_suggestion_model(settings_no_suggestion, registry, "session-sonnet")
+        == "reg-mini"
+    )
+
+    # 3. When no suggestion_model is configured anywhere, falls back to current session model
+    registry_no_suggestion = ModelRegistry(
+        profiles=registry.profiles,
+        default="main-pro",
+        suggestion_model=None,
+    )
+    assert (
+        resolve_suggestion_model(
+            settings_no_suggestion, registry_no_suggestion, "session-sonnet"
+        )
+        == "session-sonnet"
+    )
+
+    # 4. When session model is also absent, falls back to settings.active_model
+    assert (
+        resolve_suggestion_model(settings_no_suggestion, registry_no_suggestion, None)
+        == "main-pro"
+    )
+
+    # 5. Stale/unknown suggestion_model gracefully falls back to current session model
+    settings_stale = Settings(
+        _env_file=None,
+        active_model="main-pro",
+        suggestion_model="deleted-profile",
+    )
+    assert (
+        resolve_suggestion_model(
+            settings_stale, registry_no_suggestion, "session-sonnet"
+        )
+        == "session-sonnet"
+    )
+
+
+def test_default_model_invoker_uses_suggestion_model_and_disables_thinking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_workspaces: list[Path] = []
+    captured_build: list[tuple[str | None, bool | None]] = []
+
+    class _FakeResponse:
+        content = '[{"label": "运行测试", "prompt": "运行 pytest", "mode": "submit"}]'
+
+    class _FakeChatModel:
+        async def ainvoke(self, _messages: Any) -> _FakeResponse:
+            return _FakeResponse()
+
+    registry = ModelRegistry(
+        profiles={
+            "main-pro": ModelProfile(name="main-pro", model="openai:gpt-5"),
+            "fast-mini": ModelProfile(name="fast-mini", model="openai:gpt-4.1-mini"),
+        },
+        default="main-pro",
+    )
+
+    def fake_load_settings(**overrides: Any) -> Settings:
+        if "workspace" in overrides:
+            captured_workspaces.append(Path(overrides["workspace"]))
+        return Settings(
+            _env_file=None,
+            active_model="main-pro",
+            suggestion_model="fast-mini",
+        )
+
+    def fake_build_chat_model(
+        name: str | None = None,
+        *,
+        enable_thinking: bool | None = None,
+        **_kwargs: Any,
+    ) -> _FakeChatModel:
+        captured_build.append((name, enable_thinking))
+        return _FakeChatModel()
+
+    monkeypatch.setattr(
+        "synapse.settings.schema.load_settings",
+        fake_load_settings,
+    )
+    monkeypatch.setattr(
+        "synapse.models.registry.registry_from_settings",
+        lambda _settings: registry,
+    )
+    monkeypatch.setattr(registry, "build_chat_model", fake_build_chat_model)
+
+    raw = _run(
+        _default_model_invoker(
+            tmp_path,
+            "main-pro",
+            "帮我检查配置",
+            "配置已更新完成",
+        )
+    )
+    assert "运行测试" in raw
+    assert captured_workspaces == [tmp_path]
+    assert captured_build == [("fast-mini", False)]
