@@ -9,6 +9,8 @@ import { RichComposer, type RichComposerHandle } from './composer/RichComposer.t
 import { isSnapshotEmpty, type ComposerSnapshot } from './composer/composerDocument.ts';
 import { useSpeechInput, type SpeechInputOptions } from './composer/useSpeechInput.ts';
 import { useLocalSpeechInput } from './composer/useLocalSpeechInput.ts';
+import { TurnSuggestionBar } from './composer/TurnSuggestionBar.tsx';
+import type { SuggestedAction } from '../stores/turnSuggestions.ts';
 import { captionText } from './composer/speechInput.ts';
 import { needsWarmUp, speechRoute, usesLocalEngine } from './composer/sttEngine.ts';
 import { runtimeSttTransport, tauriSttTransport } from './composer/sttTransport.ts';
@@ -150,6 +152,18 @@ export const CommandInput: React.FC = () => {
       composerRef.current?.reset();
     },
     [submitPrompt, uploading, readyAttachment],
+  );
+
+  const handleSelectSuggestion = useCallback(
+    (action: SuggestedAction) => {
+      if (action.mode === 'fill') {
+        composerRef.current?.insertSpoken(action.prompt);
+        composerRef.current?.focus();
+        return;
+      }
+      void submitPrompt(action.prompt);
+    },
+    [submitPrompt],
   );
 
   const handleFiles = useCallback(
@@ -385,6 +399,11 @@ export const CommandInput: React.FC = () => {
             {composerNotice}
           </div>
         )}
+
+        <TurnSuggestionBar
+          hidden={busy || hasContent || readyAttachment || uploading}
+          onSelectAction={handleSelectSuggestion}
+        />
 
         <form
           onSubmit={(e) => {
