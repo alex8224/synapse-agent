@@ -211,19 +211,31 @@ export function fileMention(path: string): MentionEntry {
  * name, so the pill reads like the sidebar row it came from.
  */
 export function sessionMention(entry: {
-  project_id: string;
+  project_id?: string;
   thread_id: string;
   title?: string | null;
   project_name?: string | null;
+  time_label?: string;
+  updated_at?: string;
 }): MentionEntry {
   const label = displaySessionTitle(entry.title, entry.thread_id);
-  const scope = entry.project_name ? `${entry.project_name} · ` : '';
+  if (entry.project_id) {
+    const scope = entry.project_name ? `${entry.project_name} · ` : '';
+    return {
+      kind: 'session',
+      id: `session:${entry.project_id}:${entry.thread_id}`,
+      label,
+      detail: `${scope}${entry.project_id}:${entry.thread_id}`,
+      token: `@session:${entry.project_id}:${entry.thread_id}`,
+    };
+  }
+  const detail = entry.time_label || entry.updated_at || entry.thread_id;
   return {
     kind: 'session',
-    id: `session:${entry.project_id}:${entry.thread_id}`,
+    id: `session:${entry.thread_id}`,
     label,
-    detail: `${scope}${entry.project_id}:${entry.thread_id}`,
-    token: `@session:${entry.project_id}:${entry.thread_id}`,
+    detail,
+    token: `@session:${entry.thread_id}`,
   };
 }
 

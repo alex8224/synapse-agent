@@ -6,6 +6,9 @@
  * - Dynamic tab bar derived purely from the extensible RIGHT_DOCK_MANIFEST
  * - Dynamic badges (diff counters, goal progress, active flags)
  * - Clean responsive collapse/expand with transition
+ * - Out-of-flow over the workspace: opening the dock never re-flows the chat
+ *   (the panel floats, the reading column keeps its width, see `.dock-overlay`
+ *   in `src/index.css`)
  */
 import { Dismiss16Regular } from '@fluentui/react-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -123,8 +126,12 @@ export const RightDock: React.FC = () => {
         ref={dockRef}
         inert={!open}
         style={{ width: open ? `${width}px` : '0px' }}
-        className={`material-chrome relative flex h-full shrink-0 flex-col select-none text-gray-900 ${
-          open ? 'border-l border-line' : 'border-l-0 pointer-events-none'
+        // `absolute` in the workspace row (the row is the positioning context, see
+        // `App.tsx`): the dock is a panel over the workspace, not a third column,
+        // so opening it leaves the chat column -- and the composer on it -- where
+        // they were.  The width still animates, anchored to the right edge.
+        className={`material-chrome absolute inset-y-0 right-0 z-40 flex flex-col select-none text-gray-900 ${
+          open ? 'border-l border-line dock-overlay' : 'border-l-0 pointer-events-none'
         } ${isDragging ? '' : 'transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)]'}`}
       >
         {/* Draggable Resizer Separator - overlay on the left border without in-flow gap */}

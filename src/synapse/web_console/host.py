@@ -421,6 +421,7 @@ class WebConsoleHost:
         pairing_code: str | None = None,
         pairing_code_generator: Any | None = None,
         pairing_notifier: Any | None = None,
+        suggestion_invoker: Any | None = None,
     ) -> None:
         self.config = config
         self.project = project
@@ -442,6 +443,7 @@ class WebConsoleHost:
             generator=generator,
             notifier=pairing_notifier or self._announce_pairing_code,
         )
+        self._suggestion_invoker = suggestion_invoker
         self._static_root = config.resolved_static_dir()
         self._active_sockets = 0
         # The deprecated ``GET /api/projects`` listing, resolved once at startup.
@@ -474,6 +476,8 @@ class WebConsoleHost:
         app.router.add_post("/api/projects", _method_not_allowed("GET"))
         app.router.add_get("/api/usage-stats", self._handle_usage_stats)
         app.router.add_post("/api/usage-stats", _method_not_allowed("GET"))
+        app.router.add_post("/api/turn-suggestions", self._handle_turn_suggestions)
+        app.router.add_get("/api/turn-suggestions", _method_not_allowed("POST"))
         app.router.add_post("/api/logout", self._handle_logout)
         app.router.add_get("/api/logout", _method_not_allowed("POST"))
         # Kept as an explicit 405 (not a 404) so "GET must not mint a session"
@@ -995,6 +999,38 @@ class WebConsoleHost:
             logger.exception("usage statistics query failed")
             return _reject(500, "usage statistics unavailable", json_body=True)
         response = web.json_response(stats)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    async def _handle_turn_suggestions(self, request: web.Request) -> web.Response:
+        """``POST /api/turn-suggestions``: stateless post-turn follow-up suggestions."""
+        guard = self._state_change_guard(request)
+        if guard is not None:
+            return guard
+        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+            return _reject(401, "missing or invalid console session", json_body=True)
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        from synapse.web_console.turn_suggestions import (
+            TurnSuggestionsError,
+            generate_turn_suggestions,
+        )
+
+        try:
+            result = await generate_turn_suggestions(
+                self.config.workspace,
+                payload=payload,
+                project_entries=list(self._switchable_projects),
+                model_invoker=self._suggestion_invoker,
+            )
+        except TurnSuggestionsError as exc:
+            return _reject(400, str(exc), json_body=True)
+        except Exception:  # noqa: BLE001 - best-effort side-channel
+            logger.exception("turn suggestions query failed")
+            return _reject(500, "turn suggestions unavailable", json_body=True)
+        response = web.json_response(result)
         response.headers["Cache-Control"] = "no-store"
         return response
 

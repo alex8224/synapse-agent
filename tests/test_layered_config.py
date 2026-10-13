@@ -21,6 +21,51 @@ from synapse.settings.config_paths import (
 )
 
 
+def test_ptc_layered_settings_and_override_validation(tmp_path, monkeypatch):
+    from synapse.settings.schema import load_project_settings
+
+    home = tmp_path / "home" / ".synapse"
+    workspace = tmp_path / "workspace"
+    project = workspace / ".synapse"
+    home.mkdir(parents=True)
+    project.mkdir(parents=True)
+    monkeypatch.setattr("synapse.settings.config_paths.user_config_dir", lambda: home)
+    monkeypatch.setattr("synapse.settings.config_paths.executable_config_dirs", lambda: [])
+    monkeypatch.setattr("synapse.settings.schema.find_dotenv", lambda *_: None)
+    monkeypatch.setattr(
+        "synapse.models.registry.apply_models_config_to_settings", lambda settings: settings
+    )
+    monkeypatch.setenv("AGENT_TOOL_MODE", "native")
+    (home / "settings.json").write_text(
+        json.dumps({"tool_mode": "both", "ptc_max_calls": 12}), encoding="utf-8"
+    )
+    settings_path = project / "settings.json"
+    settings_path.write_text(
+        json.dumps({"tool_mode": "code", "ptc_max_parallel": 3}), encoding="utf-8"
+    )
+    settings = load_project_settings(workspace)
+    assert settings.tool_mode == "code"
+    assert settings.ptc_max_calls == 12
+    assert settings.ptc_max_parallel == 3
+    assert load_project_settings(workspace, tool_mode="both").tool_mode == "both"
+
+    for invalid in (
+        {"tool_mode": "invalid"},
+        {"ptc_timeout_seconds": -1},
+        {"ptc_max_calls": 0},
+        {"ptc_max_parallel": 65},
+        {"ptc_max_output_bytes": 255},
+        {"ptc_max_result_bytes": 1023},
+        {"ptc_max_code_bytes": 255},
+    ):
+        settings_path.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_project_settings(workspace)
+        settings_path.write_text("{}", encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_project_settings(workspace, **invalid)
+
+
 def test_layered_dirs_order(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "synapse.settings.config_paths.user_config_dir",
@@ -331,3 +376,60 @@ def test_merge_profiles_inherit_key():
     assert m.model == "openai:b"
     assert m.api_key == "k1"
     assert m.base_url == "http://b"
+
+
+def test_suggestion_model_layered_models_and_settings_json(tmp_path, monkeypatch):
+    home = tmp_path / "home" / ".synapse"
+    home.mkdir(parents=True)
+    (home / "models.json").write_text(
+        json.dumps(
+            {
+                "default": "main",
+                "suggestion_model": "user-fast",
+                "models": {
+                    "main": {"model": "openai:gpt-5", "api_key": "k"},
+                    "user-fast": {"model": "openai:gpt-4o-mini", "api_key": "k"},
+                    "proj-fast": {"model": "openai:gpt-4.1-mini", "api_key": "k"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    proj = tmp_path / "proj"
+    (proj / ".synapse").mkdir(parents=True)
+    (proj / ".synapse" / "models.json").write_text(
+        json.dumps(
+            {
+                "default": "main",
+                "suggestion_model": "proj-fast",
+                "models": {
+                    "main": {"model": "openai:gpt-5", "api_key": "k"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.user_config_dir",
+        lambda: home.resolve(),
+    )
+    monkeypatch.setattr(
+        "synapse.settings.config_paths.executable_config_dirs",
+        lambda: [],
+    )
+    monkeypatch.delenv("AGENT_SUGGESTION_MODEL", raising=False)
+
+    # Project models.json suggestion_model overrides user models.json suggestion_model
+    settings_from_models = load_settings(workspace=proj.resolve())
+    reg = load_merged_models_registry(settings_from_models)
+    assert reg is not None
+    assert reg.suggestion_model == "proj-fast"
+    assert settings_from_models.suggestion_model == "proj-fast"
+
+    # settings.json suggestion_model takes precedence over models.json suggestion_model
+    (proj / ".synapse" / "settings.json").write_text(
+        '{"suggestion_model": "user-fast"}',
+        encoding="utf-8",
+    )
+    settings_from_file = load_settings(workspace=proj.resolve())
+    assert settings_from_file.suggestion_model == "user-fast"

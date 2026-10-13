@@ -172,6 +172,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     listSkills,
     currentSession,
     sessions,
+    fetchSessions,
     projectSessions,
     projects,
     activeProjectId,
@@ -184,10 +185,8 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       rpcReady: state.connectionState === 'connected',
       listSkills: state.listSkills,
       currentSession: state.currentSession,
-      // Sessions already loaded for the sidebar: offering them here is what
-      // makes `@` able to name another session at all.  Nothing is fetched for
-      // the flyout, so a project the reader has not opened is simply absent.
       sessions: state.sessions,
+      fetchSessions: state.fetchSessions,
       projectSessions: state.projectSessions,
       projects: state.projects,
       activeProjectId: state.activeProjectId,
@@ -439,6 +438,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       active = false;
     };
   }, [mention, listSkills, currentSession.project_id]);
+
+  useEffect(() => {
+    if (mention === null) return;
+    if (sessions.length === 0) {
+      void fetchSessions();
+    }
+  }, [mention, sessions.length, fetchSessions]);
 
   /** Insert the rows the store just accepted as pills at the caret. */
   const mountImagePills = useCallback(

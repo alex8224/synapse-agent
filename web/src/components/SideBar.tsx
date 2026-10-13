@@ -4,10 +4,12 @@ import {
   CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
   DataUsage20Regular,
   BranchFork16Regular,
+  BranchFork20Regular,
 } from '@fluentui/react-icons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ConsoleActions } from './ConsoleActions.tsx';
+import { RunningSessionHolders } from './RunningSessionHolders.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
   SESSION_TITLE_MAX,
@@ -86,6 +88,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
     sessionSearch,
     loadMoreSessionSearch,
     renameSession,
+    forkSessionFrom,
     deleteSession,
     sessionActionError,
     sessionNotice,
@@ -118,6 +121,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
       sessionSearch: state.sessionSearch,
       loadMoreSessionSearch: state.loadMoreSessionSearch,
       renameSession: state.renameSession,
+      forkSessionFrom: state.forkSessionFrom,
       deleteSession: state.deleteSession,
       sessionActionError: state.sessionActionError,
       sessionNotice: state.sessionNotice,
@@ -139,6 +143,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   );
 
   const isSidebarCollapsed = collapsed ?? storedCollapsed;
+  const navRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -150,12 +155,33 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   // is what names the session it deletes.
   const [deleting, setDeleting] = useState<{ threadId: string; title: string } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  // The row whose fork is on the wire: its button turns into the console's shared
+  // in-flight spinner and stops accepting a second click.
+  const [forkingThreadId, setForkingThreadId] = useState<string | null>(null);
 
   // Ctrl+K bumps a token instead of reaching into the DOM from the App shell,
   // so a collapsed sidebar is expanded by the same store update.
   useEffect(() => {
     if (searchFocusToken > 0) searchRef.current?.focus();
   }, [searchFocusToken]);
+
+  // When expanded on desktop, clicking outside the sidebar smoothly collapses it.
+  // Drawer mode on phone/tablet relies on its modal scrim instead.
+  useEffect(() => {
+    if (isSidebarCollapsed) return;
+    if (navRef.current?.closest('.navigation-drawer')) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (navRef.current && navRef.current.contains(target)) return;
+      const toggleBtn = (target as Element).closest?.('button[aria-label="切换侧栏"]');
+      if (toggleBtn) return;
+      document.querySelector<HTMLButtonElement>('button[aria-label="切换侧栏"]')?.click();
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [isSidebarCollapsed]);
 
   const query = sessionQuery.trim();
   // A non-empty query is answered by the server-side metadata search; the local
@@ -166,6 +192,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   const commitRename = async (threadId: string, draft: string) => {
     const accepted = await renameSession(threadId, draft);
     if (accepted) setRenaming(null);
+  };
+
+  // Forking is additive, so it needs no confirmation -- but it does move the
+  // console (the child is attached, and a row of another project takes the
+  // console to that project), so it must not run twice for one row.
+  const forkRow = async (projectId: string, threadId: string) => {
+    if (forkingThreadId !== null) return;
+    setForkingThreadId(threadId);
+    try {
+      await forkSessionFrom({ project_id: projectId, thread_id: threadId });
+    } finally {
+      setForkingThreadId(null);
+    }
   };
 
   const confirmDelete = async (target: { threadId: string; title: string }) => {
@@ -206,15 +245,19 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
 
   return (
     <nav
+      ref={navRef}
       aria-label="项目与会话"
-      className={`material-chrome relative h-full shrink-0 select-none border-r border-line overflow-hidden transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)] ${
-        isSidebarCollapsed ? 'w-[44px]' : 'w-[240px]'
-      }`}
+      // The 44px rail box is the only in-flow part of the navigation: the
+      // expanded tree is `.navigation-overlay`, an out-of-flow panel over the
+      // workspace, so opening the sidebar no longer re-flows the open
+      // conversation.  The narrow bands keep their modal drawer, whose own rules
+      // (`.navigation-drawer nav`) size this same element to the drawer instead.
+      className="relative h-full w-[44px] shrink-0 select-none border-r border-line"
     >
       {/* Minimal Rail View (shown when collapsed) */}
       <div
         inert={!isSidebarCollapsed}
-        className={`absolute inset-0 flex flex-col items-center py-3 gap-1.5 transition-opacity duration-200 ${
+        className={`material-chrome absolute inset-0 flex flex-col items-center overflow-hidden py-3 gap-1.5 transition-opacity duration-200 ${
           isSidebarCollapsed ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
       >
@@ -234,6 +277,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
         >
           <Search20Regular aria-hidden="true" />
         </button>
+        <RunningSessionHolders onNavigate={onNavigate} />
         <div className="mt-auto flex flex-col items-center gap-1">
           <ConsoleActions orientation="column" />
           {/* The rail carries the same app-level entry points as the expanded
@@ -270,10 +314,13 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
       {/* Expanded Sidebar View */}
       <div
         inert={isSidebarCollapsed}
-        className={`w-[240px] h-full flex flex-col py-3 text-sm font-sans transition-opacity duration-200 ${
-          isSidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 pointer-events-auto'
+        style={{ width: isSidebarCollapsed ? '0px' : '240px' }}
+        // Smooth drawer slide transition purely via width, exactly aligned with RightDock.
+        className={`navigation-overlay material-chrome flex flex-col overflow-hidden text-sm font-sans select-none transition-[width] duration-300 ease-[cubic-bezier(0,0,0,1)] ${
+          isSidebarCollapsed ? 'border-r-0 pointer-events-none' : 'border-r border-line pointer-events-auto navigation-overlay-shadow'
         }`}
       >
+      <div className="w-[240px] navigation-content h-full flex flex-col py-3 shrink-0">
       <div className="px-3">
         {/* Nav entry the collapsed rail also carries, with the shortcut spelled
             out.  It creates in the *current* project, exactly like the rail's
@@ -543,6 +590,25 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                                   hover/focus: they are not status readouts. */}
                               <button
                                 type="button"
+                                onClick={() => {
+                                  void forkRow(project.project_id, sess.thread_id);
+                                }}
+                                disabled={forkingThreadId === sess.thread_id}
+                                title="从该会话分叉出新会话（继承已完成的对话）"
+                                aria-label={`分叉会话：${sess.title}`}
+                                className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                              >
+                                {forkingThreadId === sess.thread_id ? (
+                                  <SpinnerIos20Regular
+                                    aria-hidden="true"
+                                    className="animate-spin text-blue-500"
+                                  />
+                                ) : (
+                                  <BranchFork20Regular aria-hidden="true" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() =>
                                   setRenaming({ threadId: sess.thread_id, draft: sess.title })
                                 }
@@ -691,6 +757,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
         </div>
       </div>
 
+      </div>
       </div>
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {usageOpen && <UsageDashboardDialog onClose={() => setUsageOpen(false)} />}

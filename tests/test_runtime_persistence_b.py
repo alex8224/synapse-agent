@@ -25,6 +25,7 @@ from synapse.runtime.service.history import ListSessionsQuery, ReadSessionHistor
 from synapse.runtime.sessions import RuntimeManager, SessionRuntime
 from synapse.runtime.sessions.persistence import RuntimeProjectPersistence
 from synapse.runtime.sessions.ref import SessionRef
+from synapse.sessions.store import SessionStore
 from synapse.sessions.transcript import UiTranscriptEvent
 from synapse.sessions.transcript_projection import TranscriptProjection
 
@@ -99,7 +100,8 @@ def _settings(tmp_path: Path, *, backend: str = "sqlite") -> SimpleNamespace:
         checkpoint_backend=backend,
         model="test-model",
         active_model=None,
-        thinking=None,
+        enable_thinking=True,
+        reasoning_effort="high",
         resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
         session_summary_mode="local",
         session_summary_max_chars=600,
@@ -172,6 +174,36 @@ def test_submit_binds_the_first_user_message_as_the_session_title(tmp_path: Path
         page = await service.list_sessions(ListSessionsQuery(project_id="p1"))
         titles = {item.thread_id: item.title for item in page.items}
         assert titles["t1"] == "bind me"
+        await manager.shutdown()
+
+    run(scenario())
+
+
+def test_settled_turn_records_the_effective_reasoning_level(tmp_path: Path) -> None:
+    """The session row must carry the level the turn actually ran with.
+
+    The per-turn metadata write read a ``settings.thinking`` attribute that
+    ``Settings`` does not have, so it always stored NULL: the session had no level
+    of its own, and the next open fell back to the project/model-profile default.
+    """
+
+    async def scenario() -> None:
+        settings = _settings(tmp_path)
+        binder = RuntimeProjectPersistence(settings)
+        factory = _SessionFactory()
+        manager = _manager(settings, factory, binder)
+        service = _service(manager)
+        await service.open_session(OpenSessionCommand(SessionRef("p1", "t1")))
+
+        await service.submit_turn(
+            SubmitTurnCommand(session=SessionRef("p1", "t1"), text="hello")
+        )
+        await _settle(factory, "t1")
+
+        with SessionStore(settings.resolved_sessions_path()) as store:
+            binding = store.get_model_binding("t1")
+            assert binding.model == "test-model"
+            assert binding.thinking == "high"
         await manager.shutdown()
 
     run(scenario())

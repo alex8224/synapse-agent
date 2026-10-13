@@ -270,7 +270,7 @@ const MarkdownBody: React.FC<MarkdownProps> = ({ text }) => {
   if (blocks === null) {
     return <div className="whitespace-pre-wrap break-words">{text}</div>;
   }
-  return <div className="markdown-body">{content}</div>;
+  return <div className="markdown-body w-full min-w-0">{content}</div>;
 };
 
 /**

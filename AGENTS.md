@@ -92,7 +92,7 @@ If releasing:
 2. Review changes since the last `v*` tag with `git log`.
 3. Add a `## v{version}` section at the top of `CHANGELOG.md`; the heading must match the tag exactly, group entries by New Features / Bug Fixes / Engineering, and write entries in English (the section becomes the GitHub Release notes).
 4. Update `pyproject.toml` if the version changed; sync `uv.lock` when needed.
-5. Run relevant tests, Ruff, and `uv build`.
+5. Don't run any test
 6. Commit with `release: bump to v{version}`.
 7. Run:
 

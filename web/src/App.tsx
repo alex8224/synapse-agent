@@ -15,6 +15,7 @@ import { useTerminalStore } from './stores/useTerminalStore.ts';
 import { BottomBar } from './components/BottomBar';
 import { FileViewerHost } from './components/FileViewerHost';
 import { BackgroundAlerts } from './components/BackgroundAlerts';
+import { QuickSwitcher } from './components/QuickSwitcher.tsx';
 import { PairingGate } from './components/PairingGate';
 import { isTauri } from './client/tauri';
 import { NEW_SESSION_ACTION, readShortcutAction } from './client/deepLink';
@@ -43,6 +44,7 @@ export function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tabletCollapsed, setTabletCollapsed] = useState(true);
   const drawerRef = useRef<HTMLDivElement>(null);
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const closeNavigationDrawer = useCallback(() => {
     closeDrawer();
@@ -159,11 +161,9 @@ export function App() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         createNewSession();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'p' || e.key.toLowerCase() === 'k')) {
         e.preventDefault();
-        if (mobile) setDrawerOpen(true);
-        if (tablet) setTabletCollapsed(false);
-        requestSessionSearchFocus();
+        setQuickSwitcherOpen((prev) => !prev);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         useRightDockStore.getState().toggleOpen();
@@ -234,7 +234,14 @@ export function App() {
       </div>
       <div className="console-workspace flex min-w-0 flex-1 flex-col overflow-hidden" inert={mobile && drawerOpen}>
         <TopBar onToggleNavigation={toggleNavigation} navigationExpanded={mobile ? drawerOpen : tablet ? !tabletCollapsed : undefined} />
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/*
+          `relative` on purpose: this row is the positioning context for the
+          right dock's floating panel, so the panel is anchored to the workspace
+          area rather than to the viewport.  That is what keeps the header's dock
+          toggle, the window buttons and the status strip clear of it while it is
+          open.
+        */}
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {/*
           Deliberately *not* `overflow-hidden`: the transcript scroller reaches up
           behind the header (`.console-under-chrome`) so the header's acrylic has
@@ -273,6 +280,8 @@ export function App() {
       <FileViewerHost />
       {/* Invisible: system notifications and the app badge for this window. */}
       <BackgroundAlerts />
+      {/* Keyboard-first quick switcher & live activity dashboard (Ctrl+P / Ctrl+K) */}
+      <QuickSwitcher isOpen={quickSwitcherOpen} onClose={() => setQuickSwitcherOpen(false)} />
     </div>
   );
 }

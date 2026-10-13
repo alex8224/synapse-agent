@@ -354,33 +354,21 @@ class SlashController:
 
     @staticmethod
     def _settings_snapshot(settings: Any) -> tuple[Any, ...]:
-        """Capture the model-related fields mutated by binding restore."""
-        return (
-            getattr(settings, "active_model", None),
-            getattr(settings, "model", None),
-            getattr(settings, "enable_thinking", True),
-            getattr(settings, "reasoning_effort", None),
-            getattr(settings, "parallel_tool_calls", True),
-            getattr(settings, "openai_api_key", None),
-            getattr(settings, "anthropic_api_key", None),
-            getattr(settings, "openai_base_url", None),
-        )
+        """Capture the model-related fields mutated by binding restore.
+
+        The field list is owned by the shared session-axis helpers so a field
+        added to a session's identity cannot be forgotten by the rollback path.
+        """
+        from synapse.sessions.session_binding import snapshot_session_axes
+
+        return snapshot_session_axes(settings)
 
     @staticmethod
     def _restore_settings_snapshot(settings: Any, snapshot: tuple[Any, ...]) -> None:
         """Restore a snapshot taken by :meth:`_settings_snapshot`."""
-        names = (
-            "active_model",
-            "model",
-            "enable_thinking",
-            "reasoning_effort",
-            "parallel_tool_calls",
-            "openai_api_key",
-            "anthropic_api_key",
-            "openai_base_url",
-        )
-        for name, value in zip(names, snapshot, strict=False):
-            setattr(settings, name, value)
+        from synapse.sessions.session_binding import restore_session_axes
+
+        restore_session_axes(settings, snapshot)
 
     @staticmethod
     def _copy_settings(settings: Any) -> Any:
@@ -1007,6 +995,10 @@ class SlashController:
                 agent=app.agent,
                 thread_id=app.thread_id,
                 project_root=app.project_root,
+                # The pristine project settings this app started from: the
+                # switch resolves the target's model/reasoning axes from it, so
+                # this session's level cannot leak into the next one.
+                settings_baseline=getattr(app, "_settings_baseline", None),
             )
             turn = getattr(app, "_turn", None)
             if turn is not None:

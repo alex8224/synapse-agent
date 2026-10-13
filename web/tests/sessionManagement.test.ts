@@ -1,6 +1,6 @@
 /**
  * Offline tests for the console's session management surface
- * (`runtime.session.create` / `rename` / `delete` / `search`).
+ * (`runtime.session.create` / `rename` / `delete` / `search` / `fork`).
  *
  * No daemon, no host and no real socket: the core client runs over an injected
  * `SocketLike`, and the store runs against a stub client.  The properties pinned
@@ -18,6 +18,10 @@
  * - the switchable project list is enumerated over the shared runtime RPC
  *   (`runtime.project.list`), paged to a bounded end, and a stale page from a
  *   superseded enumeration can never overwrite the newer list.
+ * - `fork` opens the source first when the console is not attached to it (the
+ *   runtime only forks a session it already holds an agent for), forks in the
+ *   *source row's* project, and attaches to the child the server allocated; a
+ *   refusal reports the reason and moves nothing.
  */
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
@@ -215,6 +219,14 @@ let deleteImpl: (params: any) => Promise<unknown> = async () => ({
   retained_history: false,
   purge_failures: [],
 });
+/** The child the stub's fork allocates: a fresh thread id in the source's project. */
+let forkImpl: (params: any) => Promise<unknown> = async (params) => ({
+  command_id: 'cmd',
+  session: { project_id: params.source.project_id, thread_id: 'child' },
+  forked_from: params.source.thread_id,
+  boundary: 'latest',
+  message_count: 2,
+});
 /** Decoded byte length of one base64 chunk (the stub's own offset math). */
 function base64Bytes(text: string): number {
   const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
@@ -273,6 +285,10 @@ function stubClient() {
       stubCalls.push({ method: 'runtime.session.delete', params });
       return deleteImpl(params);
     },
+    forkSession: (params: any) => {
+      stubCalls.push({ method: 'runtime.session.fork', params });
+      return forkImpl(params);
+    },
     createSession: (params: any) => {
       stubCalls.push({ method: 'runtime.session.create', params });
       return Promise.resolve({
@@ -283,8 +299,9 @@ function stubClient() {
       });
     },
     unwatchEvents: () => Promise.resolve(undefined),
-    openSession: (session: any) =>
-      Promise.resolve({
+    openSession: (session: any) => {
+      stubCalls.push({ method: 'runtime.session.open', params: { session } });
+      return Promise.resolve({
         command_id: 'cmd',
         session,
         created: false,
@@ -296,7 +313,8 @@ function stubClient() {
           latest_sequence: 0,
           usage: { input_tokens: 20327, output_tokens: 93, cache_tokens: 19840 },
         },
-      }),
+      });
+    },
     watchEvents: () => Promise.resolve({ subscription_id: 'sub-1', cursor: 0 }),
     readSessionHistory: () =>
       Promise.resolve({
@@ -378,6 +396,13 @@ function resetStore() {
     deleted: true,
     retained_history: false,
     purge_failures: [],
+  });
+  forkImpl = async (params) => ({
+    command_id: 'cmd',
+    session: { project_id: params.source.project_id, thread_id: 'child' },
+    forked_from: params.source.thread_id,
+    boundary: 'latest',
+    message_count: 2,
   });
   appendImpl = stubAppend;
   finishImpl = async (params) => ({
@@ -880,4 +905,159 @@ test('the session view totals reach the store on attach', async () => {
     output: 93,
     cache: 19840,
   });
+});
+
+// --- fork -------------------------------------------------------------------
+
+/** A child row as the server lists it: named, and marked with its parent. */
+function childItem(
+  threadId = 'child',
+  title = 'Fork of First',
+  parent = 'thr',
+): SessionItem {
+  return { ...item(threadId, title), forked_from_thread_id: parent };
+}
+
+test('forking the session on screen sends the fork frame and attaches to the child', async () => {
+  listPlan = [
+    () =>
+      Promise.resolve({
+        items: [childItem(), item('thr', 'First')],
+        next_offset: null,
+        total: 2,
+      }),
+  ];
+
+  const accepted = await muted(() =>
+    useConsoleStore.getState().forkSessionFrom({ project_id: PROJECT, thread_id: 'thr' }),
+  );
+
+  assert.equal(accepted, true);
+  const fork = stubCalls.find((call) => call.method === 'runtime.session.fork');
+  assert.ok(fork);
+  // The whole completed history: the source row, and no turn boundary.
+  assert.deepEqual(fork.params, { source: { project_id: PROJECT, thread_id: 'thr' } });
+  // A session the console is already attached to is open in the runtime, so
+  // forking it must not pay for a second open of the *source*; the only open is
+  // the attach's own, for the child.
+  assert.deepEqual(
+    stubCalls
+      .filter((call) => call.method === 'runtime.session.open')
+      .map((call) => call.params.session.thread_id),
+    ['child'],
+  );
+  const state = useConsoleStore.getState();
+  assert.equal(state.currentSession.thread_id, 'child');
+  assert.equal(state.sessionTitle, 'Fork of First');
+  assert.equal(state.sessionActionError, null);
+  // The row carries its lineage, which is what the sidebar labels a fork with.
+  assert.equal(
+    state.sessions.find((entry) => entry.thread_id === 'child')?.forked_from_thread_id,
+    'thr',
+  );
+});
+
+test('forking a row the console has not opened opens the source first', async () => {
+  listPlan = [
+    () =>
+      Promise.resolve({
+        items: [childItem('child', 'Fork of Second', 'other'), item('thr', 'First')],
+        next_offset: null,
+        total: 2,
+      }),
+  ];
+
+  const accepted = await muted(() =>
+    useConsoleStore.getState().forkSessionFrom({ project_id: PROJECT, thread_id: 'other' }),
+  );
+
+  assert.equal(accepted, true);
+  // The runtime only forks a session it holds an agent for, so a listed but
+  // unopened row is opened first -- and the fork follows it, never the reverse.
+  assert.deepEqual(
+    stubCalls.slice(0, 2).map((call) => call.method),
+    ['runtime.session.open', 'runtime.session.fork'],
+  );
+  assert.equal(stubCalls[0].params.session.thread_id, 'other');
+  assert.equal(stubCalls[1].params.source.thread_id, 'other');
+  assert.equal(useConsoleStore.getState().currentSession.thread_id, 'child');
+});
+
+test('a turn-scoped fork keeps its boundary', async () => {
+  listPlan = [() => Promise.resolve({ items: [childItem()], next_offset: null, total: 1 })];
+
+  await muted(() => useConsoleStore.getState().forkSession('turn-3'));
+
+  const fork = stubCalls.find((call) => call.method === 'runtime.session.fork');
+  assert.ok(fork);
+  assert.deepEqual(fork.params, {
+    source: { project_id: PROJECT, thread_id: 'thr' },
+    through_turn: 'turn-3',
+  });
+});
+
+test('forking a row of another project moves the console to that project', async () => {
+  useConsoleStore.setState({
+    projects: [project('p1'), project('p2')],
+    activeProjectId: 'p1',
+    currentSession: { project_id: 'p1', thread_id: 'thr' },
+    sessions: [item('thr', 'First')],
+  });
+  listPlan = [
+    // The project being moved to is listed first, then the child's own list.
+    () => Promise.resolve({ items: [item('other', 'Second')], next_offset: null, total: 1 }),
+    () =>
+      Promise.resolve({
+        items: [childItem('child', 'Fork of Second', 'other'), item('other', 'Second')],
+        next_offset: null,
+        total: 2,
+      }),
+  ];
+
+  const accepted = await muted(() =>
+    useConsoleStore.getState().forkSessionFrom({ project_id: 'p2', thread_id: 'other' }),
+  );
+
+  assert.equal(accepted, true);
+  const fork = stubCalls.find((call) => call.method === 'runtime.session.fork');
+  assert.ok(fork);
+  // The fork belongs to the source row's project, never to the project the
+  // console happened to be working in.
+  assert.deepEqual(fork.params.source, { project_id: 'p2', thread_id: 'other' });
+  const state = useConsoleStore.getState();
+  assert.equal(state.activeProjectId, 'p2');
+  assert.equal(state.currentSession.project_id, 'p2');
+  assert.equal(state.currentSession.thread_id, 'child');
+  // Both list reads follow the child's project: the switch's own, then the one
+  // that carries the new child row.
+  assert.deepEqual(
+    stubCalls
+      .filter((call) => call.method === 'runtime.session.list')
+      .map((call) => call.params.project_id),
+    ['p2', 'p2'],
+  );
+});
+
+test('a refused fork reports the reason and leaves the session on screen', async () => {
+  forkImpl = async () => {
+    throw new RpcCallError('conflict', -32000, 'conflict');
+  };
+
+  const accepted = await muted(() =>
+    useConsoleStore.getState().forkSessionFrom({ project_id: PROJECT, thread_id: 'other' }),
+  );
+
+  assert.equal(accepted, false);
+  const state = useConsoleStore.getState();
+  assert.equal(state.currentSession.thread_id, 'thr');
+  assert.match(state.sessionActionError ?? '', /正在运行中/);
+  // Nothing moved: no child was attached and no list was re-read.
+  assert.equal(
+    stubCalls.some((call) => call.method === 'runtime.session.list'),
+    false,
+  );
+  assert.deepEqual(
+    state.sessions.map((entry) => entry.thread_id),
+    ['thr', 'other'],
+  );
 });

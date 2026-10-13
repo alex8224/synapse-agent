@@ -14,12 +14,16 @@ import type { ToolItemView } from '../../stores/historyMapper.ts';
 import {
   groupToolsForView,
   isTerminalTool,
+  runCodeFailureReason,
+  runCodeInput,
+  runCodeOutput,
   toolCommand,
   toolDetailParams,
   toolDisplayIntent,
   toolFailureReason,
   toolPreviewLanguage,
   toolStatusLabel,
+  type RunCodeToolGroup,
   type SubagentToolGroup,
   type ToolRenderNode,
 } from '../../stores/transcriptLabels.ts';
@@ -404,6 +408,112 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     );
   };
 
+  /**
+   * One programmatic (`run_code`) call: the call that started it and the tool calls the
+   * sandbox made on its behalf, behind the same rail a subagent's steps use.
+   *
+   * `run_code` is not a subagent -- it has no persona and no dispatched prompt -- so the
+   * header is a plain tool line rather than the persona card a `task` gets, and its steps
+   * are the live progress of the code the model chose to run.
+   */
+  const renderRunCodeCard = (node: RunCodeToolGroup, key: string) => {
+    const expanded = subagentExpansions[key] === true;
+    const running = node.parent.status === 'running'
+      || node.tools.some((s) => s.status === 'running' || s.status === 'pending');
+    const resultFailure = runCodeFailureReason(node.parent.preview);
+    const parentFailed = node.parent.error || node.parent.status === 'failed' || resultFailure !== '';
+    const failedSteps = node.tools.filter((s) => s.error || s.status === 'failed').length;
+    const intent = toolDisplayIntent(node.parent);
+    const code = expanded ? runCodeInput(node.parent) : '';
+    const output = expanded ? runCodeOutput(node.parent.preview) : '';
+    const failureReason = resultFailure || toolFailureReason(node.parent.status, node.parent.error);
+    return (
+      <div key={key} className="rounded-control border border-line bg-raised">
+        <button
+          type="button"
+          onClick={() => actions.onToggleSubagent(message.id, key)}
+          aria-expanded={expanded}
+          title={expanded ? '收起代码、输出与调用步骤' : '展开代码、输出与调用步骤'}
+          className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-pressed"
+        >
+          <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-control border border-line bg-sunken text-gray-600">
+            <WindowConsole20Regular aria-hidden="true" style={{ fontSize: '13px' }} />
+          </span>
+          <span className="shrink-0 rounded-control bg-sunken border border-line font-mono text-[10px] px-1 text-gray-600">
+            {node.parent.name}
+          </span>
+          {intent !== '' && (
+            <span className="truncate text-xs text-gray-900" title={intent}>{intent}</span>
+          )}
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-gray-400">
+            {failedSteps > 0 ? `${node.tools.length} 步骤 (${failedSteps} 失败)` : `${node.tools.length} 步骤`}
+          </span>
+          <span
+            className={"flex shrink-0 items-center gap-1 rounded-control px-1 font-mono text-[10px] " + (parentFailed ? "bg-red-100 text-red-700" : running ? "bg-blue-50 text-blue-500" : "bg-green-100 text-green-700")}
+          >
+            {parentFailed ? (
+              <DismissCircle20Regular aria-hidden="true" style={{ fontSize: '11px' }} />
+            ) : running ? (
+              <SpinnerIos20Regular aria-hidden="true" className="animate-spin" style={{ fontSize: '11px' }} />
+            ) : (
+              <Checkmark16Regular aria-hidden="true" style={{ fontSize: '11px' }} />
+            )}
+            {parentFailed ? '失败' : running ? '运行中' : '完成'}
+          </span>
+          {expanded ? (
+            <ChevronDown16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+          ) : (
+            <ChevronRight16Regular aria-hidden="true" className="shrink-0 text-gray-400" style={{ fontSize: '13px' }} />
+          )}
+        </button>
+        <div
+          className="fluent-accordion"
+          data-expanded={expanded}
+          aria-hidden={!expanded}
+          inert={!expanded}
+        >
+          <div className="fluent-accordion-content">
+            {/* Highlight only an opened call; its parent input/output exist even without child calls. */}
+            {expanded && (
+              <div className="min-w-0 border-l border-line ml-3.5 pl-3 space-y-2 pb-2 pr-2.5">
+                <div className="font-mono text-[10px] text-gray-400">
+                  运行时预览，长输入或输出可能已截断。
+                </div>
+                <section aria-label="run_code 输入代码">
+                  <div className="font-mono text-[10px] text-gray-500">输入代码 · Python</div>
+                  {code !== '' ? (
+                    <CodeBlock lang="python" code={code} />
+                  ) : (
+                    <div className="text-xs text-gray-400">输入代码未保留在此预览中。</div>
+                  )}
+                </section>
+                {node.tools.length > 0 && (
+                  <div className="font-mono text-[10px] text-gray-500">嵌套工具调用</div>
+                )}
+                {node.tools.map((t) => (
+                  <div key={t.id} className="relative">{renderToolRow(t, true)}</div>
+                ))}
+                <section aria-label="run_code 执行输出">
+                  <div className="font-mono text-[10px] text-gray-500">执行输出 · logs / value / error</div>
+                  {failureReason !== '' && (
+                    <div className="whitespace-pre-wrap break-all text-xs text-red-600">{failureReason}</div>
+                  )}
+                  {output !== '' ? (
+                    <CodeBlock lang="json" code={output} />
+                  ) : (
+                    <div className="text-xs text-gray-400">
+                      {running ? '执行中，等待输出…' : '此预览中没有执行输出。'}
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="max-w-[85%]">
       {processMeta && !processMeta.isExpanded ? (
@@ -448,6 +558,11 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
                 renderSubagentCard(
                   node,
                   node.parent.callId || node.parent.id || `${node.subagentName}-${index}`,
+                )
+              ) : node.type === 'run_code' ? (
+                renderRunCodeCard(
+                  node,
+                  node.parent.callId || node.parent.id || `run-code-${index}`,
                 )
               ) : (
                 renderToolRow(node.tool)

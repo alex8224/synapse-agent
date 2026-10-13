@@ -14,6 +14,9 @@
  *     (`.console-gutter` + `.console-column` in `index.css`): the same gutters
  *     around the same capped column, so the input card keeps the chat's left and
  *     right edges.
+ *  3. The two side panels float over the workspace instead of taking width from
+ *     it: the 44px rail is the only in-flow part of the navigation and the dock
+ *     is out of flow, so opening either one never re-flows the reading column.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -83,16 +86,71 @@ test('file explorers have mobile list/detail navigation without changing desktop
   assert.ok(styles.includes('.responsive-file-window { left: 8px !important'));
 });
 
-test('the sidebar runs the full height of the window', () => {
-  // Both the expanded tree and the collapsed rail are `h-full` columns and the
-  // shell is `h-screen`, so they reach from the top edge to the bottom one.
-  assert.equal(
-    (sidebar.match(/h-full/g) ?? []).length,
-    2,
-    'both sidebar states must be full-height columns',
+test('the desktop navigation floats over the workspace instead of squeezing it', () => {
+  // Opening a side panel used to re-flow the reading column: the chat re-wrapped
+  // and the composer moved out from under the pointer.  The rail keeps the
+  // shell's 44px column and only the expanded tree floats, so the workspace --
+  // and therefore `.console-column` -- measures the same either way.
+  assert.ok(sidebar.includes('relative h-full w-[44px]'), 'the rail must keep the in-flow 44px box');
+  assert.ok(
+    sidebar.includes('navigation-overlay'),
+    'the expanded tree must float over the workspace',
   );
   assert.ok(sidebar.includes('border-r'), 'the sidebar must keep its own right edge');
   assert.ok(app.includes('h-screen'), 'the shell must stay viewport-height');
+  // The floating panel spans the full viewport height, aligned with the shell
+  // and the 44px rail, without awkward header/status cutoffs.
+  assert.ok(
+    /\.navigation-overlay\s*\{[^}]*top:\s*0[^}]*bottom:\s*0[^}]*height:\s*100%/.test(
+      styles,
+    ),
+    'the floating panel runs the full height of the viewport',
+  );
+  assert.ok(
+    /\.navigation-overlay\s*\{[^}]*z-index:\s*40/.test(styles),
+    'the panel paints above the header (z-20) and the composer (z-30)',
+  );
+  // The material moved from the `nav` to the two views: a 44px rail box that
+  // carries a backdrop filter would cap the panel's blur at what the rail
+  // painted, so the conversation behind it would stay sharp through the fill.
+  assert.ok(
+    /className=\{`material-chrome absolute inset-0/.test(sidebar),
+    'the rail carries the material',
+  );
+  assert.ok(
+    /navigation-overlay material-chrome/.test(sidebar),
+    'and so does the floating panel',
+  );
+  assert.ok(
+    sidebar.includes('transition-[width]'),
+    'the floating panel smoothly slides purely via width like the right dock',
+  );
+  // The narrow bands keep the modal drawer, which owns the panel's geometry there.
+  assert.ok(
+    /\.navigation-drawer \.navigation-overlay\s*\{[^}]*position:\s*static[^}]*width:\s*100%/.test(styles),
+    'inside the drawer the panel must go back into flow at full size',
+  );
+});
+
+test('the right dock floats over the workspace instead of squeezing it', () => {
+  const dock = read('components/rightDock/RightDock.tsx');
+  // Out of flow, anchored to the workspace row (which `App.tsx` makes the
+  // positioning context) rather than to the viewport: that is what keeps the
+  // header's dock toggle, the window buttons and the status strip clear of it.
+  assert.ok(
+    dock.includes('material-chrome absolute inset-y-0 right-0 z-40'),
+    'the dock must be an out-of-flow panel in the workspace row',
+  );
+  assert.ok(dock.includes('dock-overlay'), 'a floating panel carries the elevation');
+  // The two panels share one layer, above the floating composer (z-30): the chat
+  // column precedes the dock in the DOM, so an equal layer would leave the input
+  // card painted over the navigation panel on a narrow desktop window.
+  assert.ok(composer.includes('bottom-0 z-30'), 'the composer keeps its own layer');
+  assert.ok(
+    app.includes('relative flex min-h-0 flex-1 overflow-hidden'),
+    'the workspace row must be the positioning context the dock is anchored to',
+  );
+  assert.ok(styles.includes('.dock-overlay'), 'the elevation lives in the theme layer');
 });
 
 test('the sidebar tree scrolls with no visible scrollbar', () => {

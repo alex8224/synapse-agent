@@ -2,16 +2,29 @@ import React, { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { CodeBlock } from './CodeBlock.tsx';
 import { GeneratedHtml } from './GeneratedHtml.tsx';
+import { MermaidLightbox } from './MermaidLightbox.tsx';
 import {
+  MERMAID_THEME,
+  MERMAID_THEME_VARIABLES,
   MAX_DIAGRAM_CHARS,
+  currentDataTheme,
   describeMermaidError,
+  diagramPaletteFor,
+  freezeSvgSize,
   rejectionReason,
 } from '../markdown/mermaid.ts';
+import type { DiagramPalette, DiagramSize } from '../markdown/mermaid.ts';
+import { useAppearanceStore } from '../stores/appearance.ts';
 
 type Phase =
   | { status: 'idle' }
   | { status: 'rendering' }
-  | { status: 'ready'; svg: string }
+  | {
+      status: 'ready';
+      svg: string;
+      /** The drawing's own size, or `null` when the SVG carries none. */
+      size: DiagramSize | null;
+    }
   | { status: 'failed'; reason: string };
 
 type MermaidApi = typeof import('mermaid')['default'];
@@ -32,6 +45,10 @@ let diagramSeq = 0;
  * `htmlLabels: false` keeps labels out of `foreignObject`, and
  * `suppressErrorRendering` makes a bad diagram reject instead of injecting
  * mermaid's error graphic.
+ *
+ * The palette is *not* set here: mermaid bakes the theme into the SVG, so the
+ * one it should draw with depends on the document at render time (see
+ * {@link prepareMermaid}).
  */
 let mermaidPromise: Promise<MermaidApi> | null = null;
 
@@ -39,15 +56,9 @@ function loadMermaid(): Promise<MermaidApi> {
   mermaidPromise ??= import('mermaid')
     .then((module) => {
       const api = module.default;
-      api.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        htmlLabels: false,
-        theme: 'default',
-        fontFamily: 'inherit',
-        suppressErrorRendering: true,
-        maxTextSize: MAX_DIAGRAM_CHARS,
-      });
+      // A baseline only; the render path re-initializes with the palette the
+      // document is actually in before every draw.
+      api.initialize({ ...MERMAID_BASE_CONFIG, theme: MERMAID_THEME });
       return api;
     })
     .catch((error: unknown) => {
@@ -57,6 +68,41 @@ function loadMermaid(): Promise<MermaidApi> {
       throw error;
     });
   return mermaidPromise;
+}
+
+/** Render-independent mermaid settings; the palette is layered on per render. */
+const MERMAID_BASE_CONFIG = {
+  startOnLoad: false,
+  securityLevel: 'strict' as const,
+  htmlLabels: false,
+  fontFamily: 'inherit',
+  suppressErrorRendering: true,
+  maxTextSize: MAX_DIAGRAM_CHARS,
+};
+
+/**
+ * The mermaid runtime configured for one palette.
+ *
+ * mermaid's `render` takes no per-call config (v12), so the palette is applied
+ * by `initialize` immediately before rendering.  The call is cheap -- it merges
+ * one object -- and it is what lets a diagram follow a theme switch without a
+ * reload.
+ *
+ * An earlier revision resolved the palette from the console's own CSS tokens
+ * and cached it per palette.  That cache was wrong: the `light` entry was filled
+ * on the first diagram, whatever theme was active at the time, so a session
+ * first drawn in dark mode cached dark colours under `light` and then painted
+ * every light-theme diagram dark.  The palette is a constant now, and there is
+ * nothing to resolve or cache; only the connectors vary with the console theme.
+ */
+async function prepareMermaid(palette: DiagramPalette): Promise<MermaidApi> {
+  const api = await loadMermaid();
+  api.initialize({
+    ...MERMAID_BASE_CONFIG,
+    theme: MERMAID_THEME,
+    themeVariables: MERMAID_THEME_VARIABLES[palette],
+  });
+  return api;
 }
 
 /**
@@ -91,6 +137,16 @@ export interface MermaidBlockProps {
   streaming: boolean;
 }
 
+interface DiagramView {
+  /** The source these flags were chosen for; a redraw starts from the defaults. */
+  source: string;
+  zoomed: boolean;
+  actual: boolean;
+  fullHeight: boolean;
+  /** The stage's height when the viewer opened, so the row cannot collapse. */
+  placeholder: number | null;
+}
+
 /**
  * A `mermaid` fence rendered as a diagram.
  *
@@ -105,9 +161,35 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   // The last *completed* render, tagged with the source it came from.  The
   // displayed phase is then derived during render instead of being pushed into
   // state from the effect, so a new diagram never flashes the previous one.
-  const [rendered, setRendered] = useState<{ source: string; phase: Phase } | null>(null);
+  const [rendered, setRendered] = useState<{
+    source: string;
+    palette: DiagramPalette;
+    phase: Phase;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The card's own view flags, tagged with the source they were chosen for.
+   *
+   * Deriving them during render -- the same way `phase` is derived -- is what
+   * makes a *new* diagram start from the defaults: a source change is a
+   * different drawing, so neither the viewer nor the 1:1 toggle may carry over
+   * to it, and no effect has to push that reset into state.
+   */
+  const [view, setView] = useState<DiagramView | null>(null);
+  /** The card's stage: measured when the viewer opens (see `openViewer`). */
+  const stageRef = useRef<HTMLDivElement | null>(null);
+
+  // The palette is baked into the SVG, so the diagram has to be redrawn when the
+  // document theme changes.  Subscribe to the appearance store (whose switches
+  // rewrite `data-theme`) and resolve the palette from the DOM, matching what
+  // `diagramPaletteFor` reads.  `appearance` is in the selector so a switch
+  // re-renders even while it stays `system`.
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const palette = diagramPaletteFor(currentDataTheme());
+  // `appearance` is a deliberate dependency: it is the store signal that the
+  // resolved `data-theme` may have changed under a stable value of `palette`.
+  void appearance;
 
   const source = code.trim();
   const rejected = rejectionReason(source);
@@ -115,9 +197,35 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     ? { status: 'idle' }
     : rejected !== null
       ? { status: 'failed', reason: rejected }
-      : rendered !== null && rendered.source === source
+      : rendered !== null && rendered.source === source && rendered.palette === palette
         ? rendered.phase
         : { status: 'rendering' };
+
+  const mine = view !== null && view.source === source ? view : null;
+  const zoomed = mine?.zoomed ?? false;
+  const actualSize = mine?.actual ?? false;
+  const fullHeight = mine?.fullHeight ?? true;
+  const placeholder = mine?.placeholder ?? null;
+  const setViewFlags = (next: Partial<Omit<DiagramView, 'source'>>): void => {
+    setView({ source, zoomed, actual: actualSize, fullHeight, placeholder, ...next });
+  };
+
+  /**
+   * Open the viewer on the diagram the card is showing.
+   *
+   * The diagram is rendered exactly once -- mermaid's ids are not namespaced
+   * (`actor0`, `root-0`, ... besides the diagram's own id, and its theme CSS is
+   * scoped by `#<svgId>`), so the card empties its stage while the viewer is
+   * open.  Recording the stage's height first keeps the transcript row from
+   * collapsing behind the overlay and jumping when it closes.
+   */
+  const openViewer = (): void => {
+    const stage = stageRef.current;
+    setViewFlags({
+      zoomed: true,
+      placeholder: stage === null ? null : Math.round(stage.getBoundingClientRect().height),
+    });
+  };
 
   useEffect(() => {
     // `source` (not `code`) is the dependency: a whitespace-only edit does not
@@ -129,13 +237,25 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     void (async () => {
       try {
         if (host === null) throw new Error('渲染容器不可用');
-        const mermaid = await loadMermaid();
+        const mermaid = await prepareMermaid(palette);
         const { svg } = await mermaid.render(id, source, host);
         if (cancelled) return;
-        setRendered({ source, phase: { status: 'ready', svg: sanitizeSvg(svg) } });
+        // mermaid pins every diagram to the container width (`width="100%"` plus
+        // an inline `max-width`); freezing it to its own `viewBox` size is what
+        // lets the card scroll and the viewer zoom (see `markdown/mermaid.ts`).
+        const frozen = freezeSvgSize(sanitizeSvg(svg));
+        setRendered({
+          source,
+          palette,
+          phase: { status: 'ready', svg: frozen.html, size: frozen.size },
+        });
       } catch (error: unknown) {
         if (!cancelled) {
-          setRendered({ source, phase: { status: 'failed', reason: describeMermaidError(error) } });
+          setRendered({
+            source,
+            palette,
+            phase: { status: 'failed', reason: describeMermaidError(error) },
+          });
         }
       } finally {
         // mermaid leaves its own copy (and any error graphic) in the render
@@ -146,7 +266,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     return () => {
       cancelled = true;
     };
-  }, [source, streaming]);
+  }, [source, streaming, palette]);
 
   const copy = (): void => {
     const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
@@ -188,27 +308,92 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
     );
   }
 
+  // A diagram with no measurable size keeps mermaid's own sizing: there is
+  // nothing to fit a viewer to, so only the copy button remains.
+  const size = phase.size;
+  const control =
+    'font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer';
+
   return (
     <>
       {host}
-      <div className="my-2 overflow-hidden rounded-control border border-line bg-surface">
-        <div className="flex items-center justify-between border-b border-line bg-sunken px-2.5 py-1">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
-            mermaid
-          </span>
-          <button
-            type="button"
-            onClick={copy}
-            title="复制图形源码"
-            className="font-mono text-[10px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
-          >
-            {copied ? '已复制' : '复制源码'}
-          </button>
+      <div className="my-2 w-full max-w-full min-w-0 overflow-hidden rounded-control border border-line bg-surface">
+        <div className="flex items-center justify-between gap-2 border-b border-line bg-sunken px-2.5 py-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
+              mermaid
+            </span>
+            {size !== null && (
+              <span className="font-mono text-[10px] text-gray-400" data-diagram-size>
+                {Math.round(size.width)} × {Math.round(size.height)}
+              </span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {size !== null && (
+              <>
+                <button
+                  type="button"
+                  data-diagram-actual
+                  onClick={() => setViewFlags({ actual: !actualSize })}
+                  title="在原始大小与适应卡片宽度之间切换"
+                  className={control}
+                >
+                  {actualSize ? '适应宽度' : '原始大小'}
+                </button>
+                <button
+                  type="button"
+                  data-diagram-full-height
+                  onClick={() => setViewFlags({ fullHeight: !fullHeight })}
+                  title={fullHeight ? '限制图形最大高度以节省阅读空间' : '展开为图形完整高度'}
+                  className={control}
+                >
+                  {fullHeight ? '限制高度' : '展开高度'}
+                </button>
+                <button
+                  type="button"
+                  data-diagram-zoom
+                  onClick={openViewer}
+                  title="全屏查看图形（可缩放与平移）"
+                  className={control}
+                >
+                  放大
+                </button>
+              </>
+            )}
+            <button type="button" onClick={copy} title="复制图形源码" className={control}>
+              {copied ? '已复制' : '复制源码'}
+            </button>
+          </div>
         </div>
-        <div className="overflow-x-auto px-3 py-3">
-          <GeneratedHtml html={phase.svg} className="mermaid-diagram" />
+        {/*
+          The stage, not mermaid, decides how big the drawing is, and it caps
+          its own height: a tall diagram scrolls inside the card instead of
+          stretching the transcript row to the height of the drawing.
+        */}
+        <div
+          ref={stageRef}
+          data-diagram-stage
+          style={zoomed && placeholder !== null ? { height: placeholder } : undefined}
+          className={`fluent-scrollbar ${fullHeight ? 'max-h-none' : 'max-h-[28rem]'} w-full max-w-full min-w-0 overflow-auto px-3 py-3`}
+        >
+          {/* Exactly one copy exists: while the viewer is open it is the one in
+              the overlay, so no mermaid id is ever duplicated in the document. */}
+          {!zoomed && (
+            <GeneratedHtml
+              html={phase.svg}
+              className={`mermaid-diagram ${actualSize ? 'mermaid-actual' : 'mermaid-fit'}`}
+            />
+          )}
         </div>
       </div>
+      {zoomed && size !== null && (
+        <MermaidLightbox
+          svg={phase.svg}
+          size={size}
+          onClose={() => setViewFlags({ zoomed: false })}
+        />
+      )}
     </>
   );
 };

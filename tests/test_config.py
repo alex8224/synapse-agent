@@ -4,8 +4,47 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from synapse.config import Settings, bootstrap_project_env, load_settings
 from synapse.runtime.safety import build_interrupt_on, check_command
+
+
+def test_ptc_defaults_and_environment(monkeypatch):
+    for name, field in Settings.model_fields.items():
+        if name == "tool_mode" or name.startswith("ptc_"):
+            monkeypatch.delenv(str(field.validation_alias), raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.tool_mode == "native"
+    assert settings.ptc_max_calls == 100
+    assert settings.ptc_max_parallel == 8
+    assert settings.ptc_timeout_seconds == 120
+    assert settings.ptc_max_output_bytes == 64_000
+    assert settings.ptc_max_result_bytes == 4_000_000
+    assert settings.ptc_max_code_bytes == 64_000
+
+    monkeypatch.setenv("AGENT_TOOL_MODE", "both")
+    monkeypatch.setenv("AGENT_PTC_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("AGENT_PTC_MAX_PARALLEL", "2")
+    configured = Settings(_env_file=None)
+    assert configured.tool_mode == "both"
+    assert configured.ptc_timeout_seconds == 3.5
+    assert configured.ptc_max_parallel == 2
+
+
+@pytest.mark.parametrize("override", [
+    {"tool_mode": "unknown"},
+    {"ptc_timeout_seconds": float("nan")},
+    {"ptc_timeout_seconds": 0},
+    {"ptc_max_calls": 0},
+    {"ptc_max_parallel": 65},
+    {"ptc_max_output_bytes": 255},
+    {"ptc_max_result_bytes": 1023},
+    {"ptc_max_code_bytes": 255},
+])
+def test_ptc_rejects_invalid_configuration(override):
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **override)
 
 
 def test_stt_engine_defaults_to_the_browser_and_reads_env(monkeypatch):
@@ -247,3 +286,17 @@ def test_minimal_filesystem_tools_defaults_and_env(monkeypatch):
     settings_on = Settings(_env_file=None)
     assert settings_on.minimal_filesystem_tools is True
     assert settings_on.minimal_filesystem_excluded_tools == ["search_files", "write_file"]
+
+
+def test_suggestion_model_default_and_env(monkeypatch):
+    monkeypatch.delenv("AGENT_SUGGESTION_MODEL", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.suggestion_model is None
+
+    monkeypatch.setenv("AGENT_SUGGESTION_MODEL", '  "fast-mini"  ')
+    configured = Settings(_env_file=None)
+    assert configured.suggestion_model == "fast-mini"
+
+    monkeypatch.setenv("AGENT_SUGGESTION_MODEL", "   ")
+    blank = Settings(_env_file=None)
+    assert blank.suggestion_model is None

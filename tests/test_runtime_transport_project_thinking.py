@@ -17,10 +17,7 @@ from typing import Any
 
 import pytest
 
-from synapse.runtime.daemon.application import (
-    apply_project_layer_thinking,
-    apply_project_thinking_default,
-)
+from synapse.runtime.daemon.application import apply_project_thinking_default
 from synapse.runtime.service import (
     PROJECT_THINKING,
     SESSION_READ,
@@ -51,6 +48,7 @@ from synapse.runtime.transport.protocol import (
     decode_params,
     dispatch,
 )
+from synapse.sessions.session_binding import apply_project_layer_thinking
 from synapse.settings.config_paths import (
     read_project_thinking_default,
     set_project_reasoning_effort,

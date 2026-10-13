@@ -16,6 +16,12 @@
  * flat `2rem` and the column fills the rest.  Both are measured against the pane
  * the composer wrapper spans.
  *
+ * Side panels: on the desktop band the navigation's expanded tree and the right
+ * dock both float over the workspace (`.navigation-overlay` / `.dock-overlay`),
+ * so opening either one has to leave the reading column and the composer exactly
+ * where they were.  The 44px navigation rail stays in flow, which is what makes
+ * that true for the sidebar too.
+ *
  * Run:
  *   $env:NODE_OPTIONS=''; $env:NODE_USE_ENV_PROXY=''; node tests/shellLayout.verify.ts
  */
@@ -89,6 +95,19 @@ interface Rect {
 interface Snapshot {
   viewport: { w: number; h: number }
   sidebar: Rect
+  /**
+   * The expanded navigation panel: the floating column over the workspace, with
+   * the state the collapsed preference leaves it in.  Null when it is not
+   * rendered at all.
+   */
+  panel: (Rect & { inert: boolean; opacity: string; backdropFilter: string }) | null
+  /**
+   * The navigation `nav`'s own `backdrop-filter`.  It has to stay `none`: an
+   * ancestor with one is the panel's backdrop root, so the panel could only blur
+   * what the 44px rail box painted and the conversation behind its translucent
+   * fill would stay sharp.
+   */
+  navBackdropFilter: string
   header: Rect
   /** The header's centre grid track: the session title chip. */
   title: Rect
@@ -98,6 +117,8 @@ interface Snapshot {
    */
   tree: { scrollbarWidth: string; tabIndex: string | null } | null
   footer: Rect
+  /** The right dock's panel (`aside`); zero-wide while the dock is closed. */
+  dock: (Rect & { inert: boolean }) | null
   /** The workspace pane (`main`): the reference for the reading width. */
   pane: Rect
   card: Rect
@@ -138,12 +159,14 @@ const SNAPSHOT = `(() => {
     }
   }
   const sidebar = document.querySelector('nav')
+  const panelElement = document.querySelector('#console-navigation .navigation-overlay')
   const header = document.querySelector('header')
   // The middle grid track of the header: the session title chip.
   const title = header.children[1]
   const treeElement = sidebar.querySelector('.sidebar-scroll')
   const tree = treeElement?.closest('[inert]') ? null : treeElement
   const footer = document.querySelector('footer')
+  const dockElement = document.querySelector('aside')
   const card = document.querySelector('#console-composer').closest('.console-column')
   const cardWrapper = card.parentElement
   const cardWrapperStyle = getComputedStyle(cardWrapper)
@@ -151,6 +174,17 @@ const SNAPSHOT = `(() => {
   return {
     viewport: { w: window.innerWidth, h: window.innerHeight },
     sidebar: rect(sidebar), header: rect(header), footer: rect(footer),
+    panel: panelElement === null ? null : {
+      ...rect(panelElement),
+      inert: panelElement.hasAttribute('inert'),
+      opacity: getComputedStyle(panelElement).opacity,
+      backdropFilter: getComputedStyle(panelElement).backdropFilter,
+    },
+    navBackdropFilter: getComputedStyle(sidebar).backdropFilter,
+    dock: dockElement === null ? null : {
+      ...rect(dockElement),
+      inert: dockElement.hasAttribute('inert'),
+    },
     title: rect(title),
     tree: tree === null ? null : {
       scrollbarWidth: getComputedStyle(tree).scrollbarWidth,
@@ -428,17 +462,39 @@ async function main(): Promise<void> {
 
     await setViewport(client, page, 1440, 900)
     await new Promise((resolve) => setTimeout(resolve, 500))
+    // Default is collapsed now; expand sidebar to test wide panel layout
+    await evaluate(
+      client,
+      page,
+      `(() => { document.querySelector('button[aria-label="切换侧栏"]')?.click(); return true })()`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 500))
     const wide = (await evaluate(client, page, SNAPSHOT)) as Snapshot
     console.log('--- 1440x900 ---')
     console.log(JSON.stringify(wide, null, 2))
     console.log('')
-    check('sidebar starts at the top edge', wide.sidebar.top, 0)
-    check('sidebar spans the viewport height', wide.sidebar.height, wide.viewport.h)
-    check('sidebar keeps its 240px width', wide.sidebar.width, 240)
-    check('header starts right of the sidebar', wide.header.left, wide.sidebar.width)
+    check('the navigation rail starts at the top edge', wide.sidebar.top, 0)
+    check('the navigation rail spans the viewport height', wide.sidebar.height, wide.viewport.h)
+    check('the navigation rail keeps its 44px box', wide.sidebar.width, 44)
+    check('header starts right of the rail', wide.header.left, wide.sidebar.width)
     check('header stays at the top edge', wide.header.top, 0)
-    check('status strip starts right of the sidebar', wide.footer.left, wide.sidebar.width)
+    check('status strip starts right of the rail', wide.footer.left, wide.sidebar.width)
     check('status strip ends at the bottom edge', wide.footer.bottom, wide.viewport.h)
+    // The expanded navigation floats over the workspace: it spans the row
+    // between the header and the strip, keeps the 240px column, and overlays the
+    // pane instead of widening it -- which is what stops the chat re-wrapping.
+    check('the navigation panel is live', wide.panel?.inert, false)
+    check('the navigation panel starts at the top edge', wide.panel?.top, 0)
+    check('the navigation panel ends at the bottom edge', wide.panel?.bottom, wide.viewport.h)
+    check('the navigation panel keeps the 240px column', wide.panel?.width, 240)
+    check('the rail box is not the panel\'s backdrop root', wide.navBackdropFilter, 'none')
+    check('the panel takes the theme\'s material', wide.panel?.backdropFilter !== 'none', true)
+    check(
+      'the navigation panel overlays the pane',
+      wide.panel !== null && wide.pane !== null && wide.panel.right > wide.pane.left,
+      true,
+    )
+    check('the pane keeps the workspace width', wide.pane.width, wide.viewport.w - wide.sidebar.width)
     check('the pane renders its reading columns', wide.columns.length >= 1, true)
     checkReadingColumns(wide)
     checkDesktopColumn(wide)
@@ -481,6 +537,47 @@ async function main(): Promise<void> {
     check('nav shows the Ctrl+N hint', wide.navText.includes('Ctrl+N'), true)
     check('search shows the Ctrl+K hint', wide.navText.includes('Ctrl+K'), true)
 
+    // The right dock is the other floating panel: opening it must leave the
+    // reading column and the composer exactly where they were, and it must stay
+    // clear of the header and the status strip (the panel is anchored to the
+    // workspace row, not to the viewport).
+    await evaluate(
+      client,
+      page,
+      `(() => { document.querySelector('[aria-label="展开/收起辅助工作台"]').click(); return true })()`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const docked = (await evaluate(client, page, SNAPSHOT)) as Snapshot
+    console.log('')
+    console.log('--- 1440x900 with the right dock open ---')
+    console.log(
+      JSON.stringify({ dock: docked.dock, pane: docked.pane, card: docked.card }, null, 2),
+    )
+    check('the dock is open', docked.dock?.inert, false)
+    check('the dock keeps its default 400px', docked.dock?.width, 400)
+    check(
+      'the dock spans the workspace row',
+      { top: docked.dock?.top, bottom: docked.dock?.bottom },
+      { top: docked.header.bottom, bottom: docked.footer.top },
+    )
+    check(
+      'opening the dock does not move the reading column',
+      { left: docked.scroller?.column.left, width: docked.scroller?.column.width },
+      { left: wide.scroller?.column.left, width: wide.scroller?.column.width },
+    )
+    check('opening the dock does not move the composer', docked.card.left, wide.card.left)
+    check(
+      'the dock overlays the reading column',
+      docked.dock !== null && wide.scroller !== null && docked.dock.left < wide.scroller.column.right,
+      true,
+    )
+    await evaluate(
+      client,
+      page,
+      `(() => { document.querySelector('[aria-label="展开/收起辅助工作台"]').click(); return true })()`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
     // Wide workspace: the chat column keeps growing while the composer stops at its
     // cap, so the two are visibly decoupled.
     await setViewport(client, page, 1920, 1080)
@@ -518,6 +615,16 @@ async function main(): Promise<void> {
     check('header follows the collapsed rail', collapsed.header.left, collapsed.sidebar.width)
     check('status strip follows the collapsed rail', collapsed.footer.left, collapsed.sidebar.width)
     check('the collapsed rail carries no tree', collapsed.tree, null)
+    // The whole point of the floating panel: folding the navigation does not move
+    // the reading column -- or the composer on it -- by a single pixel.
+    check('the collapsed navigation hides its panel', collapsed.panel?.inert, true)
+    check('the collapsed navigation panel width is zero', collapsed.panel?.width, 0)
+    check(
+      'folding the navigation leaves the reading column where it is',
+      { left: collapsed.scroller?.column.left, width: collapsed.scroller?.column.width },
+      { left: wide.scroller?.column.left, width: wide.scroller?.column.width },
+    )
+    check('folding the navigation leaves the composer where it is', collapsed.card.left, wide.card.left)
 
     // Narrow window: the chips truncate instead of pushing the pane sideways.
     await evaluate(
@@ -584,7 +691,42 @@ async function main(): Promise<void> {
     await setViewport(client, page, 1440, 900)
     await new Promise((resolve) => setTimeout(resolve, 300))
     check('desktop sidebar preference survives mobile navigation', await evaluate(client, page,
-      `Math.round(document.querySelector('nav').getBoundingClientRect().width)`), 240)
+      `(() => {
+        const panel = document.querySelector('#console-navigation .navigation-overlay');
+        if (panel === null) return 'missing';
+        return panel.hasAttribute('inert')
+          ? 'collapsed'
+          : Math.round(panel.getBoundingClientRect().width);
+      })()`), 240)
+
+    // A narrow desktop window is the only place the two overlap: the input card
+    // reaches under the navigation panel there, and the panel has to be the one
+    // on top.  At an equal layer the card won, because the chat column precedes
+    // the dock in the DOM -- the panels' own `z-index: 40` is what fixes it.
+    await setViewport(client, page, 1024, 800)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const overlap = (await evaluate(client, page, `(() => {
+      const card = document.querySelector('#console-composer').closest('.console-column');
+      const panel = document.querySelector('#console-navigation .navigation-overlay');
+      if (card === null || panel === null) return { overlaps: false, top: 'missing' };
+      const cardRect = card.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const x = Math.round(
+        (Math.max(cardRect.left, panelRect.left) + Math.min(cardRect.right, panelRect.right)) / 2,
+      );
+      const y = Math.round(cardRect.top + cardRect.height / 2);
+      const top = document.elementFromPoint(x, y);
+      return {
+        overlaps: cardRect.left < panelRect.right,
+        top: top === null ? 'none' : (panel.contains(top) ? 'panel' : (card.contains(top) ? 'card' : top.tagName)),
+      };
+    })()`)) as { overlaps: boolean; top: string }
+    console.log('')
+    console.log(`--- 1024x800 (panel over the input card) --- ${JSON.stringify(overlap)}`)
+    check('the input card reaches under the navigation panel at 1024px', overlap.overlaps, true)
+    check('the floating panel is painted above the input card', overlap.top, 'panel')
+    await setViewport(client, page, 1440, 900)
+    await new Promise((resolve) => setTimeout(resolve, 400))
 
     const shot = (await client.send(
       'Page.captureScreenshot',

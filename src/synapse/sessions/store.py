@@ -387,11 +387,23 @@ class SessionStore:
         binding: ModelBinding,
         *,
         also_last: bool = True,
-    ) -> None:
-        """Persist model/thinking for a session and optionally as last-used prefs."""
+        create: bool = True,
+    ) -> bool:
+        """Persist model/thinking for a session and optionally as last-used prefs.
+
+        ``create=False`` writes only a row that already exists.  That is what a
+        session *resolution* wants: materializing the axes a session actually
+        runs with must never bring a session the user never used into the
+        database (``/new`` deliberately defers its row until the first message).
+
+        Returns True when the session row was written.
+        """
         if not binding.has_data():
-            return
+            return False
+        wrote = False
         if thread_id:
+            if not create and self.get(thread_id) is None:
+                return False
             self.ensure(thread_id, model=binding.model)
             self._conn.execute(
                 """
@@ -411,8 +423,10 @@ class SessionStore:
                 ),
             )
             self._conn.commit()
+            wrote = True
         if also_last:
             self.set_last_model_binding(binding)
+        return wrote
 
     def get_model_binding(self, thread_id: str) -> ModelBinding:
         info = self.get(thread_id)
@@ -768,6 +782,18 @@ def apply_binding_to_settings(settings: Any, binding: ModelBinding) -> bool:
     1. profile alias (active_model) when known in registry
     2. concrete model id
     3. thinking label always applied when present
+
+    The profile is applied for *identity* (model, credentials, transport) only:
+    its own reasoning default is deliberately not seeded, because the level in
+    force is owned by the caller -- a project layer default or a previous
+    resolution -- and the binding's stored level, when it has one, overrides
+    both.  Seeding here would silently replace the session's level with the
+    model profile's default on every open and every switch.
+
+    Callers that switch a live settings object between sessions must resolve
+    through :func:`synapse.sessions.session_binding.resolve_session_axes`
+    instead of calling this directly, so the axes are reset to a baseline
+    first rather than layered onto the previous session's values.
     """
     if not binding.has_data():
         return False
@@ -797,7 +823,7 @@ def apply_binding_to_settings(settings: Any, binding: ModelBinding) -> bool:
         except KeyError:
             profile = None
         if profile is not None:
-            apply_profile_to_settings(settings, profile, seed_thinking=True)
+            apply_profile_to_settings(settings, profile, seed_thinking=False)
             applied_profile = True
 
     if not applied_profile and binding.model:
@@ -805,7 +831,7 @@ def apply_binding_to_settings(settings: Any, binding: ModelBinding) -> bool:
         try:
             # If it's a known profile name or concrete model id, prefer that path.
             profile = reg.get(binding.model)
-            apply_profile_to_settings(settings, profile, seed_thinking=True)
+            apply_profile_to_settings(settings, profile, seed_thinking=False)
             applied_profile = True
         except KeyError:
             settings.model = binding.model

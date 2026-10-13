@@ -132,13 +132,34 @@ can preserve unrelated content.
 `search_session` and `read_session` are forbidden unless the user explicitly
 asks to inspect or compare other sessions.
 
-Use direct repository tools by default. Use `task` subagents only for large work
-that genuinely benefits from isolation; never use them for small tasks,
+Use a visible native tool directly for a single simple call; do not wrap one `execute`
+merely to run a script. Do not invent unrelated queries to make a batch.
+When `run_code` is available and permitted, prefer it for related batches, result-driven
+dependency chains, bounded pagination/filtering/aggregation, or substantial output reduction.
+Continue mechanical dependencies in one block: search -> paths/IDs/URLs -> bounded detail
+reads -> deduplicate/group/rank -> return evidence. Extracting paths, following cursors and
+applying explicit filters do not require another model turn. Return to the model for semantic
+judgment (root cause, repair choice), unknown result shapes, or exhausted budgets.
+Batch independent calls with `asyncio.gather` within the configured concurrency limit;
+await dependent stages in order. Host contracts decide actual parallelism: `execute` and
+unknown-contract tools remain exclusive even inside `gather`.
+Use published `data` schemas, bound calls/pages/items/output, stop on non-advancing cursors,
+and report partial results and completeness/unknown status rather than dumping raw results.
+Retry only known transient read failures, boundedly; never retry denied calls or writes
+automatically. A fresh subprocess has no cross-call variables.
+Keep state-changing calls native when visible. If a tool is hidden in code mode, use a minimal
+`run_code` call only when permitted. If PTC is unavailable or a tool cannot be orchestrated,
+use native tools. Never bypass approval or tool restrictions. Follow explicit user requests.
+
+Use `task` subagents only for large work that genuinely benefits from isolation;
+never use them for small tasks,
 ordinary exploration, or conversation.
 
 ## Parallel tool calls
 
-Run independent tool calls in parallel within the same turn.
+Batch related independent queries in the same turn, using PTC when it adds the value described
+above. Native parallel calls remain appropriate when PTC is unavailable or unsuitable.
+Batch submission does not override a tool's concurrency or approval contract.
 
 Parallelize when arguments are already known and results do not depend on each other, including:
 

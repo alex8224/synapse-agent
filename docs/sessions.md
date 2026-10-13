@@ -9,6 +9,11 @@ Synapse 使用 SQLite 存储会话检查点（checkpoint）和元数据。
 | 检查点数据库 | `.coding-agent/checkpoints.sqlite` |
 | 会话元数据 | 与检查点同库 |
 
+会话元数据行同时保存该会话的**模型与思考级别**（`model` / `active_model` / `thinking`）。两者都是
+会话级状态：打开或切换到某个会话时按「会话自身绑定 → 项目层默认 → 模型 profile 默认」解析并回写
+该行，每轮结束也会把实际生效的级别写回，所以切换会话、重载 MCP 或保存子 Agent 配置都不会改动
+当前会话的级别。项目层默认只影响该项目**新开**的会话。详见 `docs/models.md` 的「会话级思考级别」。
+
 ## 列出会话
 
 ```bash
@@ -227,6 +232,8 @@ Web 控制台客户端（`web/src/client/SynapseRuntimeClient.ts` + store）对�
   `settings.resolved_sessions_path()` 与 transcript 同目录规则），回合终态经
   服务 `persist_result` → `SessionPersistence.persist`（transcript 追加 +
   summary + 可选 catalog），session 元数据行经 `SessionStore.touch` 写入。
+  该行同时记录该回合**实际生效**的思考级别（`settings_thinking_label`：`off` /
+  `reasoning_effort` / `on`），因此会话的级别不依赖任何一次显式写入。
 - **禁用策略，不凭空改默认**：`checkpoint_backend == "memory"` 或
   `resolved_sessions_path` 不可解析时 binder 为 `enabled=False`，不创建文件、
   `persist_result` 是有界 no-op；默认 `sqlite` 路径保持现有默认解析规则。

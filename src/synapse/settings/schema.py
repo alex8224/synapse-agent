@@ -19,6 +19,7 @@ from synapse.settings.config_paths import (
     load_layered_settings_file,
     project_config_dir,
     user_config_dir,
+    validate_ptc_settings,
 )
 
 # Re-export for callers/tests
@@ -144,6 +145,11 @@ class Settings(BaseSettings):
     models_json: str | None = Field(default=None, validation_alias="MODELS_JSON")
     # Selected profile alias (optional; falls back to model / registry default)
     active_model: str | None = Field(default=None, validation_alias="AGENT_ACTIVE_MODEL")
+    # Optional fast/low-cost model profile alias (or provider:model) for post-turn
+    # action suggestions; falls back to the current session model when unset.
+    suggestion_model: str | None = Field(
+        default=None, validation_alias="AGENT_SUGGESTION_MODEL"
+    )
     # Turbo mode: route all OpenAI-compatible model traffic through a local
     # headroom-turbo proxy. The profile's original base_url is forwarded via the
     # x-headroom-base-url header so the proxy compresses and relays. Requires no
@@ -168,6 +174,30 @@ class Settings(BaseSettings):
     # Decode shell stdout/stderr with this codec (avoids GBK UnicodeDecodeError on Windows).
     shell_encoding: str = Field(default="utf-8", validation_alias="SHELL_ENCODING")
     shell_encoding_errors: str = Field(default="replace", validation_alias="SHELL_ENCODING_ERRORS")
+
+    # Programmatic tool calling is opt-in. A worker is a stoppable local Python
+    # process, not an OS permission sandbox; readonly therefore disables it.
+    tool_mode: Literal["native", "both", "code"] = Field(
+        default="native", validation_alias="AGENT_TOOL_MODE"
+    )
+    ptc_timeout_seconds: float = Field(
+        default=120.0, ge=0.1, le=3600, validation_alias="AGENT_PTC_TIMEOUT_SECONDS"
+    )
+    ptc_max_calls: int = Field(
+        default=100, ge=1, le=10_000, validation_alias="AGENT_PTC_MAX_CALLS"
+    )
+    ptc_max_parallel: int = Field(
+        default=8, ge=1, le=64, validation_alias="AGENT_PTC_MAX_PARALLEL"
+    )
+    ptc_max_output_bytes: int = Field(
+        default=64_000, ge=256, le=16_000_000, validation_alias="AGENT_PTC_MAX_OUTPUT_BYTES"
+    )
+    ptc_max_result_bytes: int = Field(
+        default=4_000_000, ge=1024, le=64_000_000, validation_alias="AGENT_PTC_MAX_RESULT_BYTES"
+    )
+    ptc_max_code_bytes: int = Field(
+        default=64_000, ge=256, le=1_000_000, validation_alias="AGENT_PTC_MAX_CODE_BYTES"
+    )
 
     # Approval: default OFF, auto-pass (user requirement)
     require_approval: bool = Field(default=False, validation_alias="AGENT_REQUIRE_APPROVAL")
@@ -442,7 +472,13 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("openai_api_key", "anthropic_api_key", "openai_base_url", mode="before")
+    @field_validator(
+        "openai_api_key",
+        "anthropic_api_key",
+        "openai_base_url",
+        "suggestion_model",
+        mode="before",
+    )
     @classmethod
     def _strip_secret_like(cls, value: object) -> object:
         if isinstance(value, str):
@@ -661,6 +697,10 @@ def _load_settings_impl(
             ):
                 if pk in updates and updates[pk] is not None:
                     updates[pk] = Path(str(updates[pk])).expanduser()
+            if "suggestion_model" in updates and isinstance(updates["suggestion_model"], str):
+                updates["suggestion_model"] = (
+                    updates["suggestion_model"].strip().strip("\"'") or None
+                )
             # Layered JSON bypasses Pydantic field validators via model_copy;
             # validate the reasoning overrides explicitly so a hand-edited file
             # cannot smuggle an invalid level into the model factory.
@@ -672,6 +712,7 @@ def _load_settings_impl(
                 validate_subagent_reasoning_value(
                     updates["subagent_default_reasoning_effort"]
                 )
+            updates.update(validate_ptc_settings(updates))
             settings = settings.model_copy(update=updates)
 
     if overrides:
@@ -690,6 +731,7 @@ def _load_settings_impl(
             }
         }
         if normal:
+            normal.update(validate_ptc_settings(normal))
             settings = settings.model_copy(update=normal)
         # Optional paths may be explicitly cleared with None.
         pathish = {

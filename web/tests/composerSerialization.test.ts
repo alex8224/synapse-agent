@@ -75,7 +75,7 @@ function pill(pillId: string, tag = 'SPAN'): FakeElement {
 }
 
 function registryOf(
-  rows: Array<{ pillId: string; kind: 'file' | 'skill' | 'context' | 'image'; token?: string; localId?: string }>,
+  rows: Array<{ pillId: string; kind: 'file' | 'skill' | 'context' | 'session' | 'image'; token?: string; localId?: string }>,
 ): ComposerRegistry {
   const pills = new Map();
   for (const row of rows) {
@@ -103,6 +103,19 @@ test('plain text and line breaks project onto the prompt verbatim', () => {
   const snapshot = serializeComposer(root as unknown as Node, registryOf([]));
   assert.equal(snapshot.text, '第一行\n第二行');
   assert.deepEqual(snapshot.imageLocalIds, []);
+});
+
+test('session pills project onto their token form', () => {
+  const root = new FakeElement('DIV')
+    .append(new FakeText('参考历史会话 '))
+    .append(pill('p-session'));
+  const snapshot = serializeComposer(
+    root as unknown as Node,
+    registryOf([
+      { pillId: 'p-session', kind: 'session', token: '@session:t-abcdef123456' },
+    ]),
+  );
+  assert.equal(snapshot.text, '参考历史会话 @session:t-abcdef123456');
 });
 
 test('a caret anchor never reaches the prompt', () => {

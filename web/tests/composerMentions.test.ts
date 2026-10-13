@@ -21,6 +21,7 @@ import {
   MENTION_KIND_LABEL,
   MENTION_KIND_ORDER,
   rankMentions,
+  sessionMention,
   SKILL_MENTIONS,
 } from '../src/components/composer/mentionCatalog.ts';
 
@@ -49,6 +50,19 @@ test('a file mention serializes as its workspace path', () => {
   assert.equal(entry.detail, 'src/synapse/app/agent.py');
   // A path at the workspace root has no directory to strip.
   assert.equal(fileMention('README.md').label, 'README.md');
+});
+
+test('a session mention serializes as its thread token', () => {
+  const entry = sessionMention({
+    thread_id: 't-12345678-abcd',
+    title: '修复登录问题',
+    time_label: '昨天 15:30',
+  });
+  assert.equal(entry.kind, 'session');
+  assert.equal(entry.token, '@session:t-12345678-abcd');
+  assert.equal(entry.label, '修复登录问题');
+  assert.equal(entry.detail, '昨天 15:30');
+  assert.match(entry.token, /^@session:[a-zA-Z0-9_-]+$/);
 });
 
 test('the shipped skills are all offered by the flyout', () => {

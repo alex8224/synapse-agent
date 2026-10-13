@@ -6,6 +6,72 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.58
+
+### New Features
+
+- **Post-Turn Action Suggestions**: Add a suggestion bar above the composer that offers the next actions once a turn ends. A stateless `POST /api/turn-suggestions` route validates the payload, resolves the target project, and returns a bounded list of follow-ups whose prompt can be inserted or submitted directly.
+- **Configurable Suggestion Model**: Drive those suggestions with a dedicated lightweight profile instead of the session model. Set `suggestion_model` at the top level of `models.json`, in `settings.json`, or through `AGENT_SUGGESTION_MODEL`; resolution falls back from settings to the registry, then to the session model, `active_model`, and the registry default, skipping any alias the registry does not know.
+- **Session `@` Mentions**: Reference a specific session from the composer's mention catalog.
+- **Bookmarks Follow the Latest Turn**: Derive the collapsed rail's identicon from the session's last user message, and show the last model reply in the hover flyout.
+- **Result-Driven PTC Orchestration**: Prompt and SDK guidance now prefer result-driven `run_code` orchestration over single-call wrappers, read-only single calls included.
+
+### Bug Fixes
+
+- **Turn Suggestion Re-render Loop**: Stabilize the `TurnSuggestionBar` selector so the bar no longer re-renders indefinitely.
+- **Project-Local Suggestion Config**: `_default_model_invoker` passed `project_root=` to `load_settings`, which only reads the `workspace` override, so a project's `.synapse/` layer was silently ignored when resolving the suggestion model.
+- **Mermaid Diagram Height**: Default diagrams to full height and stop the actual-size viewer from overflowing the page.
+
+### Engineering
+
+- Add tests for the turn-suggestion store and bar, the mention catalog and serialization, session previews, and the PTC worker, and extend the settings, layered-config, and turn-suggestion suites.
+- Document `suggestion_model` in `docs/config.md` and `docs/models.md`, the session-preview derivation in `web/README.md`, and the refreshed PTC guidance in `docs/ptc.md`.
+- Build and package the updated web console assets for production distribution.
+
+## v0.1.57
+
+### New Features
+
+- **Sidebar Session Holders**: Add compact bookmark-style session holder icons in the collapsed 44px sidebar rail for active, pending approval, and the 5 most recently ended sessions, allowing instant one-click switching.
+- **Stable Holder Positioning**: Keep each session holder's original slot stable when selected or across status transitions without jumping to the top, showing an in-place Fluent navigation indicator pill and active ring.
+- **Theme-Adaptive Palettes**: Derive all holder background and text color tokens strictly from semantic Fluent CSS variables, ensuring automatic high-contrast theme switching across light and dark modes.
+- **Session Forking**: Add a dedicated fork button on sidebar session rows to branch out new independent sessions from completed conversations.
+
+### Bug Fixes
+
+- **Recent Session Retention**: Retain up to 5 recently finished sessions with FIFO eviction and `localStorage` persistence, transitioning status badges cleanly to emerald checkmarks.
+- **Cross-Project Session Recovery**: Fix stream view restoration and background status synchronization when switching across sessions and projects via sidebar holders.
+- **Transcript Tool Group Details**: Refine the presentation, scrolling, and collapsible interactions of programmatic tool call details in transcript rows.
+
+### Engineering
+
+- Add unit tests for `syncSessionOrder`, `recordEndedSession`, and `runningSessionHolders`.
+- Ensure strict adherence to Fluent 2 desktop interaction guidelines and TypeScript compiler checks.
+- Package the updated web console assets for production distribution.
+
+## v0.1.56
+
+### New Features
+
+- **Programmatic Tool Calling**: Add `run_code(code, intent)`, an opt-in tool mode (`tool_mode = native | both | code`) that lets the model orchestrate many tool calls inside one model turn from a one-shot local Python subprocess. The script reaches real tools, including MCP tools, through an injected `tools` object, and the host returns one bounded envelope per call. Read-only work defaults to it, a single call included. `docs/ptc.md` documents the mode and states plainly that the subprocess is a crash-isolation and deterministic-I/O boundary, not an OS permission sandbox, so `readonly` disables it.
+- **Console Quick Switcher**: Add a Fluent 2 quick switcher for session switching with a live activity dashboard, project scoping tabs and prefetched project sessions, and cap the default recent-session list.
+- **Mermaid Lightbox**: Open a transcript diagram in a full-screen viewer, with a palette that stays legible in the dark theme.
+- **Console Shell Polish**: Slide the sidebar drawer on the same animation as the right dock and default it to collapsed, and render the integrated terminal on the frosted pane material.
+
+### Bug Fixes
+
+- **Session Reasoning Scope**: Keep the reasoning level session-scoped. A session switch now resolves a session's model and reasoning axes from the pristine project baseline instead of mutating the live settings object, so the previous session's level no longer survives into the next one, and a session without a level of its own falls back to the project's default rather than inheriting one.
+- **PTC Guardrails**: Refuse a script that names an unavailable tool before it runs, preserve embedded script literals, and steer the model toward `run_code` in the tool description and the prompt.
+- **Dark-Theme Diagrams**: Fix Mermaid diagram legibility in the dark theme.
+
+### Engineering
+
+- Add the `synapse.runtime.ptc` package (worker, process, bridge, scheduler, SDK, protocol, middleware) with the streaming `ptc_events` projection, and cover it with a dedicated test suite for the bridge, middleware, worker, process, SDK, scheduler, tool results, thread lifecycle, preflight checks and agent integration.
+- Validate `tool_mode` and the `ptc_*` budget overrides through the Settings field annotations before a worker is launched, including caller-supplied overrides.
+- Add `synapse.sessions.session_binding` as the single resolution step for a session's model and reasoning axes, shared by the TUI and the daemon.
+- Document PTC and refresh the config, models and sessions docs, adding `docs/ptc.md` to the mkdocs navigation.
+- Ignore test-written CLI state (`.s8-cli-state/`) and executable checksum files (`*.exe.sha256`).
+
 ## v0.1.55
 
 ### New Features
