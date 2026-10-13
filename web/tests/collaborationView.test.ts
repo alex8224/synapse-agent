@@ -11,11 +11,16 @@ import { test } from 'node:test';
 import {
   canStopCollaboration,
   canControlAssignment,
+  canDismissCollaborationNotice,
+  collaborationDismissKey,
   executionReasonLabel,
   collaborationKindLabel,
   collaborationStateLabel,
   collaborationView,
   hasPendingCollaboration,
+  resolveCollaborationPeer,
+  shortCollaborationId,
+  splitSessionMentions,
 } from '../src/stores/collaborationView.ts';
 import type { CollaborationResult } from '../src/runtime-client/types.ts';
 
@@ -189,4 +194,68 @@ test('assignment identity and execution do not conflate result processing', () =
   assert.equal(assignment.executionState, 'waiting_approval');
   assert.equal(assignment.resultState, 'received');
   assert.equal(collaborationKindLabel('progress'), '进度报告');
+});
+
+test('peer resolution prefers project and session titles and falls back to thread id', () => {
+  const catalog = {
+    activeProjectId: 'p1',
+    projects: [
+      { project_id: 'p1', workspace_path: '/repo/source', workspace_name: 'source' },
+      { project_id: 'p2', workspace_path: '/repo/target', workspace_name: 'target' },
+    ],
+    sessions: [{ thread_id: 'a', title: 'UI source' }],
+    projectSessions: {
+      p2: [{ thread_id: 'b', title: 'UI target' }],
+    },
+  };
+
+  const cross = resolveCollaborationPeer('p2', 'b', catalog);
+  assert.equal(cross.projectName, 'target');
+  assert.equal(cross.sessionTitle, 'UI target');
+  assert.equal(cross.displayName, 'target · UI target');
+  assert.equal(cross.fullRef, 'p2:b');
+
+  const sameProject = resolveCollaborationPeer('p1', 'a', catalog);
+  assert.equal(sameProject.displayName, 'UI source');
+
+  const implicitProject = resolveCollaborationPeer('', 'a', catalog);
+  assert.equal(implicitProject.displayName, 'UI source');
+
+  const unknown = resolveCollaborationPeer('p3', 'c999', catalog);
+  assert.equal(unknown.displayName, 'c999');
+});
+
+test('shortCollaborationId truncates long hex ids and preserves short ones', () => {
+  assert.equal(shortCollaborationId('22907f5b660c4729953e7943bc7b35fc'), '22907f5b');
+  assert.equal(shortCollaborationId('r1'), 'r1');
+});
+
+test('settled collaboration notices can be dismissed until their state changes', () => {
+  const activeRow = collaborationView(page(), SOURCE).requests[0];
+  assert.equal(canDismissCollaborationNotice(activeRow), false);
+
+  const settledRow = collaborationView(
+    page({
+      requests: [{ ...page().requests[0], state: 'replied', pending: 0, result_state: 'processed' }],
+    }),
+    SOURCE,
+  ).requests[0];
+  assert.equal(canDismissCollaborationNotice(settledRow), true);
+  const key1 = collaborationDismissKey(settledRow);
+  const key2 = collaborationDismissKey({ ...settledRow, controlVersion: settledRow.controlVersion + 1 });
+  assert.notEqual(key1, key2);
+});
+
+test('splitSessionMentions separates inline @session tokens from surrounding text', () => {
+  const segments = splitSessionMentions(
+    '请让 @session:proj_1:thread_a 核对接口，再同步给 @session:thread_b。',
+  );
+  assert.deepEqual(segments, [
+    { kind: 'text', text: '请让 ' },
+    { kind: 'session', raw: '@session:proj_1:thread_a', projectId: 'proj_1', threadId: 'thread_a' },
+    { kind: 'text', text: ' 核对接口，再同步给 ' },
+    { kind: 'session', raw: '@session:thread_b', projectId: '', threadId: 'thread_b' },
+    { kind: 'text', text: '。' },
+  ]);
+  assert.deepEqual(splitSessionMentions('普通消息'), [{ kind: 'text', text: '普通消息' }]);
 });

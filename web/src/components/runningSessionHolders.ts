@@ -33,28 +33,14 @@ export interface RecentEndedSession {
 
 export const RECENT_ENDED_STORAGE_KEY = 'synapse:recent_ended_sessions';
 
+let recentEndedCache: RecentEndedSession[] = [];
+
 export function loadRecentEndedSessions(): RecentEndedSession[] {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return [];
-    const raw = window.localStorage.getItem(RECENT_ENDED_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed.slice(0, MAX_RECENT_ENDED);
-    }
-  } catch {
-    // ignore
-  }
-  return [];
+  return recentEndedCache.slice(0, MAX_RECENT_ENDED);
 }
 
 export function saveRecentEndedSessions(list: RecentEndedSession[]): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(RECENT_ENDED_STORAGE_KEY, JSON.stringify(list.slice(0, MAX_RECENT_ENDED)));
-  } catch {
-    // ignore
-  }
+  recentEndedCache = list.slice(0, MAX_RECENT_ENDED);
 }
 
 export function recordEndedSession(
@@ -186,4 +172,5 @@ export function setGlobalSessionOrder(order: string[]): void {
 
 export function resetGlobalSessionOrderForTest(): void {
   globalSessionOrder = [];
+  recentEndedCache = [];
 }

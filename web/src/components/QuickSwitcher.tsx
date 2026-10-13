@@ -86,7 +86,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
   const backgroundViews = useConsoleStore((s) => s.backgroundViews);
   const switchSession = useConsoleStore((s) => s.switchSession);
   const switchProject = useConsoleStore((s) => s.switchProject);
-  const toggleProjectExpanded = useConsoleStore((s) => s.toggleProjectExpanded);
+  const ensureProjectSessionsLoaded = useConsoleStore((s) => s.ensureProjectSessionsLoaded);
   const resolveApproval = useConsoleStore((s) => s.resolveApproval);
 
   // Safe helper to resolve project display name
@@ -114,13 +114,9 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
   // Preload sessions for registered projects when switcher opens so search is instantly comprehensive
   useEffect(() => {
     if (isOpen) {
-      projects.forEach((p) => {
-        if (p.project_id !== currentSession.project_id && !projectSessions[p.project_id]) {
-          void toggleProjectExpanded(p.project_id);
-        }
-      });
+      void ensureProjectSessionsLoaded?.();
     }
-  }, [isOpen, projects, currentSession.project_id, projectSessions, toggleProjectExpanded]);
+  }, [isOpen, ensureProjectSessionsLoaded]);
 
   // Aggregate all sessions across active project and cached background projects
   const allItems = useMemo<SwitcherSessionItem[]>(() => {

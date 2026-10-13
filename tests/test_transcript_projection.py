@@ -37,6 +37,49 @@ def test_projection_keeps_collaboration_summary_and_identity(tmp_path):
         projection.close()
 
 
+def test_session_persistence_keeps_collaboration_summary_after_langgraph_message_coercion(
+    tmp_path,
+) -> None:
+    from langchain_core.messages import HumanMessage
+
+    from synapse.runtime.agent_loop import TurnContext, TurnResult, TurnStatus
+    from synapse.runtime.agent_loop.request import build_turn_request
+    from synapse.runtime.sessions.persistence import SessionPersistence
+
+    metadata = {"message_id": "msg-1", "text": "协作交办 · 来自 p:a\n检查接口"}
+    request = build_turn_request(
+        text="[会话协作消息：独立交办，不是实时插话]\n原始信封",
+        attachments=None,
+        settings=SimpleNamespace(max_concurrency=4),
+        thread_id="t1",
+        config_overrides={"configurable": {"synapse_collaboration": metadata}},
+    )
+    # Simulate LangGraph's in-place coercion of payload["messages"] dicts to HumanMessage.
+    raw = request.payload["messages"][0]
+    request.payload["messages"][0] = HumanMessage(
+        content=raw["content"], additional_kwargs=dict(raw.get("additional_kwargs") or {})
+    )
+    projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+    try:
+        context = TurnContext(
+            thread_id="t1", agent=object(), settings=SimpleNamespace(), request=request
+        )
+        result = TurnResult(
+            turn_id="turn-1", thread_id="t1", status=TurnStatus.COMPLETED, final_text="ok"
+        )
+        SessionPersistence(
+            transcript_projection=projection,
+            summary_store=SimpleNamespace(),
+            summary_mode="off",
+            catalog_enabled=False,
+        ).persist(context, result)
+        page = projection.load_tail("t1", turns=1)
+        assert page.events[0].text == metadata["text"]
+        assert page.events[0].collaboration == metadata
+    finally:
+        projection.close()
+
+
 def test_projection_pages_complete_turns_without_full_history(tmp_path) -> None:
     projection = TranscriptProjection(tmp_path / "transcript.sqlite")
     try:

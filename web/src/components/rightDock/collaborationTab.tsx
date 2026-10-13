@@ -13,30 +13,45 @@ import {
   Chat16Regular,
   Dismiss16Regular,
   Pause16Regular,
+  Window16Regular,
 } from '@fluentui/react-icons';
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
+import { useRightDockStore } from '../../stores/useRightDockStore.ts';
 import {
   collaborationView,
   canControlAssignment,
   EXECUTION_LABELS,
   RESULT_LABELS,
+  resolveCollaborationPeer,
+  shortCollaborationId,
   type CollaborationRequestRow,
+  type ResolvedCollaborationPeer,
 } from '../../stores/collaborationView.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
 
 const RequestBlock: React.FC<{
   request: CollaborationRequestRow;
+  peer: ResolvedCollaborationPeer;
   stop: (assignmentId: string, receiveOnly: boolean) => void;
   inspect: () => void;
-}> = ({ request, stop, inspect }) => (
+  previewPeer: () => void;
+}> = ({ request, peer, stop, inspect, previewPeer }) => (
   <li className="rounded-control border border-line/60 bg-sunken/30 p-2.5">
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
       <span className="ui-section-label">{request.roleLabel}</span>
+      {peer.displayName !== request.peerThreadId && (
+        <span
+          className="min-w-0 truncate text-xs font-medium text-gray-800"
+          title={peer.fullRef}
+        >
+          {peer.displayName}
+        </span>
+      )}
       <span
         className="min-w-0 truncate font-mono text-[11px] text-gray-500"
-        title={`${request.peerProjectId}:${request.peerThreadId}`}
+        title={peer.fullRef}
       >
         {request.peerThreadId}
       </span>
@@ -53,15 +68,29 @@ const RequestBlock: React.FC<{
         {request.stateLabel}
       </span>
     </div>
-    <p className="mt-1 break-all font-mono text-[10px] text-gray-500">
-      协作 {request.collaborationId} · 交办 {request.requestId}
+    <p
+      className="mt-1 break-all font-mono text-[10px] text-gray-500"
+      title={`协作 ${request.collaborationId} · 交办 ${request.requestId}`}
+    >
+      协作 {shortCollaborationId(request.collaborationId)} · 交办 {shortCollaborationId(request.requestId)}
     </p>
-    {request.executionTurnId && (
-      <button type="button" className="ui-button ui-compact mt-1 text-[11px]"
-        title={request.executionTurnId} onClick={inspect}>
-        查看执行会话
+    <div className="mt-1 flex flex-wrap gap-1.5">
+      <button
+        type="button"
+        className="ui-button ui-compact text-[11px]"
+        title={`只读预览 ${peer.fullRef}`}
+        onClick={previewPeer}
+      >
+        <Window16Regular aria-hidden="true" />
+        预览对方会话
       </button>
-    )}
+      {request.executionTurnId && (
+        <button type="button" className="ui-button ui-compact text-[11px]"
+          title={request.executionTurnId} onClick={inspect}>
+          查看执行会话
+        </button>
+      )}
+    </div>
     <p className="mt-1 text-[11px] text-gray-500">
       {EXECUTION_LABELS[request.executionState] ?? request.executionState} ·
       {RESULT_LABELS[request.resultState] ?? request.resultState}
@@ -121,6 +150,11 @@ export const CollaborationContent: React.FC<{ context: RightDockContext }> = () 
     loadCollaborations,
     stopCollaboration,
     switchProject,
+    activeProjectId,
+    projects,
+    sessions,
+    projectSessions,
+    ensureProjectSessionsLoaded,
   } = useConsoleStore(
     useShallow((state) => ({
       currentSession: state.currentSession,
@@ -130,8 +164,14 @@ export const CollaborationContent: React.FC<{ context: RightDockContext }> = () 
       loadCollaborations: state.loadCollaborations,
       stopCollaboration: state.stopCollaboration,
       switchProject: state.switchProject,
+      activeProjectId: state.activeProjectId,
+      projects: state.projects,
+      sessions: state.sessions,
+      projectSessions: state.projectSessions,
+      ensureProjectSessionsLoaded: state.ensureProjectSessionsLoaded,
     })),
   );
+  const openPeerPreview = useRightDockStore((state) => state.openPeerPreview);
 
   // Read on open, and again when the reader switches session: the surface is a
   // snapshot, so it must follow the session it describes rather than go stale.
@@ -140,6 +180,16 @@ export const CollaborationContent: React.FC<{ context: RightDockContext }> = () 
   }, [loadCollaborations, currentSession.project_id, currentSession.thread_id]);
 
   const view = collaborationView(collaborationPage, currentSession);
+  const peerProjectIdsKey = view.requests.map((r) => r.peerProjectId).join(',');
+  useEffect(() => {
+    if (peerProjectIdsKey === '') return;
+    void ensureProjectSessionsLoaded?.(peerProjectIdsKey.split(','));
+  }, [peerProjectIdsKey, ensureProjectSessionsLoaded]);
+
+  const peerCatalog = useMemo(
+    () => ({ activeProjectId, projects, sessions, projectSessions }),
+    [activeProjectId, projects, sessions, projectSessions],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -172,7 +222,15 @@ export const CollaborationContent: React.FC<{ context: RightDockContext }> = () 
         ) : (
           <ul className="space-y-2">
             {view.requests.map((request) => (
-              <RequestBlock key={request.requestId} request={request}
+              <RequestBlock
+                key={request.requestId}
+                request={request}
+                peer={resolveCollaborationPeer(
+                  request.peerProjectId,
+                  request.peerThreadId,
+                  peerCatalog,
+                )}
+                previewPeer={() => openPeerPreview(request.peerProjectId, request.peerThreadId)}
                 inspect={() => void switchProject(
                   request.role === 'source' ? request.peerProjectId : currentSession.project_id,
                   request.role === 'source' ? request.peerThreadId : currentSession.thread_id,
@@ -192,5 +250,11 @@ export const collaborationTab: RightDockTabDefinition = {
   label: '协作',
   order: 55,
   Icon: Chat16Regular,
+  badge: () => {
+    const { collaborationPage, currentSession } = useConsoleStore.getState();
+    const count = collaborationView(collaborationPage, currentSession).requests.length;
+    return count > 0 ? count : null;
+  },
+  badgeVariant: 'accent',
   Content: CollaborationContent,
 };

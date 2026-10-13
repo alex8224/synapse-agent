@@ -312,26 +312,9 @@ async function main(): Promise<void> {
     console.log('PASS session list is loaded and the source session is selected');
 
     // -- the composer can name the other session -----------------------------
-    // The flyout offers only sessions the sidebar has already loaded, so the
-    // reader expands the other project first. This is a real step of the flow,
-    // not test scaffolding: without it the flyout has nothing to offer.
-    const expanded = await run(client, page, `(() => {
-      const rows = [...document.querySelectorAll('[aria-label="项目会话列表"] button')];
-      const row = rows.find((b) => (b.getAttribute('title') || '').endsWith('target'));
-      if (row === undefined) return false;
-      if (row.getAttribute('aria-expanded') === 'true') return true;
-      row.click();
-      return true;
-    })()`);
-    assert.equal(expanded, true, 'the other project row is not in the sidebar');
-    await waitFor(
-      client,
-      page,
-      `[...document.querySelectorAll('[aria-label="项目会话列表"] button')]
-        .some((b) => (b.getAttribute('title') || '').startsWith('UI target'))`,
-      'the other session to appear in the sidebar',
-    );
-
+    // Opening `@` prefetches registered cross-project session lists automatically,
+    // so the reader does not need to manually expand the other project in the
+    // sidebar before mentioning its session.
     await run(client, page, `document.querySelector('#console-composer').focus()`);
     await client.send('Input.insertText', { text: '@' }, page.sessionId);
     await settle();
@@ -391,9 +374,23 @@ async function main(): Promise<void> {
       /等待对方处理|对方处理中|等待补充/.test(pending),
       `the strip did not report the request as live: ${pending}`,
     );
+    assert.ok(
+      pending.includes('UI target'),
+      `the strip did not show the human session title: ${pending}`,
+    );
     const buttons = (await run(client, page, NOTICE_BUTTONS)) as string[];
     assert.ok(buttons.includes('仅接收结果'), `no receive-only control: ${JSON.stringify(buttons)}`);
     assert.ok(buttons.includes('撤销此项交办'), `no stop control: ${JSON.stringify(buttons)}`);
+    const stripHit = await run(client, page, `(() => {
+      const notice = document.querySelector('[data-testid="collaboration-notice"]');
+      if (notice === null) return false;
+      return [...notice.querySelectorAll('button')].every((btn) => {
+        const rect = btn.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return hit !== null && (hit === btn || btn.contains(hit));
+      });
+    })()`);
+    assert.equal(stripHit, true, 'collaboration notice buttons are occluded by another layer');
     console.log(`PASS the strip reports the live request and offers both controls: ${pending.split('\n')[0]}`);
 
     // -- the dock reads the same request without leaving the session ---------
@@ -403,6 +400,7 @@ async function main(): Promise<void> {
     assert.ok(dock.includes('协作请求'), `the dock did not label the message kind: ${dock}`);
     assert.ok(dock.includes('FACT.txt'), `the dock did not show the request body: ${dock}`);
     assert.ok(dock.includes('协作 ') && dock.includes('交办 '), 'missing stable identities');
+    assert.ok(dock.includes('预览对方会话'), 'missing direct peer preview action in collaboration card');
     assert.ok(dock.includes('尚未交付'), 'missing result processing state');
     console.log('PASS the dock shows the request, its direction and its body');
 
@@ -507,18 +505,25 @@ async function main(): Promise<void> {
 
     await waitFor(client, page, `${NOTICE_BUTTONS}.every((text) => text !== '仅接收结果' && text !== '撤销此项交办')`,
       'completed controls disappear');
+    // Settled notices offer a dismiss button so they do not permanently occupy space above the composer.
+    await click(client, page, '[data-testid="collaboration-notice"] button[aria-label="收起此条协作提示"]');
+    await waitFor(client, page, `${NOTICE_TEXT} === null`, 'settled collaboration notice dismissed');
+    console.log('PASS settled collaboration notice can be dismissed cleanly');
+
     const liveSummary = await run(client, page, `(() => {
       const node = [...document.querySelectorAll('main span')].find((n) => n.innerText.startsWith('协作结论 · 来自'));
       return node?.innerText;
     })()`);
     assert.ok(typeof liveSummary === 'string', 'missing live collaboration summary');
+    const reloaded = client.waitForEvent('Page.loadEventFired', 15_000, page.sessionId);
     await client.send('Page.reload', {}, page.sessionId);
+    await reloaded;
     await waitFor(client, page, `document.querySelector('main')?.innerText.includes('协作结论 · 来自')`,
       'durable collaboration summary');
     const historyPresentation = await run(client, page, `(() => {
       const main = document.querySelector('main');
-      const node = [...main.querySelectorAll('span')].find((n) => n.innerText.startsWith('协作结论 · 来自'));
-      return {summary:node?.innerText, raw:main.innerText.includes('[会话协作消息：')};
+      const node = [...(main?.querySelectorAll('span') ?? [])].find((n) => n.innerText.startsWith('协作结论 · 来自'));
+      return {summary:node?.innerText, raw:Boolean(main?.innerText.includes('[会话协作消息：'))};
     })()`);
     assert.deepEqual(historyPresentation, {summary:liveSummary,raw:false});
     console.log('PASS collaboration summary is identical live and after reload, without technical envelopes');

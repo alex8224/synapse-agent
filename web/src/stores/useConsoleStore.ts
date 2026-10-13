@@ -741,6 +741,11 @@ interface ConsoleStore {
   loadingProjectIds: string[];
   loadProjects: () => Promise<void>;
   toggleProjectExpanded: (projectId: string) => Promise<void>;
+  /** Ensure session lists are cached for the given projects (or all registered projects). */
+  ensureProjectSessionsLoaded: (
+    projectIds?: readonly string[],
+    options?: { force?: boolean },
+  ) => Promise<void>;
   switchProject: (projectId: string, threadId?: string) => Promise<void>;
   /** Create a fresh session in a specific project (per-project "+" button). */
   createSessionInProject: (projectId: string) => Promise<void>;
@@ -2818,6 +2823,7 @@ async function loadProjectSessions(projectId: string): Promise<void> {
   const store = useConsoleStore;
   const client = requireRuntimeClient();
   if (!client) return;
+  if (store.getState().loadingProjectIds.includes(projectId)) return;
   store.setState((s) => ({ loadingProjectIds: [...s.loadingProjectIds, projectId] }));
   try {
     const view = toSessionListView(await client.listSessions({ project_id: projectId }));
@@ -3612,6 +3618,28 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (projectId === activeProjectId) return; // the active list is already loaded
     if (projectSessions[projectId] !== undefined) return; // served from cache
     await loadProjectSessions(projectId);
+  },
+  ensureProjectSessionsLoaded: async (projectIds, options) => {
+    if ((projectIds === undefined || projectIds.length === 0) && get().projects.length === 0) {
+      await get().loadProjects();
+    }
+    const { projects, activeProjectId, currentSession, projectSessions, loadingProjectIds } = get();
+    const currentProjectId = activeProjectId || currentSession.project_id;
+    const force = options?.force === true;
+    const targets = (projectIds ?? projects.map((item) => item.project_id)).filter(
+      (projectId, index, list) =>
+        projectId !== '' &&
+        projectId !== currentProjectId &&
+        list.indexOf(projectId) === index &&
+        (force || projectSessions[projectId] === undefined) &&
+        !loadingProjectIds.includes(projectId),
+    );
+    if (targets.length === 0) return;
+    const batchSize = 8;
+    for (let offset = 0; offset < targets.length; offset += batchSize) {
+      const batch = targets.slice(offset, offset + batchSize);
+      await Promise.all(batch.map((projectId) => loadProjectSessions(projectId)));
+    }
   },
   switchProject: async (projectId, threadId) => {
     if (!requireRuntimeClient()) return;

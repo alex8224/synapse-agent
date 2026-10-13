@@ -47,9 +47,9 @@ def _request_message_metadata(request: Any) -> Any:
     if not isinstance(messages, (list, tuple)) or not messages:
         return None
     last = messages[-1]
-    if not isinstance(last, Mapping):
-        return None
-    return last.get("additional_kwargs")
+    if isinstance(last, Mapping):
+        return last.get("additional_kwargs")
+    return getattr(last, "additional_kwargs", None)
 
 
 def _durable_attachment_refs(request: Any) -> tuple[Any, ...]:
@@ -164,6 +164,10 @@ class SessionPersistence:
         user_text = "" if resume else context.request.input
         metadata = _request_message_metadata(context.request) or {}
         collaboration = metadata.get('synapse_collaboration')
+        if collaboration is None:
+            configurable = getattr(context.request, 'config', {}).get('configurable', {})
+            if isinstance(configurable, Mapping):
+                collaboration = configurable.get('synapse_collaboration')
         if collaboration and not resume:
             user_text = collaboration['text']
         # Durable attachment metadata travels with the frozen request's user

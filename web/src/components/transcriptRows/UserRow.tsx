@@ -1,5 +1,7 @@
-import { Checkmark16Regular, Copy16Regular, Edit16Regular } from '@fluentui/react-icons';
-import React, { useState } from 'react';
+import { Chat16Regular, Checkmark16Regular, Copy16Regular, Edit16Regular } from '@fluentui/react-icons';
+import React, { useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { resolveCollaborationPeer, splitSessionMentions } from '../../stores/collaborationView.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore';
 import { AttachmentThumb } from '../AttachmentThumb.tsx';
 import type { RowRenderProps } from './context.ts';
@@ -18,10 +20,27 @@ import { useCopyFlag } from './useCopyFlag.ts';
  * `data-turn-id` is the anchor the turn rail scrolls to.
  */
 export const UserRow = React.memo(function UserRow({ message }: RowRenderProps) {
-  const submitPrompt = useConsoleStore((state) => state.submitPrompt);
+  const { submitPrompt, activeProjectId, projects, sessions, projectSessions } = useConsoleStore(
+    useShallow((state) => ({
+      submitPrompt: state.submitPrompt,
+      activeProjectId: state.activeProjectId,
+      projects: state.projects,
+      sessions: state.sessions,
+      projectSessions: state.projectSessions,
+    })),
+  );
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content ?? '');
   const [copied, copy] = useCopyFlag();
+
+  const peerCatalog = useMemo(
+    () => ({ activeProjectId, projects, sessions, projectSessions }),
+    [activeProjectId, projects, sessions, projectSessions],
+  );
+  const segments = useMemo(
+    () => splitSessionMentions(message.content ?? ''),
+    [message.content],
+  );
 
   const sendEdit = () => {
     const trimmed = editText.trim();
@@ -75,7 +94,28 @@ export const UserRow = React.memo(function UserRow({ message }: RowRenderProps) 
                 onMouseMove={updateSpotlight}
                 className="ui-user-bubble fluent-spotlight whitespace-pre-wrap break-words text-base leading-relaxed text-gray-900"
               >
-                {message.content}
+                {segments.length === 1 && segments[0].kind === 'text'
+                  ? message.content
+                  : segments.map((segment, index) => {
+                      if (segment.kind === 'text') {
+                        return <React.Fragment key={index}>{segment.text}</React.Fragment>;
+                      }
+                      const peer = resolveCollaborationPeer(
+                        segment.projectId,
+                        segment.threadId,
+                        peerCatalog,
+                      );
+                      return (
+                        <span
+                          key={index}
+                          title={segment.raw}
+                          className="mx-0.5 inline-flex items-center gap-1 rounded-control border border-line bg-surface px-1.5 py-0.5 align-baseline font-mono text-xs text-gray-800"
+                        >
+                          <Chat16Regular aria-hidden="true" className="shrink-0 text-accent" />
+                          @{peer.displayName}
+                        </span>
+                      );
+                    })}
               </div>
             )}
             {message.attachments !== undefined && message.attachments.length > 0 && (

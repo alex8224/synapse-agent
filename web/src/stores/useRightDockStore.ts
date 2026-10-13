@@ -21,6 +21,8 @@ export interface RightDockStore {
   onlyChangedFiles: boolean;
   /** Search query in the files tab. */
   fileSearchQuery: string;
+  /** Selected peer session key (`projectId:threadId`) in the peer-session tab. */
+  selectedPeerKey: string | null;
 
   // Actions
   toggleOpen: (force?: boolean) => void;
@@ -31,6 +33,8 @@ export interface RightDockStore {
   setOnlyChangedFiles: (flag: boolean) => void;
   toggleOnlyChangedFiles: () => void;
   setFileSearchQuery: (query: string) => void;
+  setSelectedPeerKey: (key: string | null) => void;
+  openPeerPreview: (projectId: string, threadId: string) => void;
 }
 
 export const useRightDockStore = create<RightDockStore>((set, get) => ({
@@ -39,6 +43,7 @@ export const useRightDockStore = create<RightDockStore>((set, get) => ({
   activeTabId: 'files',
   onlyChangedFiles: false,
   fileSearchQuery: '',
+  selectedPeerKey: null,
 
   toggleOpen: (force?: boolean) => {
     const next = force !== undefined ? force : !get().open;
@@ -72,5 +77,17 @@ export const useRightDockStore = create<RightDockStore>((set, get) => ({
 
   setFileSearchQuery: (fileSearchQuery: string) => {
     set({ fileSearchQuery });
+  },
+
+  setSelectedPeerKey: (selectedPeerKey: string | null) => {
+    set({ selectedPeerKey });
+  },
+
+  openPeerPreview: (projectId: string, threadId: string) => {
+    set({
+      open: true,
+      activeTabId: 'peer-session',
+      selectedPeerKey: `${projectId}:${threadId}`,
+    });
   },
 }));

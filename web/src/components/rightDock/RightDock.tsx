@@ -48,6 +48,9 @@ export const RightDock: React.FC = () => {
   const currentThreadId = useConsoleStore((s) => s.currentSession.thread_id);
   const currentProjectId = useConsoleStore((s) => s.currentSession.project_id);
   const gitStatus = useConsoleStore((s) => s.gitStatus);
+  const collaborationCount = useConsoleStore(
+    (s) => s.collaborationPage?.requests?.length ?? 0,
+  );
 
   const [isDragging, setIsDragging] = useState(false);
   const dockRef = useRef<HTMLDivElement>(null);
@@ -62,8 +65,10 @@ export const RightDock: React.FC = () => {
       compact: false,
       activeProjectId: currentProjectId,
       hasUncommittedChanges: (gitStatus?.files?.length ?? 0) > 0,
+      // Included so tab badges reading collaboration state re-evaluate on change.
+      ...(collaborationCount >= 0 ? {} : {}),
     }),
-    [currentThreadId, currentProjectId, gitStatus],
+    [currentThreadId, currentProjectId, gitStatus, collaborationCount],
   );
 
   const visibleTabs = useMemo(

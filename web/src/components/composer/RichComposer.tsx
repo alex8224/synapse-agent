@@ -176,6 +176,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     projectSessions,
     projects,
     activeProjectId,
+    ensureProjectSessionsLoaded,
   } = useConsoleStore(
     // Only what a directory read needs: a reasoning delta must never re-render
     // the surface the reader is typing into.
@@ -190,6 +191,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       projectSessions: state.projectSessions,
       projects: state.projects,
       activeProjectId: state.activeProjectId,
+      ensureProjectSessionsLoaded: state.ensureProjectSessionsLoaded,
     })),
   );
 
@@ -285,11 +287,13 @@ export const RichComposer: React.FC<RichComposerProps> = ({
    */
   const sessionCandidates = useMemo(() => {
     const rows = new Map<string, MentionEntry>();
+    const currentProjectId = activeProjectId || currentSession.project_id;
     const nameOf = (projectId: string): string => {
       const project = projects.find((item) => item.project_id === projectId);
       return project === undefined ? '' : projectLabel(project);
     };
     const add = (projectId: string, session: SessionItem): void => {
+      if (projectId === '') return;
       const entry = sessionMention({
         project_id: projectId,
         thread_id: session.thread_id,
@@ -298,12 +302,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       });
       rows.set(entry.id, entry);
     };
-    for (const session of sessions) add(activeProjectId, session);
+    for (const session of sessions) add(currentProjectId, session);
     for (const [projectId, items] of Object.entries(projectSessions)) {
       for (const session of items) add(projectId, session);
     }
     return [...rows.values()];
-  }, [sessions, projectSessions, projects, activeProjectId]);
+  }, [sessions, projectSessions, projects, activeProjectId, currentSession.project_id]);
 
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(
@@ -316,16 +320,18 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       const statics = rankMentions([...activeSkills, ...CONTEXT_MENTIONS], query);
       // The current session is excluded: contacting yourself is refused by the
       // tool, so offering it would only produce a failed call.
+      const currentProjectId = activeProjectId || currentSession.project_id;
+      const selfFullId = `session:${currentProjectId}:${currentSession.thread_id}`;
+      const selfShortId = `session:${currentSession.thread_id}`;
       const sessions = rankMentions(
         sessionCandidates.filter(
-          (entry) =>
-            entry.id !== `session:${currentSession.project_id}:${currentSession.thread_id}`,
+          (entry) => entry.id !== selfFullId && entry.id !== selfShortId,
         ),
         query,
       );
       return [...matched, ...sessions, ...statics];
     },
-    [files, skills, sessionCandidates, currentSession],
+    [files, skills, sessionCandidates, activeProjectId, currentSession],
   );
 
   /** Open, update or close the `@` list for the caret's current position. */
@@ -419,6 +425,14 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       active = false;
     };
   }, [mentionDir, files.dir, artifactSurface, currentSession]);
+
+  // Prefetch session lists for registered projects not yet expanded in the
+  // sidebar so cross-project `@` mentions are immediately discoverable.
+  const mentionOpen = mention !== null;
+  useEffect(() => {
+    if (!mentionOpen || !rpcReady) return;
+    void ensureProjectSessionsLoaded?.(undefined, { force: true });
+  }, [mentionOpen, rpcReady, ensureProjectSessionsLoaded]);
 
   // Read discoverable Agent Skills through the runtime RPC once the mention
   // list is opened (falling back to the static mirror if offline/unpaired).

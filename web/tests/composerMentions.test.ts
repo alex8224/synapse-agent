@@ -63,6 +63,17 @@ test('a session mention serializes as its thread token', () => {
   assert.equal(entry.label, '修复登录问题');
   assert.equal(entry.detail, '昨天 15:30');
   assert.match(entry.token, /^@session:[a-zA-Z0-9_-]+$/);
+
+  const cross = sessionMention({
+    project_id: 'proj-target',
+    thread_id: 't-12345678-abcd',
+    title: '修复登录问题',
+    project_name: 'target',
+  });
+  assert.equal(cross.kind, 'session');
+  assert.equal(cross.id, 'session:proj-target:t-12345678-abcd');
+  assert.equal(cross.token, '@session:proj-target:t-12345678-abcd');
+  assert.equal(cross.detail, 'target · proj-target:t-12345678-abcd');
 });
 
 test('the shipped skills are all offered by the flyout', () => {

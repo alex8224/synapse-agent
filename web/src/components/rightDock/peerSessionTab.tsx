@@ -8,11 +8,17 @@
  * in the runtime, never watches it, and never sends anything: "进入完整会话" is
  * the one explicit way out, through the console's own session switch.
  */
-import { ArrowRight16Regular, ArrowSync16Regular, Chat16Regular } from '@fluentui/react-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ArrowRight16Regular,
+  ArrowSync16Regular,
+  Chat16Regular,
+  Window16Regular,
+} from '@fluentui/react-icons';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
-import { collaborationView } from '../../stores/collaborationView.ts';
+import { useRightDockStore } from '../../stores/useRightDockStore.ts';
+import { collaborationView, resolveCollaborationPeer } from '../../stores/collaborationView.ts';
 import type { HistoryEvent } from '../../runtime-client/types.ts';
 import { RpcCallError } from '../../runtime-client/SynapseRuntimeClient.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
@@ -24,6 +30,7 @@ interface Peer {
   projectId: string;
   threadId: string;
   label: string;
+  displayLabel: string;
 }
 
 /** Event kinds this preview labels; anything else shows its raw kind. */
@@ -41,25 +48,62 @@ function eventLabel(kind: string): string {
 }
 
 export const PeerSessionContent: React.FC<{ context: RightDockContext }> = () => {
-  const { currentSession, collaborationPage, loadCollaborations, switchProject } = useConsoleStore(
+  const {
+    currentSession,
+    collaborationPage,
+    loadCollaborations,
+    switchProject,
+    activeProjectId: consoleActiveProjectId,
+    projects,
+    sessions,
+    projectSessions,
+    ensureProjectSessionsLoaded,
+  } = useConsoleStore(
     useShallow((state) => ({
       currentSession: state.currentSession,
       collaborationPage: state.collaborationPage,
       loadCollaborations: state.loadCollaborations,
       switchProject: state.switchProject,
+      activeProjectId: state.activeProjectId,
+      projects: state.projects,
+      sessions: state.sessions,
+      projectSessions: state.projectSessions,
+      ensureProjectSessionsLoaded: state.ensureProjectSessionsLoaded,
     })),
   );
   const client = useConsoleStore((state) => state.client);
+  const selectedPeerKey = useRightDockStore((state) => state.selectedPeerKey);
+  const setSelectedPeerKey = useRightDockStore((state) => state.setSelectedPeerKey);
 
   const view = collaborationView(collaborationPage, currentSession);
+  const peerProjectIdsKey = view.requests.map((r) => r.peerProjectId).join(',');
+  useEffect(() => {
+    if (peerProjectIdsKey === '') return;
+    void ensureProjectSessionsLoaded?.(peerProjectIdsKey.split(','));
+  }, [peerProjectIdsKey, ensureProjectSessionsLoaded]);
+
+  const peerCatalog = useMemo(
+    () => ({ activeProjectId: consoleActiveProjectId, projects, sessions, projectSessions }),
+    [consoleActiveProjectId, projects, sessions, projectSessions],
+  );
+
   const peers: Peer[] = [];
   for (const request of view.requests) {
     const key = `${request.peerProjectId}:${request.peerThreadId}`;
     if (peers.some((peer) => `${peer.projectId}:${peer.threadId}` === key)) continue;
+    const resolved = resolveCollaborationPeer(
+      request.peerProjectId,
+      request.peerThreadId,
+      peerCatalog,
+    );
     peers.push({
       projectId: request.peerProjectId,
       threadId: request.peerThreadId,
       label: `${request.peerProjectId} / ${request.peerThreadId}`,
+      displayLabel:
+        resolved.displayName !== request.peerThreadId
+          ? `${resolved.displayName} · ${request.peerThreadId}`
+          : request.peerThreadId,
     });
   }
 
@@ -73,7 +117,19 @@ export const PeerSessionContent: React.FC<{ context: RightDockContext }> = () =>
     void loadCollaborations();
   }, [loadCollaborations, currentSession.project_id, currentSession.thread_id]);
 
-  const active = peers.find((peer) => `${peer.projectId}:${peer.threadId}` === selected) ?? null;
+  const effectiveSelected =
+    (selectedPeerKey !== null &&
+    peers.some((peer) => `${peer.projectId}:${peer.threadId}` === selectedPeerKey)
+      ? selectedPeerKey
+      : null) ??
+    (selected !== null &&
+    peers.some((peer) => `${peer.projectId}:${peer.threadId}` === selected)
+      ? selected
+      : null) ??
+    (peers[0] !== undefined ? `${peers[0].projectId}:${peers[0].threadId}` : null);
+
+  const active =
+    peers.find((peer) => `${peer.projectId}:${peer.threadId}` === effectiveSelected) ?? null;
 
   const activeProjectId = active?.projectId;
   const activeThreadId = active?.threadId;
@@ -142,12 +198,18 @@ export const PeerSessionContent: React.FC<{ context: RightDockContext }> = () =>
                   <button
                     type="button"
                     className="ui-nav-row flex w-full items-center gap-2 px-2 py-1 text-left text-xs"
-                    data-selected={key === selected}
-                    onClick={() => setSelected(key)}
+                    data-selected={key === effectiveSelected}
+                    onClick={() => {
+                      setSelected(key);
+                      setSelectedPeerKey(key);
+                      if (key === effectiveSelected && !loading && (events.length === 0 || error !== null)) {
+                        void loadPeer(peer.projectId, peer.threadId);
+                      }
+                    }}
                   >
                     <Chat16Regular aria-hidden="true" />
                     <span className="min-w-0 truncate" title={peer.label}>
-                      {peer.threadId}
+                      {peer.displayLabel}
                     </span>
                   </button>
                 </li>
@@ -193,6 +255,6 @@ export const peerSessionTab: RightDockTabDefinition = {
   id: 'peer-session',
   label: '对方会话',
   order: 56,
-  Icon: Chat16Regular,
+  Icon: Window16Regular,
   Content: PeerSessionContent,
 };
