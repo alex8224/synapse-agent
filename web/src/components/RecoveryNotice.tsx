@@ -25,7 +25,7 @@ import { recoveryNotice, type RecoveryNoticeKind } from '../stores/recoveryNotic
 const KIND_CLASSES: Record<RecoveryNoticeKind, string> = {
   blocked: 'border-red-200 bg-red-50/80 text-red-900',
   degraded: 'border-amber-200 bg-amber-50/80 text-amber-900',
-  transient: 'border-blue-100 bg-blue-50/80 text-blue-700',
+  transient: 'border-blue-100 bg-blue-50/80 text-blue-500',
 };
 
 export const RecoveryNotice: React.FC = () => {

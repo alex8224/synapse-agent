@@ -114,6 +114,8 @@ import {
   parseSessionGoalResult,
 } from './goalView.ts';
 import type { SessionGoalView } from './goalView.ts';
+import { planTaskArrange } from './taskView.ts';
+import type { ProjectTaskView, TaskArrangeMode, TaskArrangeResult } from './taskView.ts';
 import type { ArtifactPageView } from '../runtime-client/artifacts.ts';
 
 // Re-exported for callers that imported these from the store in earlier phases.
@@ -150,6 +152,23 @@ let authEpoch = 0;
  * stale page can never be published into the next pairing's state.
  */
 let projectsGeneration = 0;
+
+/**
+ * Monotonic scope generation for the pending project-task backlog
+ * (`runtime.project.task.*`).  Activating another project, re-pairing and
+ * logging out all bump it, so a list/create/update/delete/arrange issued under
+ * one project can never publish its late result (or error) into the next
+ * project's backlog -- including an A -> B -> A round trip, where the project id
+ * alone cannot tell the two visits apart.
+ */
+let projectTasksScope = 0;
+
+/**
+ * Monotonic generation for the backlog *list* read alone.  Two refreshes of the
+ * same project can overlap and only the newest may win; `projectTasksScope`
+ * cannot order them because both share it.
+ */
+let projectTasksListGeneration = 0;
 
 /**
  * Hard cap on the pages one project enumeration reads.  `runtime.project.list`
@@ -248,6 +267,29 @@ function requireRuntimeClient(): SynapseRuntimeClient | null {
 }
 
 /**
+ * Whether a project-task call issued at `scope` may still write the console
+ * state: same pairing (`authEpoch`), same runtime client, same active project
+ * and same project scope.  Any of those having moved on means the call's result
+ * belongs to a project the console has left, so it must be dropped instead of
+ * overwriting the new project's backlog.
+ */
+function projectTasksScopeCurrent(
+  scope: number,
+  client: SynapseRuntimeClient,
+  projectId: string,
+  epoch: number,
+): boolean {
+  const state = useConsoleStore.getState();
+  return (
+    scope === projectTasksScope
+    && epoch === authEpoch
+    && state.pairingState === 'paired'
+    && state.client === client
+    && state.activeProjectId === projectId
+  );
+}
+
+/**
  * Apply the authenticated project context and open the runtime transport.
  *
  * Only reachable after a successful `POST /api/pair` or a 200
@@ -257,6 +299,9 @@ function requireRuntimeClient(): SynapseRuntimeClient | null {
 function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void {
   if (epoch !== authEpoch) return;
   const store = useConsoleStore;
+  // A brand-new authenticated runtime has no backlog yet: fence any in-flight
+  // task call from the pairing being replaced so it cannot publish into this one.
+  projectTasksScope += 1;
   // A new authenticated runtime starts from a clean diagnostics slate: the
   // previous pairing's read (and its once-per-pairing latch) must not leak in.
   resetRuntimeDiagnostics();
@@ -321,6 +366,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     projectThinkingLevel: null,
     canSetProjectThinking: false,
     projectThinkingError: null,
+    projectTasks: [],
+    projectTasksLoading: false,
+    projectTasksError: null,
   });
   void connectAuthenticatedRuntime(client, project, epoch);
 }
@@ -954,6 +1002,44 @@ interface ConsoleStore {
   pauseGoal: () => Promise<boolean>;
   /** Resume the current goal (`runtime.session.goal.resume`, status-only). */
   resumeGoal: () => Promise<boolean>;
+
+  // Project Tasks (Backlog)
+  projectTasks: ProjectTaskView[];
+  projectTasksLoading: boolean;
+  projectTasksError: string | null;
+  loadProjectTasks: (status?: string, label?: string) => Promise<void>;
+  createProjectTask: (title: string, description?: string, priority?: string, labels?: string[]) => Promise<boolean>;
+  updateProjectTask: (
+    taskId: string,
+    updates: {
+      title?: string;
+      description?: string;
+      status?: string;
+      priority?: string;
+      labels?: string[];
+      assignedThreadId?: string | null;
+      clearAssignedThread?: boolean;
+    },
+  ) => Promise<boolean>;
+  deleteProjectTask: (taskId: string) => Promise<boolean>;
+  /**
+   * Arrange project tasks onto sessions without ever running one.
+   *
+   * `mode` decides how many sessions the selection takes: `shared` puts the whole
+   * selection in one session (an already-shared session is reused), `parallel`
+   * gives every task a session of its own (a task that already has one keeps it).
+   *
+   * Arranging is bookkeeping: each session is created through
+   * `runtime.session.create`, which persists the metadata row and never opens a
+   * runtime or builds an agent, no turn is submitted, no goal is armed, and the
+   * console stays on the session the reader is looking at.  The sessions are
+   * ordinary rows in the sidebar, so the reader starts the work by opening one and
+   * sending a message.
+   */
+  arrangeTasks: (
+    tasks: readonly ProjectTaskView[],
+    mode: TaskArrangeMode,
+  ) => Promise<TaskArrangeResult>;
 
   // Timeline Transcript
   messages: TranscriptMessage[];
@@ -2850,6 +2936,11 @@ async function activateProject(projectId: string): Promise<boolean> {
   if (!requireRuntimeClient()) return false;
   if (projectId === store.getState().activeProjectId) return true;
   const epoch = authEpoch;
+  // The pending backlog belongs to the project being left: bump the scope so an
+  // in-flight task call can never publish into the project being entered, and
+  // clear the visible backlog so the previous project's tasks are never shown
+  // under the new project's header.
+  projectTasksScope += 1;
   // The composer belongs to the project being left; a cross-project switch must
   // not carry (or keep uploading) its images into the new project.
   store.getState().cancelAttachments();
@@ -2921,6 +3012,9 @@ async function activateProject(projectId: string): Promise<boolean> {
     historyError: null,
     revertError: null,
     activeSubscriptionId: null,
+    projectTasks: [],
+    projectTasksLoading: false,
+    projectTasksError: null,
   });
   await store.getState().fetchSessions();
   const active = store.getState().activeProjectId === projectId;
@@ -3198,20 +3292,32 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const client = requireRuntimeClient();
     if (!client) return;
     const { currentSession } = get();
-    if (client.getState() !== 'connected') {
-      await client.connect();
-    }
+    const epoch = authEpoch;
+    // Arranging tasks also refreshes this sidebar. Bind the read to the exact
+    // session context: A -> B -> A replaces this object even when ids match, so
+    // an old refresh cannot put A's rows under B (or a later visit to A).
+    const current = () =>
+      epoch === authEpoch
+      && get().client === client
+      && get().pairingState === 'paired'
+      && get().currentSession === currentSession;
     try {
+      if (client.getState() !== 'connected') {
+        await client.connect();
+        if (!current()) return;
+      }
       // Readable only after protocol negotiation has completed on this socket.
       const view = toSessionListView(
         await client.listSessions({ project_id: currentSession.project_id }),
       );
+      if (!current()) return;
       set({
         sessions: view.items,
         sessionsNextOffset: view.next_offset,
         sessionsTotal: view.total,
       });
     } catch (e) {
+      if (!current()) return;
       console.error('Failed to fetch sessions:', e);
     }
   },
@@ -3582,6 +3688,207 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       set({ goalBusy: false, goalActionError: describeGoalActionError(e, '恢复目标失败') });
       return false;
     }
+  },
+  projectTasks: [],
+  projectTasksLoading: false,
+  projectTasksError: null,
+  loadProjectTasks: async (status, label) => {
+    const client = requireRuntimeClient();
+    const { activeProjectId } = get();
+    if (!client || !activeProjectId) return;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    // Two refreshes of the same project can overlap, so the list read carries its
+    // own generation: only the newest one may publish (`projectTasksScope` cannot
+    // order them because both share it).
+    const generation = ++projectTasksListGeneration;
+    const current = () =>
+      generation === projectTasksListGeneration
+      && projectTasksScopeCurrent(scope, client, activeProjectId, epoch);
+    set({ projectTasksLoading: true, projectTasksError: null });
+    try {
+      const result = await client.listProjectTasks({
+        project_id: activeProjectId,
+        status: status || undefined,
+        label: label || undefined,
+      });
+      if (!current()) return;
+      set({ projectTasks: [...result.tasks], projectTasksLoading: false });
+    } catch (err) {
+      if (!current()) return;
+      console.error('Failed to load project tasks:', err);
+      set({
+        projectTasksLoading: false,
+        projectTasksError: describeError(err) || '加载任务列表失败',
+      });
+    }
+  },
+  createProjectTask: async (title, description, priority, labels) => {
+    const client = requireRuntimeClient();
+    const { activeProjectId } = get();
+    if (!client || !activeProjectId) return false;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    const current = () => projectTasksScopeCurrent(scope, client, activeProjectId, epoch);
+    try {
+      const result = await client.createProjectTask({
+        project_id: activeProjectId,
+        title,
+        description: description || '',
+        priority: priority || 'medium',
+        labels: labels || [],
+      });
+      // A response that landed after a project switch / logout / re-pair belongs
+      // to a backlog the console has left: never splice it into the new project.
+      if (!current()) return false;
+      if (result.task) {
+        set((s) => ({ projectTasks: [result.task!, ...s.projectTasks] }));
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (!current()) return false;
+      console.error('Failed to create project task:', err);
+      set({ projectTasksError: describeError(err) || '创建任务失败' });
+      return false;
+    }
+  },
+  updateProjectTask: async (taskId, updates) => {
+    const client = requireRuntimeClient();
+    const { activeProjectId } = get();
+    if (!client || !activeProjectId) return false;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    const current = () => projectTasksScopeCurrent(scope, client, activeProjectId, epoch);
+    set({ projectTasksError: null });
+    try {
+      const result = await client.updateProjectTask({
+        project_id: activeProjectId,
+        task_id: taskId,
+        title: updates.title,
+        description: updates.description,
+        status: updates.status,
+        priority: updates.priority,
+        labels: updates.labels,
+        assigned_thread_id: updates.assignedThreadId,
+        clear_assigned_thread: updates.clearAssignedThread,
+      });
+      if (!current()) return false;
+      if (result.task) {
+        const updated = result.task;
+        set((s) => ({
+          projectTasks: s.projectTasks.map((t) => (t.id === updated.id ? updated : t)),
+          projectTasksError: null,
+        }));
+        return true;
+      }
+      set({
+        projectTasksError: result.status === 'not_found'
+          ? '待办已不存在，请刷新后重试'
+          : '保存待办失败，请重试',
+      });
+      return false;
+    } catch (err) {
+      if (!current()) return false;
+      console.error('Failed to update project task:', err);
+      set({ projectTasksError: describeError(err) || '更新任务失败' });
+      return false;
+    }
+  },
+  deleteProjectTask: async (taskId) => {
+    const client = requireRuntimeClient();
+    const { activeProjectId } = get();
+    if (!client || !activeProjectId) return false;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    const current = () => projectTasksScopeCurrent(scope, client, activeProjectId, epoch);
+    try {
+      const result = await client.deleteProjectTask({
+        project_id: activeProjectId,
+        task_id: taskId,
+      });
+      if (!current()) return false;
+      if (result.deleted) {
+        set((s) => ({
+          projectTasks: s.projectTasks.filter((t) => t.id !== taskId),
+        }));
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (!current()) return false;
+      console.error('Failed to delete project task:', err);
+      set({ projectTasksError: describeError(err) || '删除任务失败' });
+      return false;
+    }
+  },
+  arrangeTasks: async (tasks, mode) => {
+    const client = requireRuntimeClient();
+    // The backlog being arranged is the *active* project's: without one there is
+    // no scope to bind to, so a fallback to `currentSession.project_id` would let
+    // an arrange write into the project the console last happened to show.
+    const { activeProjectId } = get();
+    if (!client || activeProjectId === '' || tasks.length === 0) {
+      return { bound: 0, sessions: [] };
+    }
+    const projectId = activeProjectId;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    // Every await re-checks the scope: a project switch, logout or re-pairing
+    // mid-arrange must stop the run instead of creating sessions / updating tasks
+    // in the project the console has since moved to.
+    const stale = () => !projectTasksScopeCurrent(scope, client, projectId, epoch);
+
+    const sessions: string[] = [];
+    let bound = 0;
+    for (const group of planTaskArrange(tasks, mode)) {
+      if (stale()) break;
+      let threadId = group.threadId;
+      if (threadId === null) {
+        // `runtime.session.create` is metadata-only: it persists the row and never
+        // opens a runtime or builds an agent, so arranging a task can never start a
+        // turn.  No title is sent either -- the daemon binds the real title from the
+        // session's first user message.
+        const created = await client
+          .createSession({ project_id: projectId })
+          .catch((err: unknown) => {
+            if (stale()) return null;
+            console.error('Failed to create a session for a task:', err);
+            set({ projectTasksError: describeError(err) || '创建会话失败' });
+            return null;
+          });
+        if (stale()) break;
+        if (created === null) break;
+        threadId = created.session.thread_id;
+        sessions.push(threadId);
+      }
+      for (const task of group.tasks) {
+        if (stale()) break;
+        if (task.assigned_thread_id === threadId && task.status === 'in_progress') {
+          bound += 1;
+          continue;
+        }
+        // The scope was checked in this same synchronous fragment, so the action
+        // still runs against the project the run started on (and re-checks the
+        // scope itself before it publishes), never against a project switched to
+        // while an earlier await was in flight.
+        const ok = await get().updateProjectTask(task.id, {
+          status: 'in_progress',
+          assignedThreadId: threadId,
+        });
+        if (stale()) break;
+        if (ok) bound += 1;
+      }
+    }
+    // The project changed mid-run: report nothing so the board never shows the
+    // previous project's result under the new one.
+    if (stale()) return { bound: 0, sessions: [] };
+    // The sessions are persisted rows: refresh the sidebar's first page so they are
+    // listed without a manual reload.  The console itself stays on the session the
+    // reader was looking at -- arranging never attaches anywhere.
+    if (sessions.length > 0) await get().fetchSessions();
+    if (stale()) return { bound: 0, sessions: [] };
+    return { bound, sessions };
   },
   requestSessionSearchFocus: () =>
     set((s) => ({ searchFocusToken: s.searchFocusToken + 1, isSidebarCollapsed: false })),
@@ -4159,6 +4466,11 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   logoutConsole: async () => {
     const epoch = ++authEpoch;
     const { client } = get();
+    // The pending backlog belongs to the pairing being left: fence every
+    // in-flight task call and clear it *before* the logout round-trip, so a late
+    // list/create response can never repopulate the console while the gate opens.
+    projectTasksScope += 1;
+    set({ projectTasks: [], projectTasksLoading: false, projectTasksError: null });
     try {
       await requestConsoleLogout();
     } catch (err) {
@@ -4238,6 +4550,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     projectThinkingLevel: null,
     canSetProjectThinking: false,
     projectThinkingError: null,
+      projectTasks: [],
+      projectTasksLoading: false,
+      projectTasksError: null,
       historyLoading: false,
       historyHasMore: false,
       historyAvailable: null,

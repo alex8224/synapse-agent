@@ -65,7 +65,7 @@ export const ThoughtRow = React.memo(function ThoughtRow({
             className="thought-pill inline-flex cursor-pointer select-none items-center gap-1.5 rounded-control border border-line bg-surface px-2.5 py-1 font-mono text-xs text-gray-600 transition-colors hover:bg-surface-hover hover:text-gray-900 active:bg-surface-pressed fluent-spotlight"
           >
             {message.duration === 'streaming' ? (
-              <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent" style={{ fontSize: '14px' }} />
+              <Sparkle20Regular aria-hidden="true" className="shrink-0 animate-pulse text-accent-fg" style={{ fontSize: '14px' }} />
             ) : (
               <BrainCircuit20Regular aria-hidden="true" className="shrink-0 text-gray-500" style={{ fontSize: '14px' }} />
             )}

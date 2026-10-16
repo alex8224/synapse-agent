@@ -13,8 +13,10 @@ import {
   CONTEXT_MENTIONS,
   fileMention,
   MENTION_KIND_ICON,
+  MENTION_KIND_ORDER,
   MENTION_KIND_LABEL,
   rankMentions,
+  projectMention,
   sessionMention,
   SKILL_MENTIONS,
   skillMention,
@@ -70,6 +72,7 @@ export interface RichComposerHandle {
    * caret -- joined to the draft by the one separator rule (`spokenTextToInsert`).
    */
   insertSpoken: (phrase: string) => void;
+  insertText: (text: string) => void;
 }
 
 export interface RichComposerProps {
@@ -271,7 +274,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
   );
 
   useEffect(() => {
-    handleRef.current = { snapshot, reset, restore, focus, insertSpoken };
+    handleRef.current = { snapshot, reset, restore, focus, insertSpoken, insertText: insertSpoken };
     return () => {
       handleRef.current = null;
     };
@@ -309,6 +312,18 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     return [...rows.values()];
   }, [sessions, projectSessions, projects, activeProjectId, currentSession.project_id]);
 
+  /** Projects that can be autocompleted or drilled into. */
+  const projectCandidates = useMemo(() => {
+    return projects.map((p) =>
+      projectMention({
+        project_id: p.project_id,
+        name: p.workspace_name || p.project_id,
+        workspace_path: p.workspace_path,
+        session_count: projectSessions[p.project_id]?.length,
+      }),
+    );
+  }, [projects, projectSessions]);
+
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(
     (query: string): MentionEntry[] => {
@@ -329,9 +344,12 @@ export const RichComposer: React.FC<RichComposerProps> = ({
         ),
         query,
       );
-      return [...matched, ...sessions, ...statics];
+      const projectsList = rankMentions(projectCandidates, query);
+      const all = [...projectsList, ...sessions, ...matched, ...statics];
+      const orderMap = new Map(MENTION_KIND_ORDER.map((k, i) => [k, i]));
+      return all.sort((a, b) => (orderMap.get(a.kind) ?? 99) - (orderMap.get(b.kind) ?? 99));
     },
-    [files, skills, sessionCandidates, activeProjectId, currentSession],
+    [files, skills, sessionCandidates, projectCandidates, activeProjectId, currentSession],
   );
 
   /** Open, update or close the `@` list for the caret's current position. */
@@ -479,7 +497,7 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       });
       setPills((current) => [...current, ...mounted]);
     },
-    [],
+    [ensureProjectSessionsLoaded, refreshMention],
   );
 
   /**
@@ -593,6 +611,29 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     (entry: MentionEntry) => {
       const editor = editorRef.current;
       if (editor === null) return;
+      if (entry.kind === 'project') {
+        const range = queryRangeRef.current;
+        const live = range !== null && isRangeLive(editor, range);
+        const currentTyped = queryRef.current.toLowerCase();
+        const prefix = currentTyped.startsWith('session:')
+          ? `@session:${entry.label}:`
+          : `@${entry.label}:`;
+
+        if (live && range !== null) {
+          range.deleteContents();
+          const textNode = document.createTextNode(prefix);
+          range.insertNode(textNode);
+          placeCaret(caretAfter(textNode));
+        } else {
+          insertTextAtCaret(editor, prefix);
+        }
+
+        const projectId = entry.id.replace(/^project:/, '');
+        void ensureProjectSessionsLoaded?.([projectId], { force: true });
+        refreshMention();
+        return;
+      }
+
       const pill: ComposerMentionPill = {
         kind: entry.kind,
         pillId: nextPillId(),

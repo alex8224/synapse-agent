@@ -68,7 +68,7 @@ const STATUS_TONE: Record<string, string> = {
   D: 'text-red-600 bg-red-500/10 border-red-500/30',
   R: 'text-purple-600 bg-purple-500/10 border-purple-500/30',
   C: 'text-purple-600 bg-purple-500/10 border-purple-500/30',
-  T: 'text-blue-600 bg-blue-500/10 border-blue-500/30',
+  T: 'text-blue-500 bg-blue-500/10 border-blue-500/30',
 };
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
@@ -251,7 +251,7 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
         <div className="flex items-center gap-1.5">
           <span className="truncate font-mono text-[11.5px] text-gray-900">{branch.name}</span>
           {branch.isHead && (
-            <span className="shrink-0 rounded border border-accent bg-accent/10 px-1 font-mono text-[9.5px] font-bold text-accent">
+            <span className="shrink-0 rounded border border-accent-fg bg-accent/10 px-1 font-mono text-[9.5px] font-bold text-accent-fg">
               HEAD
             </span>
           )}
@@ -367,9 +367,9 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
     return (
       <div className="pb-3">
         {current ? (
-          <div className="mx-2 mt-2 rounded-control border border-accent/60 bg-accent/5 px-2.5 py-2">
+          <div className="mx-2 mt-2 rounded-control border border-accent-fg/60 bg-accent/5 px-2.5 py-2">
             <div className="flex items-center gap-1.5">
-              <span className="shrink-0 rounded border border-accent bg-accent/10 px-1 font-mono text-[9.5px] font-bold text-accent">
+              <span className="shrink-0 rounded border border-accent-fg bg-accent/10 px-1 font-mono text-[9.5px] font-bold text-accent-fg">
                 HEAD
               </span>
               <span className="truncate font-mono text-[11.5px] font-semibold text-gray-900">
@@ -478,7 +478,7 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
             if (event.key === 'Enter') void applyPathFilter();
           }}
           placeholder="按路径过滤（回车应用）"
-          className="h-7 min-w-0 flex-1 rounded-control border border-line bg-surface px-2 font-mono text-[11px] text-gray-900 outline-none focus:border-accent"
+          className="h-7 min-w-0 flex-1 rounded-control border border-line bg-surface px-2 font-mono text-[11px] text-gray-900 outline-none focus:border-accent-fg"
         />
         <button
           type="button"
@@ -486,7 +486,7 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
           title="只显示这个分支自身的提交，不展开被合并进来的历史"
           className={`h-7 shrink-0 rounded-control border px-2 text-[11px] ${
             firstParent
-              ? 'border-accent bg-accent/10 font-semibold text-accent'
+              ? 'border-accent-fg bg-accent/10 font-semibold text-accent-fg'
               : 'border-line text-gray-600 hover:bg-surface-hover'
           }`}
         >
@@ -536,7 +536,7 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
                     key={label}
                     className={`rounded border px-1 font-mono text-[9.5px] ${
                       label === 'HEAD'
-                        ? 'border-accent bg-accent/10 font-bold text-accent'
+                        ? 'border-accent-fg bg-accent/10 font-bold text-accent-fg'
                         : 'border-line bg-surface-hover text-gray-600'
                     }`}
                   >

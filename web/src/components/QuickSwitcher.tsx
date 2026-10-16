@@ -404,7 +404,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
           aria-label="快速定位与切换会话"
           tabIndex={-1}
           onKeyDown={handleKeyDown}
-          className="w-full max-w-4xl rounded-card border border-line-strong/80 material-flyout flyout-in flex flex-col overflow-hidden font-sans shadow-flyout h-[540px]"
+          className="w-full max-w-4xl rounded-card border border-line/80 material-flyout flyout-in flex flex-col overflow-hidden font-sans shadow-flyout h-[540px]"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header with Search Input */}
@@ -412,7 +412,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
             <Search20Regular className="text-gray-400 shrink-0" />
             <button
               onClick={() => setOnlyCurrentProject((prev) => !prev)}
-              className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-sunken border border-line text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1 shrink-0"
+              className="px-2 py-0.5 rounded text-[11px] font-mono bg-sunken border border-line text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-1 shrink-0"
               title="按 Tab 切换工作区范围"
             >
               <span>{onlyCurrentProject ? `仅当前项目` : '全部工作区'}</span>
@@ -427,7 +427,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 setSelectedIndex(0);
               }}
               placeholder="搜索会话标题、执行工具、或项目名... (按 Tab 切换范围)"
-              className="flex-1 bg-transparent text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 outline-none"
+              className="flex-1 bg-transparent text-sm text-gray-900 placeholder-gray-400 outline-none"
             />
             {query ? (
               <button
@@ -436,7 +436,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                   setSelectedIndex(0);
                   inputRef.current?.focus();
                 }}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                className="text-gray-400 hover:text-gray-600"
                 title="清空"
               >
                 <Dismiss20Regular />
@@ -453,7 +453,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
             {/* Left Column: Session List */}
             <div
               ref={listContainerRef}
-              className="w-[45%] border-r border-line overflow-y-auto p-2 flex flex-col gap-1 bg-surface-canvas/60 no-scrollbar select-none"
+              className="w-[45%] border-r border-line overflow-y-auto p-2 flex flex-col gap-1 bg-canvas/60 no-scrollbar select-none"
             >
               {filteredItems.length === 0 ? (
                 <div className="py-12 text-center text-xs text-gray-400">
@@ -464,7 +464,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                   <div key={group.key} className="flex flex-col gap-0.5 mb-1.5">
                     <div className="flex items-center justify-between px-2.5 py-1 text-[11px] font-semibold text-gray-400 tracking-wider">
                       <span>{group.label}</span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-surface-sunken text-gray-500">
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-sunken text-gray-500">
                         {group.count}
                       </span>
                     </div>
@@ -481,13 +481,13 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                       onDoubleClick={() => handleSelectSession(item)}
                       className={`relative flex items-center gap-3 rounded-control px-3 py-2.5 cursor-pointer transition-all duration-fast ${
                         isSelected
-                          ? 'bg-blue-600/15 dark:bg-blue-500/20 text-gray-900 dark:text-gray-100 font-medium shadow-xs border border-blue-500/35 dark:border-blue-400/35'
-                          : 'hover:bg-control-hover/70 text-gray-600 dark:text-gray-400 border border-transparent'
+                          ? 'bg-blue-500/15 text-gray-900 font-medium shadow-card border border-blue-500/35'
+                          : 'hover:bg-surface-hover/70 text-gray-600 border border-transparent'
                       }`}
                     >
                       {/* Fluent Selection Indicator: 3.5px accent bar on left */}
                       {isSelected && (
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3.5px] rounded-full bg-blue-600 dark:bg-blue-400 shadow-xs" />
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3.5px] rounded-full bg-blue-500 shadow-card" />
                       )}
 
                       {/* Status icon / dot */}
@@ -501,7 +501,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                         <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500 ring-2 ring-amber-500/20" />
                       )}
                       {item.status === 'idle' && (
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400 dark:bg-gray-500 opacity-75" />
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400 opacity-75" />
                       )}
 
                       {/* Session title & subtitle */}
@@ -509,18 +509,18 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                         <div className="flex items-center gap-1.5">
                           <span
                             className={`truncate text-xs ${
-                              isSelected ? 'font-semibold text-gray-900 dark:text-gray-100' : 'font-medium text-gray-700 dark:text-gray-300'
+                              isSelected ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'
                             }`}
                           >
                             {item.title}
                           </span>
                           {item.isCurrent && (
-                            <span className="text-[10px] bg-accent/15 text-accent px-1 rounded font-mono shrink-0">
+                            <span className="text-[10px] bg-accent/15 text-accent-fg px-1 rounded font-mono shrink-0">
                               当前
                             </span>
                           )}
                         </div>
-                        <div className="truncate text-[11px] font-mono text-gray-500 dark:text-gray-400">
+                        <div className="truncate text-[11px] font-mono text-gray-500">
                           {item.status === 'approval'
                             ? '▲ 等待安全审批'
                             : item.activity?.detail ||
@@ -546,7 +546,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                 ))
               )}
               {query === '' && (
-                <div className="py-2.5 px-3 text-[11px] text-gray-400 text-center border-t border-line-subtle font-sans mt-auto">
+                <div className="py-2.5 px-3 text-[11px] text-gray-400 text-center border-t border-line/60 font-sans mt-auto">
                   已精简收拢历史会话 · 键入关键字可搜索全部会话
                 </div>
               )}
@@ -564,13 +564,13 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                     </div>
 
                     {currentSelected.status === 'running' && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-medium text-blue-500 border border-blue-500/20">
                         <Play20Regular className="text-xs" />
                         运行中
                       </span>
                     )}
                     {currentSelected.status === 'approval' && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 border border-amber-500/30">
                         <Warning20Regular className="text-xs" />
                         等待安全审批
                       </span>
@@ -585,28 +585,28 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
 
                   {/* Cross-project Notice */}
                   {currentSelected.project_id !== currentSession.project_id && (
-                    <div className="rounded-control bg-blue-500/10 border border-blue-500/25 px-2.5 py-1.5 text-xs text-blue-600 dark:text-blue-400 flex items-center justify-between font-mono">
+                    <div className="rounded-control bg-blue-500/10 border border-blue-500/25 px-2.5 py-1.5 text-xs text-blue-500 flex items-center justify-between font-mono">
                       <span>跨项目会话</span>
                       <span className="text-[10px] opacity-80">Enter 将自动载入该项目工作区</span>
                     </div>
                   )}
 
                   {/* Title */}
-                  <div className="text-base font-semibold text-gray-900 dark:text-gray-100 flex items-start gap-2 leading-snug">
-                    <Chat20Regular className="text-accent shrink-0 mt-0.5" />
+                  <div className="text-base font-semibold text-gray-900 flex items-start gap-2 leading-snug">
+                    <Chat20Regular className="text-accent-fg shrink-0 mt-0.5" />
                     <span>{currentSelected.title}</span>
                   </div>
 
                   {/* Live Activity Section */}
                   {currentSelected.activity && (
-                    <div className="rounded-card bg-surface-sunken p-3 border border-line flex flex-col gap-2 shadow-xs">
+                    <div className="rounded-card bg-sunken p-3 border border-line flex flex-col gap-2 shadow-card">
                       <div className="flex items-center justify-between text-[11px] text-gray-400 font-semibold">
-                        <span className="flex items-center gap-1.5 text-accent">
+                        <span className="flex items-center gap-1.5 text-accent-fg">
                           <Wrench20Regular />
                           当前执行工具 ({currentSelected.activity.phase})
                         </span>
                       </div>
-                      <div className="font-mono text-xs text-gray-900 dark:text-gray-100 break-all bg-surface/80 p-2 rounded border border-line-subtle">
+                      <div className="font-mono text-xs text-gray-900 break-all bg-surface/80 p-2 rounded border border-line/60">
                         {currentSelected.activity.detail || '处理中...'}
                       </div>
                       <div className="h-1 w-full bg-surface rounded-full overflow-hidden">
@@ -618,11 +618,11 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                   {/* Pending Approval Section */}
                   {currentSelected.status === 'approval' && currentSelected.pendingApproval && (
                     <div className="rounded-control bg-amber-500/10 p-3 border border-amber-500/30 flex flex-col gap-2">
-                      <div className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                      <div className="text-xs font-semibold text-amber-700 flex items-center gap-1.5">
                         <Warning20Regular />
                         <span>安全网关保护：等待授权</span>
                       </div>
-                      <div className="font-mono text-[11px] text-gray-800 dark:text-gray-200 bg-surface/70 p-2 rounded border border-amber-500/20">
+                      <div className="font-mono text-[11px] text-gray-800 bg-surface/70 p-2 rounded border border-amber-500/20">
                         {currentSelected.pendingApproval.actions
                           .map((a) => a.description || a.name)
                           .join(', ') || '请求执行系统操作'}
@@ -651,7 +651,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
                     <span className="text-[11px] font-semibold text-gray-400">
                       最新摘要 / 执行结果:
                     </span>
-                    <div className="flex-1 rounded-card bg-surface-sunken p-3 border border-line text-xs text-gray-700 dark:text-gray-200 leading-relaxed overflow-y-auto font-sans no-scrollbar">
+                    <div className="flex-1 rounded-card bg-sunken p-3 border border-line text-xs text-gray-700 leading-relaxed overflow-y-auto font-sans no-scrollbar">
                       {currentSelected.lastSummary ? (
                         <p className="whitespace-pre-wrap">{currentSelected.lastSummary}</p>
                       ) : (
@@ -690,21 +690,21 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ isOpen, onClose })
           <div className="flex items-center justify-between border-t border-line px-4 py-2 bg-surface/90 text-[11px] text-gray-400 font-mono select-none">
             <div className="flex items-center gap-3">
               <span>
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">↑</kbd>{' '}
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">↓</kbd>{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">↑</kbd>{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">↓</kbd>{' '}
                 漫游
               </span>
               <span>
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">Tab</kbd>{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">Tab</kbd>{' '}
                 切换范围
               </span>
               <span>
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">Enter</kbd>{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">Enter</kbd>{' '}
                 切换
               </span>
               <span>
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">Y</kbd> /{' '}
-                <kbd className="rounded border border-line bg-surface-sunken px-1.5 py-0.5">N</kbd>{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">Y</kbd> /{' '}
+                <kbd className="rounded border border-line bg-sunken px-1.5 py-0.5">N</kbd>{' '}
                 就地审批
               </span>
             </div>

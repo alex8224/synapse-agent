@@ -159,12 +159,12 @@ export const TurnRail: React.FC<{ viewport: TranscriptViewport }> = ({ viewport 
           onClick={jumpToBottom}
           title="跳转到会话尾部"
           aria-label="跳转到会话尾部"
-          className="group relative flex h-4 w-5 cursor-pointer items-center justify-center rounded-full text-gray-400 transition-colors hover:text-accent"
+          className="group relative flex h-4 w-5 cursor-pointer items-center justify-center rounded-full text-gray-400 transition-colors hover:text-accent-fg"
         >
           <ArrowDown16Regular
             aria-hidden="true"
             className={`shrink-0 transition-colors ${
-              isAtBottom ? 'text-accent' : 'text-gray-400/80 group-hover:text-accent'
+              isAtBottom ? 'text-accent-fg' : 'text-gray-400/80 group-hover:text-accent-fg'
             }`}
             style={{ fontSize: '12px' }}
           />

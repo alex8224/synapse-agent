@@ -37,7 +37,7 @@ export const todoItem: BottomBarItemDefinition = {
   overlay: 'popover',
   panelLabel: '任务列表',
   panelClassName:
-    'w-88 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3 font-sans text-left shadow-flyout',
+    'w-[22rem] max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3 font-sans text-left shadow-flyout',
   availability: todoAvailability,
   Trigger: function TodoTrigger({ context, open, anchorRef }) {
     const messages = useConsoleStore((state) => state.messages);
@@ -61,7 +61,7 @@ export const todoItem: BottomBarItemDefinition = {
       >
         <TasksApp20Regular
           aria-hidden="true"
-          className={`shrink-0 ${allDone ? 'text-emerald-600' : active ? 'text-accent animate-pulse' : 'text-gray-500'}`}
+          className={`shrink-0 ${allDone ? 'text-emerald-600' : active ? 'text-accent-fg animate-pulse' : 'text-gray-500'}`}
           style={{ fontSize: '15px' }}
         />
         <span className="text-gray-700">

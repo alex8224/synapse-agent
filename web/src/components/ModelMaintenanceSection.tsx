@@ -455,7 +455,7 @@ export const ModelMaintenanceSection: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenAdd}
-            className="ui-button ui-compact flex items-center gap-1.5 border border-accent/40 bg-accent/10 px-3 text-xs text-accent transition-colors hover:bg-accent/20"
+            className="ui-button ui-compact flex items-center gap-1.5 border border-accent-fg/40 bg-accent/10 px-3 text-xs text-accent-fg transition-colors hover:bg-accent/20"
           >
             <Add16Regular aria-hidden="true" />
             <span>添加模型</span>
@@ -484,7 +484,7 @@ export const ModelMaintenanceSection: React.FC = () => {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-900">
-                  <Star16Filled aria-hidden="true" className="text-accent shrink-0" />
+                  <Star16Filled aria-hidden="true" className="text-accent-fg shrink-0" />
                   <span>全局默认模型</span>
                 </div>
                 {modelList && modelList.models.length > 1 && (
@@ -505,15 +505,15 @@ export const ModelMaintenanceSection: React.FC = () => {
                 )}
               </div>
 
-              <div className="rounded-card border-2 border-accent/70 bg-accent/[0.03] p-3.5 shadow-card transition-colors">
+              <div className="rounded-card border-2 border-accent-fg/70 bg-accent/[0.03] p-3.5 shadow-card transition-colors">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-base font-semibold text-gray-900">
                         {defaultModel.alias}
                       </span>
-                      <span className="rounded-control bg-accent/20 px-2 py-0.5 text-[11px] font-semibold text-accent flex items-center gap-1">
-                        <Star16Filled aria-hidden="true" className="w-3 h-3 text-accent shrink-0" />
+                      <span className="rounded-control bg-accent/20 px-2 py-0.5 text-[11px] font-semibold text-accent-fg flex items-center gap-1">
+                        <Star16Filled aria-hidden="true" className="w-3 h-3 text-accent-fg shrink-0" />
                         <span>全局默认</span>
                       </span>
                       <span className="rounded-control bg-gray-100 px-2 py-0.5 text-[10px] text-gray-600 font-mono">
@@ -673,7 +673,7 @@ export const ModelMaintenanceSection: React.FC = () => {
                           ) : (
                             <ChevronRight16Regular aria-hidden="true" className="text-gray-400 shrink-0" />
                           )}
-                          <Bot16Regular aria-hidden="true" className="text-accent shrink-0" />
+                          <Bot16Regular aria-hidden="true" className="text-accent-fg shrink-0" />
                           <span>{groupMeta.label}</span>
                         </div>
                         <span className="rounded-control bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 font-normal">
@@ -692,7 +692,7 @@ export const ModelMaintenanceSection: React.FC = () => {
                             return (
                               <div
                                 key={item.alias}
-                                className="rounded-card border border-line bg-surface p-3 transition-colors shadow-card hover:border-accent/40"
+                                className="rounded-card border border-line bg-surface p-3 transition-colors shadow-card hover:border-accent-fg/40"
                               >
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0 flex-1">
@@ -1102,7 +1102,7 @@ export const ModelMaintenanceSection: React.FC = () => {
                       onChange={(e) =>
                         setFormData({ ...formData, makeDefault: e.target.checked })
                       }
-                      className="rounded border-gray-300 text-accent focus:ring-accent"
+                      className="rounded border-gray-300 text-accent-fg focus:ring-accent"
                     />
                     <span>设为项目默认模型</span>
                   </label>

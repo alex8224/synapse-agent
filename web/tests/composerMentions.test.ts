@@ -124,7 +124,7 @@ test('every kind has a group title and a row label', () => {
   // unreachable from the composer.
   assert.deepEqual(
     [...MENTION_KIND_ORDER].sort(),
-    ['context', 'file', 'session', 'skill'],
+    ['context', 'file', 'project', 'session', 'skill'],
     'every mention kind must be renderable',
   );
   for (const kind of MENTION_KIND_ORDER) {

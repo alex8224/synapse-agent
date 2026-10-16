@@ -27,6 +27,7 @@
     "models.write",
     "project.list",
     "project.register",
+    "project.tasks",
     "project.thinking",
     "screenshot.control",
     "screenshot.read",
@@ -277,6 +278,10 @@
     "max_session_goal_objective_chars": 10000,
     "max_stt_chunk_base64_chars": 87384,
     "max_stt_chunk_bytes": 65536,
+    "max_task_description_chars": 20000,
+    "max_task_label_chars": 50,
+    "max_task_labels_count": 20,
+    "max_task_title_chars": 200,
     "min_chunk_bytes": 1024,
     "min_event_bytes": 1024,
     "min_scan_limit": 1,
@@ -289,7 +294,9 @@
     "session_search_offset_max": 100000,
     "session_search_text_max": 200,
     "session_title_max": 120,
-    "stt_sample_rate": 16000
+    "stt_sample_rate": 16000,
+    "task_list_limit_default": 50,
+    "task_list_limit_max": 200
   },
   "methods": [
     {
@@ -844,6 +851,90 @@
       "scope": "catalog",
       "scope_location": null,
       "service_method": "register_project",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "project.tasks",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; requires project.tasks capability."
+      ],
+      "method": "runtime.project.task.create",
+      "params_alias": "CreateProjectTaskParams",
+      "request": "CreateProjectTaskCommand",
+      "result": "ProjectTaskResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "create_project_task",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "project.tasks",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; requires project.tasks capability."
+      ],
+      "method": "runtime.project.task.delete",
+      "params_alias": "DeleteProjectTaskParams",
+      "request": "DeleteProjectTaskCommand",
+      "result": "DeleteProjectTaskResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "delete_project_task",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "project.tasks",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; requires project.tasks capability."
+      ],
+      "method": "runtime.project.task.get",
+      "params_alias": "GetProjectTaskParams",
+      "request": "GetProjectTaskQuery",
+      "result": "ProjectTaskView",
+      "result_nullable": true,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "get_project_task",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "project.tasks",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; requires project.tasks capability."
+      ],
+      "method": "runtime.project.task.list",
+      "params_alias": "ListProjectTasksParams",
+      "request": "ListProjectTasksQuery",
+      "result": "ProjectTaskListPage",
+      "result_alias": "ProjectTaskListResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "list_project_tasks",
+      "wire_defaults": {
+        "limit": 50,
+        "offset": 0
+      }
+    },
+    {
+      "capability": "project.tasks",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; requires project.tasks capability."
+      ],
+      "method": "runtime.project.task.update",
+      "params_alias": "UpdateProjectTaskParams",
+      "request": "UpdateProjectTaskCommand",
+      "result": "ProjectTaskResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "update_project_task",
       "wire_defaults": {}
     },
     {
@@ -3278,6 +3369,74 @@
       "origin": "python",
       "role": "request"
     },
+    "CreateProjectTaskCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "description",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "medium",
+          "default_kind": "value",
+          "name": "priority",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "labels",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "assigned_thread_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
     "CreateSessionCommand": {
       "fields": [
         {
@@ -3429,6 +3588,63 @@
       ],
       "origin": "python",
       "role": "request"
+    },
+    "DeleteProjectTaskCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "DeleteProjectTaskResult": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "deleted",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "DeleteSessionCommand": {
       "fields": [
@@ -4234,6 +4450,30 @@
           "python_type": "bool",
           "required": false,
           "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GetProjectTaskQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
           "wire": "json"
         }
       ],
@@ -5091,6 +5331,65 @@
       ],
       "notes": [
         "List the model profiles visible to one session's project."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListProjectTasksQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "status",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "label",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": 50,
+          "default_kind": "value",
+          "name": "limit",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "offset",
+          "nullable": false,
+          "optional": true,
+          "python_type": "int",
+          "required": false,
+          "ts_type": "number",
+          "wire": "json"
+        }
       ],
       "origin": "python",
       "role": "request"
@@ -6184,6 +6483,190 @@
           "python_type": "int",
           "required": true,
           "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ProjectTaskListPage": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "tasks",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ProjectTaskView, ...]",
+          "required": true,
+          "ts_type": "ProjectTaskView[]",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "total_count",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ProjectTaskResult": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "task",
+          "nullable": true,
+          "optional": false,
+          "python_type": "ProjectTaskView | None",
+          "required": true,
+          "ts_type": "ProjectTaskView | null",
+          "wire": "json"
+        },
+        {
+          "default": "ok",
+          "default_kind": "value",
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
+    },
+    "ProjectTaskView": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "",
+          "default_kind": "value",
+          "name": "description",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "todo",
+          "default_kind": "value",
+          "name": "status",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "medium",
+          "default_kind": "value",
+          "name": "priority",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "labels",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[str, ...]",
+          "required": true,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "assigned_thread_id",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "created_at_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": 0,
+          "default_kind": "value",
+          "name": "updated_at_ms",
+          "nullable": false,
+          "optional": false,
+          "python_type": "int",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "completed_at_ms",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
           "wire": "json"
         }
       ],
@@ -10314,6 +10797,107 @@
       ],
       "origin": "transport",
       "role": "result"
+    },
+    "UpdateProjectTaskCommand": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "task_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "title",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "description",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "status",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "priority",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "labels",
+          "nullable": true,
+          "optional": true,
+          "python_type": "tuple[str, ...] | None",
+          "required": false,
+          "ts_type": "string[] | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "assigned_thread_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "clear_assigned_thread",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "request"
     },
     "UsagePayload": {
       "fields": [

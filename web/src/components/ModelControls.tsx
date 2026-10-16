@@ -156,11 +156,11 @@ export const ModelControls: React.FC = () => {
                         setModelSearch('');
                       }}
                       className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
-                        selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                        selected ? 'bg-blue-50/90 font-medium text-blue-500' : 'text-gray-700 hover:bg-gray-100/70'
                       }`}
                     >
                       <span className="truncate">{m}</span>
-                      {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                      {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent-fg" />}
                     </button>
                   );
                 })}
@@ -218,11 +218,11 @@ export const ModelControls: React.FC = () => {
                       });
                     }}
                     className={`ui-menu-item flex items-center justify-between rounded-control px-2.5 py-1.5 text-xs transition-colors ${
-                      selected ? 'bg-blue-50/90 font-medium text-blue-700' : 'text-gray-700 hover:bg-gray-100/70'
+                      selected ? 'bg-blue-50/90 font-medium text-blue-500' : 'text-gray-700 hover:bg-gray-100/70'
                     }`}
                   >
                     <span>{lvl}</span>
-                    {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent" />}
+                    {selected && <Checkmark16Regular aria-hidden="true" className="shrink-0 text-accent-fg" />}
                   </button>
                 );
               })}

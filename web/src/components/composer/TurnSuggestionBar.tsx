@@ -187,7 +187,7 @@ export const TurnSuggestionBar: React.FC<TurnSuggestionBarProps> = ({
             type="button"
             onClick={() => onSelectAction(action)}
             title={action.prompt}
-            className="inline-flex max-w-[16rem] items-center gap-1 truncate rounded-full border border-line/70 bg-surface/80 px-2.5 py-0.5 text-xs text-gray-700 hover:border-accent/60 hover:bg-surface-hover hover:text-gray-900 cursor-pointer transition-colors"
+            className="inline-flex max-w-[16rem] items-center gap-1 truncate rounded-full border border-line/70 bg-surface/80 px-2.5 py-0.5 text-xs text-gray-700 hover:border-accent-fg/60 hover:bg-surface-hover hover:text-gray-900 cursor-pointer transition-colors"
           >
             <span className="truncate">{action.label}</span>
           </button>

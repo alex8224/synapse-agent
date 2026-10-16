@@ -445,7 +445,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
                 isApproval ? '等待审批' : isCompleted ? '已结束' : '运行中'
               }`}
               aria-current={isCurrent ? 'page' : undefined}
-              className={`relative flex h-8 w-8 items-center justify-center rounded-control text-[11px] font-bold transition-all duration-150 select-none cursor-pointer shadow-xs ${palette.bg} ${palette.border} ${palette.text}`}
+              className={`relative flex h-8 w-8 items-center justify-center rounded-control text-[11px] font-bold transition-all duration-150 select-none cursor-pointer shadow-card ${palette.bg} ${palette.border} ${palette.text}`}
             >
               {/* 会话文字标识：最多 2 个汉字或 3 个英文字符，字形清晰饱满 */}
               <span className="truncate max-w-[28px] text-center leading-none tracking-tight">
@@ -483,7 +483,7 @@ export const RunningSessionHolders: React.FC<{ onNavigate?: () => void }> = ({ o
             onClick={() => setOverflowOpen((prev) => !prev)}
             title={`其余 ${overflowSessions.length} 个运行中的会话`}
             aria-label={`展开其余 ${overflowSessions.length} 个运行中的会话`}
-            className="flex h-6 w-6 items-center justify-center rounded-full bg-surface border border-line text-[10px] font-bold text-gray-700 hover:border-blue-500 hover:text-blue-500 transition-colors shadow-xs"
+            className="flex h-6 w-6 items-center justify-center rounded-full bg-surface border border-line text-[10px] font-bold text-gray-700 hover:border-blue-500 hover:text-blue-500 transition-colors shadow-card"
           >
             +{overflowSessions.length}
           </button>

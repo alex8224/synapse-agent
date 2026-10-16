@@ -29,7 +29,7 @@ export const AssistantRow = React.memo(function AssistantRow({ message, actions 
           aria-label="复制回答"
           className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
         >
-          {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
+          {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent-fg" /> : <Copy16Regular aria-hidden="true" />}
         </button>
         <button
           type="button"

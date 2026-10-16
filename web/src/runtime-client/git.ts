@@ -154,7 +154,7 @@ export function parseGitDiff(payload: unknown): GitDiffView {
  */
 export function diffLineClass(line: string): string {
   if (line.startsWith('+++') || line.startsWith('---')) return 'text-gray-500';
-  if (line.startsWith('@@')) return 'text-blue-700';
+  if (line.startsWith('@@')) return 'text-blue-500';
   if (line.startsWith('+')) return 'text-green-700';
   if (line.startsWith('-')) return 'text-red-700';
   return 'text-gray-700';

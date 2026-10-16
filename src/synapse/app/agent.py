@@ -451,6 +451,15 @@ def build_coding_agent(
         except Exception:  # noqa: BLE001 - goal 工具失败不阻断 agent 构建
             pass
 
+    # 项目级长期待办事项工具（list_project_tasks / get_project_task /
+    # create_project_task / update_project_task / delete_project_task）。
+    # build_task_tools 是 lazy 工厂：service/DB 连接仅在工具首次被调用时建立，
+    # 因此此处注册不会触碰磁盘、也不会初始化 tasks DB。
+    if getattr(settings, "enable_project_tasks", True):
+        from synapse.tasks.tools import build_task_tools
+
+        tools.extend(build_task_tools(tasks_path=settings.resolved_tasks_path()))
+
     # -- 长期记忆 / 知识库（默认关闭，按需创建实例） --
     # 实例存储为 agent 私有属性，由 CLI/TUI 在执行前异步查询。
 

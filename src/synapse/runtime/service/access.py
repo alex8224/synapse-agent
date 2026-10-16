@@ -129,6 +129,17 @@ from synapse.runtime.service.project_list import (
     ProjectListPage,
 )
 from synapse.runtime.service.project_register import RegisterProjectCommand
+from synapse.runtime.service.project_tasks import (
+    CreateProjectTaskCommand,
+    DeleteProjectTaskCommand,
+    DeleteProjectTaskResult,
+    GetProjectTaskQuery,
+    ListProjectTasksQuery,
+    ProjectTaskListPage,
+    ProjectTaskResult,
+    ProjectTaskView,
+    UpdateProjectTaskCommand,
+)
 from synapse.runtime.service.queries import (
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -224,6 +235,7 @@ __all__ = [
     "SESSION_GOAL",
     "PROJECT_THINKING",
     "PROJECT_LIST",
+    "PROJECT_TASKS",
     "PROJECT_REGISTER",
     "FS_LIST",
     "SKILLS_LIST",
@@ -264,6 +276,8 @@ COLLABORATION_READ = "collaboration.read"
 #: deliver a message: those are Agent actions with no wire method.
 COLLABORATION_CONTROL = "collaboration.control"
 PROJECT_THINKING = "project.thinking"
+#: Manage and view project-level backlog and tasks.
+PROJECT_TASKS = "project.tasks"
 #: Enumerate the projects the principal may see.  A project-level capability
 #: (never a thread-scoped one): only a project-wide grant authorizes it, and the
 #: visible set it derives is the ACL visibility the list is filtered by.
@@ -369,6 +383,7 @@ ALL_RUNTIME_CAPABILITIES = frozenset(
         COLLABORATION_READ,
         COLLABORATION_CONTROL,
         PROJECT_THINKING,
+        PROJECT_TASKS,
         PROJECT_LIST,
         PROJECT_REGISTER,
         FS_LIST,
@@ -1748,6 +1763,61 @@ class AccessControlledAgentRuntimeService:
         delegate = getattr(self._delegate, "delete_mcp_server", None)
         if not callable(delegate):
             raise InvalidRequestError("MCP management is unavailable")
+        return await delegate(command)
+
+    async def list_project_tasks(
+        self, query: ListProjectTasksQuery
+    ) -> ProjectTaskListPage:
+        if type(query) is not ListProjectTasksQuery:
+            raise InvalidRequestError("query must be a ListProjectTasksQuery")
+        self._authorizer.authorize_project(self._principal, PROJECT_TASKS, query.project_id)
+        delegate = getattr(self._delegate, "list_project_tasks", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project tasks is unavailable")
+        return await delegate(query)
+
+    async def get_project_task(
+        self, query: GetProjectTaskQuery
+    ) -> ProjectTaskView | None:
+        if type(query) is not GetProjectTaskQuery:
+            raise InvalidRequestError("query must be a GetProjectTaskQuery")
+        self._authorizer.authorize_project(self._principal, PROJECT_TASKS, query.project_id)
+        delegate = getattr(self._delegate, "get_project_task", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project tasks is unavailable")
+        return await delegate(query)
+
+    async def create_project_task(
+        self, command: CreateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        if type(command) is not CreateProjectTaskCommand:
+            raise InvalidRequestError("command must be a CreateProjectTaskCommand")
+        self._authorizer.authorize_project(self._principal, PROJECT_TASKS, command.project_id)
+        delegate = getattr(self._delegate, "create_project_task", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project tasks is unavailable")
+        return await delegate(command)
+
+    async def update_project_task(
+        self, command: UpdateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        if type(command) is not UpdateProjectTaskCommand:
+            raise InvalidRequestError("command must be a UpdateProjectTaskCommand")
+        self._authorizer.authorize_project(self._principal, PROJECT_TASKS, command.project_id)
+        delegate = getattr(self._delegate, "update_project_task", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project tasks is unavailable")
+        return await delegate(command)
+
+    async def delete_project_task(
+        self, command: DeleteProjectTaskCommand
+    ) -> DeleteProjectTaskResult:
+        if type(command) is not DeleteProjectTaskCommand:
+            raise InvalidRequestError("command must be a DeleteProjectTaskCommand")
+        self._authorizer.authorize_project(self._principal, PROJECT_TASKS, command.project_id)
+        delegate = getattr(self._delegate, "delete_project_task", None)
+        if not callable(delegate):
+            raise InvalidRequestError("project tasks is unavailable")
         return await delegate(command)
 
     def watch_events(

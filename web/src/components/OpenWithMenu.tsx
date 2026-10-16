@@ -135,13 +135,13 @@ const AppRow: React.FC<{
       </span>
     )}
     {app.isSystemDefault && (
-      <span className="shrink-0 rounded-full border border-line/60 bg-blue-50/70 px-1.5 text-[11px] text-blue-700">
+      <span className="shrink-0 rounded-full border border-line/60 bg-blue-50/70 px-1.5 text-[11px] text-blue-500">
         系统默认
       </span>
     )}
     <Checkmark16Regular
       aria-hidden="true"
-      className={`shrink-0 text-accent ${selected ? '' : 'invisible'}`}
+      className={`shrink-0 text-accent-fg ${selected ? '' : 'invisible'}`}
     />
   </button>
 );

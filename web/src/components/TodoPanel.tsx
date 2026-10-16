@@ -26,7 +26,7 @@ export const TodoPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
     <div className="select-none space-y-2">
       <div className="flex items-center justify-between border-b border-line/60 pb-2">
         <div className="flex min-w-0 items-center gap-2">
-          <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent" style={{ fontSize: '16px' }} />
+          <TasksApp20Regular aria-hidden="true" className="shrink-0 text-accent-fg" style={{ fontSize: '16px' }} />
           <span className="min-w-0 truncate font-sans text-xs font-semibold text-gray-800">
             {todoPanelLabel(view)}
           </span>
@@ -55,7 +55,7 @@ export const TodoPanel: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
                 {item.kind === 'done' ? (
                   <CheckmarkCircle16Filled aria-hidden="true" className="mt-0.5 shrink-0 text-emerald-600" />
                 ) : item.kind === 'active' ? (
-                  <ArrowCircleRight16Filled aria-hidden="true" className="mt-0.5 shrink-0 text-accent animate-pulse" />
+                  <ArrowCircleRight16Filled aria-hidden="true" className="mt-0.5 shrink-0 text-accent-fg animate-pulse" />
                 ) : (
                   <Circle16Regular aria-hidden="true" className="mt-0.5 shrink-0 text-gray-400" />
                 )}

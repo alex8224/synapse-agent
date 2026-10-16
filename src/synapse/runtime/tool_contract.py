@@ -70,6 +70,8 @@ _CONTRACTS: tuple[ToolContract, ...] = (
     _read("search_session"),
     _read("read_session"),
     _read("get_goal"),
+    _read("list_project_tasks"),
+    _read("get_project_task"),
     _read("describe_image"),
     # Workspace mutation.
     _write("patch", scope=WORKSPACE_SCOPE, risk_level="medium", approval=True),
@@ -103,6 +105,9 @@ _CONTRACTS: tuple[ToolContract, ...] = (
     _write("task", scope=SESSION_SCOPE, risk_level="low", approval=False),
     _write("create_goal", scope=SESSION_SCOPE, risk_level="low", approval=False),
     _write("update_goal", scope=SESSION_SCOPE, risk_level="low", approval=False),
+    _write("create_project_task", scope=WORKSPACE_SCOPE, risk_level="low", approval=False),
+    _write("update_project_task", scope=WORKSPACE_SCOPE, risk_level="low", approval=False),
+    _write("delete_project_task", scope=WORKSPACE_SCOPE, risk_level="low", approval=False),
 )
 
 #: Tool name -> contract. Built from the tuple so a duplicate name is a hard error.

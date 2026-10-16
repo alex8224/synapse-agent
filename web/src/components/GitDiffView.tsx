@@ -29,13 +29,15 @@ export interface GitDiffViewProps {
  * `noNewline`, and this badge makes the difference visible without a floating
  * marker the reader has to map back to a line.
  *
- * The palette is the theme's, not Tailwind's `dark:` variant: the console swaps
- * themes through `data-theme="fluent-dark"` (not a `dark` class), so `dark:*`
- * never fires.  `text-blue-700` / `bg-blue-500/10` resolve through the theme
- * contract and stay legible in both themes.
+ * The palette is the theme's, not Tailwind's dark variants: the console swaps
+ * themes through `data-theme="fluent-dark"` (not a `dark` class), so those never
+ * fire.  `text-blue-500` / `bg-blue-500/10` resolve through the theme
+ * contract and stay legible in both themes -- blue *text* takes the brand
+ * *foreground* step (`500`), because the dark theme's `600`/`700` steps are the
+ * brand *background* roles, a deep navy that cannot be read on a dark surface.
  */
 const NoNewlineBadge: React.FC = () => (
-  <span className="ml-2 inline-flex shrink-0 select-none items-center gap-0.5 rounded-control border border-blue-500/30 bg-blue-500/10 px-1.5 text-[10px] font-medium leading-4 text-blue-700">
+  <span className="ml-2 inline-flex shrink-0 select-none items-center gap-0.5 rounded-control border border-blue-500/30 bg-blue-500/10 px-1.5 text-[10px] font-medium leading-4 text-blue-500">
     <span aria-hidden="true">⏎</span>
     缺少末尾换行符
   </span>
@@ -264,14 +266,14 @@ const HunkBlock: React.FC<{ hunk: DiffHunk; viewMode: 'unified' | 'split' }> = (
       {/* Hunk Header Banner.  An opaque canvas sits under the blue tint so the
           rows scrolling behind the sticky banner cannot bleed through it. */}
       <div className="sticky top-0 z-10 select-none border-y border-line/60 bg-canvas">
-        <div className="flex items-center gap-2 bg-blue-500/10 px-3 py-0.5 font-mono text-[11px] text-blue-700">
+        <div className="flex items-center gap-2 bg-blue-500/10 px-3 py-0.5 font-mono text-[11px] text-blue-500">
           <span className="font-semibold">
             @@ -{hunk.oldStart}
             {hunk.oldCount !== 1 ? `,${hunk.oldCount}` : ''} +{hunk.newStart}
             {hunk.newCount !== 1 ? `,${hunk.newCount}` : ''} @@
           </span>
           {hunk.heading && (
-            <span className="truncate text-blue-700/80">{hunk.heading}</span>
+            <span className="truncate text-blue-500/80">{hunk.heading}</span>
           )}
         </div>
       </div>

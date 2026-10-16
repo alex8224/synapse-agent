@@ -503,7 +503,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
   return (
     <Portal>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 dark:bg-black/55 backdrop-blur-sm p-4 scrim-in"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4 scrim-in"
         onClick={onClose}
       >
         <div
@@ -521,7 +521,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
               <h1 id={titleId} className="text-base font-bold text-gray-900">
                 使用统计与工程效能
               </h1>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-1 text-xs text-gray-500">
                 支持多项目工作区横向对比、Token 消耗构成、Prompt 缓存收益与压缩节约追踪（UTC 闭区间）。
               </p>
             </div>
@@ -582,7 +582,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     className={`rounded-control px-2.5 py-1 text-xs font-medium transition-all ${
                       range === key
                         ? 'bg-surface text-gray-900 font-bold shadow-card'
-                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-900'
+                        : 'text-gray-500 hover:text-gray-900'
                     }`}
                   >
                     {label}
@@ -614,7 +614,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                   className={`rounded px-2 py-0.5 text-[11px] font-semibold transition-all ${
                     range === 'custom'
                       ? 'ui-primary text-on-accent'
-                      : 'bg-blue-500/10 text-blue-700 dark:text-blue-400 hover:bg-blue-600 hover:text-on-accent'
+                      : 'bg-blue-500/10 text-blue-500 hover:bg-blue-600 hover:text-on-accent'
                   }`}
                 >
                   筛选
@@ -629,7 +629,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 aria-label="刷新数据"
                 className="ui-icon-button"
               >
-                <ArrowClockwise20Regular className={isFetching ? 'animate-spin text-blue-600 dark:text-blue-400' : ''} />
+                <ArrowClockwise20Regular className={isFetching ? 'animate-spin text-blue-500' : ''} />
               </button>
             </div>
           </div>
@@ -673,7 +673,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
           {error && !stats && (
             <div className="rounded-card border border-red-500/30 bg-surface p-8 text-center space-y-2">
               <span className="font-semibold text-red-400">加载失败</span>
-              <p className="font-mono text-xs text-gray-500 dark:text-gray-400">{error}</p>
+              <p className="font-mono text-xs text-gray-500">{error}</p>
               <div className="pt-2">
                 <button
                   type="button"
@@ -699,49 +699,49 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
             <div className={`space-y-5 transition-opacity duration-150 ${isFetching ? 'opacity-70' : 'opacity-100'}`}>
               {/* 第一层：核心 3 联 KPI 卡片 */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-gray-400 transition-all min-h-[108px]">
                   <div>
-                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <div className="text-xs font-medium text-gray-500">
                       累计吞吐 Token
                     </div>
-                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-100 font-mono">
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-gray-900 font-mono">
                       {fmtTokens(stats.kpi.total_tokens)}
                     </div>
                   </div>
                   <div className="mt-2.5">
-                    <span className="inline-flex items-center gap-1 rounded-pill bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
+                    <span className="inline-flex items-center gap-1 rounded-pill bg-blue-500/10 text-blue-500 border border-blue-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       输入 {fmtTokens(stats.kpi.provider_input_tokens)} + 输出 {fmtTokens(stats.kpi.output_tokens)}
                     </span>
                   </div>
                 </div>
 
-                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-gray-400 transition-all min-h-[108px]">
                   <div>
-                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <div className="text-xs font-medium text-gray-500">
                       Prompt 缓存命中率
                     </div>
-                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-500 font-mono">
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-emerald-600 font-mono">
                       {fmtPct(stats.kpi.cache_hit_rate)}
                     </div>
                   </div>
                   <div className="mt-2.5">
-                    <span className="inline-flex items-center gap-1 rounded-pill bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
+                    <span className="inline-flex items-center gap-1 rounded-pill bg-emerald-500/10 text-emerald-700 border border-emerald-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       缓存读取 {fmtTokens(stats.kpi.cache_read_tokens)}
                     </span>
                   </div>
                 </div>
 
-                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-line-strong transition-all min-h-[108px]">
+                <div className="rounded-card border border-line bg-surface p-4 flex flex-col justify-between shadow-card hover:border-gray-400 transition-all min-h-[108px]">
                   <div>
-                    <div className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <div className="text-xs font-medium text-gray-500">
                       压缩节约 Token
                     </div>
-                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-purple-600 dark:text-purple-400 font-mono">
+                    <div className="mt-1.5 text-2xl font-bold tracking-tight text-purple-600 font-mono">
                       {fmtTokens(stats.kpi.saved_tokens)}
                     </div>
                   </div>
                   <div className="mt-2.5">
-                    <span className="inline-flex items-center gap-1 rounded-pill bg-purple-500/10 text-purple-700 dark:text-purple-400 border border-purple-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
+                    <span className="inline-flex items-center gap-1 rounded-pill bg-purple-500/10 text-purple-700 border border-purple-500/25 px-2 py-0.5 text-[11px] font-mono font-semibold">
                       裁剪率 {fmtPct(stats.kpi.saved_pct)}
                     </span>
                   </div>
@@ -753,11 +753,11 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-sm font-bold text-gray-900">多项目工作区用量与效能对比</h2>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-xs text-gray-500">
                       跨 Workspace 观测 Token 消耗、预算配额、会话轮次与代码净产出转化比
                     </p>
                   </div>
-                  <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+                  <span className="font-mono text-xs text-gray-500">
                     共追踪 {stats.project_matrix.length} 个项目工作区
                   </span>
                 </div>
@@ -765,7 +765,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead>
-                      <tr className="border-b border-line text-gray-500 dark:text-gray-400 font-semibold text-xs">
+                      <tr className="border-b border-line text-gray-500 font-semibold text-xs">
                         <th className="pb-2 px-2">项目与工作区路径</th>
                         <th className="pb-2 px-2">当前 Git 状态</th>
                         <th className="pb-2 px-2">Token 消耗与全库占比</th>
@@ -779,12 +779,12 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                             <div className="flex items-center gap-1.5 font-sans font-semibold text-gray-900">
                               <span>{p.name}</span>
                               {p.is_current && (
-                                <span className="rounded-pill bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-bold text-blue-700 dark:text-blue-400 border border-blue-500/25">
+                                <span className="rounded-pill bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-bold text-blue-500 border border-blue-500/25">
                                   当前工作区
                                 </span>
                               )}
                             </div>
-                            <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate max-w-xs font-mono">
+                            <div className="text-[10px] text-gray-500 truncate max-w-xs font-mono">
                               {p.path}
                             </div>
                           </td>
@@ -795,14 +795,14 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                   p.dirty ? 'bg-amber-500' : 'bg-emerald-500'
                                 }`}
                               />
-                              <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">{p.branch ?? '—'}</span>
+                              <span className="text-gray-700 font-mono text-xs">{p.branch ?? '—'}</span>
                             </span>
                           </td>
                           <td className="py-2.5 px-2">
                             <div className="flex items-center gap-2">
                               <div className="h-1.5 w-20 rounded-pill bg-sunken overflow-hidden">
                                 <div
-                                  className="h-full rounded-pill bg-blue-600 dark:bg-blue-500"
+                                  className="h-full rounded-pill bg-blue-500"
                                   style={{ width: `${Math.min(100, p.share_pct)}%` }}
                                 />
                               </div>
@@ -811,7 +811,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                               </span>
                             </div>
                           </td>
-                          <td className="py-2.5 px-2 text-gray-700 dark:text-gray-300 font-mono">
+                          <td className="py-2.5 px-2 text-gray-700 font-mono">
                             {p.sessions_count} 会话 / {p.turns_count} 轮
                           </td>
                         </tr>
@@ -826,7 +826,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-sm font-bold text-gray-900">Token 活动与工程投入矩阵</h2>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-xs text-gray-500">
                       {heatDim === 'week'
                         ? '按日记录 Agent 执行强度与活跃周期（过去 52 周，UTC）'
                         : `按小时记录 Agent 执行强度（最近最多 14 个活跃日，本地时区 ${stats.heatmap.hourly.timezone}，每日 24 小时）`}
@@ -843,7 +843,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatDim === 'week'
                           ? 'bg-surface font-semibold text-gray-900 shadow-card'
-                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                          : 'text-gray-500 hover:text-gray-900'
                       }`}
                     >
                       按周
@@ -854,7 +854,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatDim === 'day'
                           ? 'bg-surface font-semibold text-gray-900 shadow-card'
-                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                          : 'text-gray-500 hover:text-gray-900'
                       }`}
                     >
                       按天
@@ -867,7 +867,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'tokens'
                           ? 'bg-surface font-semibold text-gray-900 shadow-card'
-                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                          : 'text-gray-500 hover:text-gray-900'
                       }`}
                     >
                       Token 消耗
@@ -878,7 +878,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'sessions'
                           ? 'bg-surface font-semibold text-gray-900 shadow-card'
-                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                          : 'text-gray-500 hover:text-gray-900'
                       }`}
                     >
                       会话数
@@ -889,7 +889,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                         heatMetric === 'loc'
                           ? 'bg-surface font-semibold text-gray-900 shadow-card'
-                          : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+                          : 'text-gray-500 hover:text-gray-900'
                       }`}
                     >
                       代码变更行数
@@ -906,7 +906,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     >
                       {/* 月份刻度：与下方 52 列网格共用同一套列宽/间距，每个刻度锚定在它所标注的那一列 */}
                       <div
-                        className="grid mb-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                        className="grid mb-1.5 text-[11px] text-gray-400 font-mono select-none"
                         style={{
                           gridTemplateColumns: `repeat(${HEAT_WEEKS}, ${HEAT_CELL_PX}px)`,
                           columnGap: `${HEAT_GAP_PX}px`,
@@ -927,7 +927,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
 
                       {/* 主体：星期指示 + 52 周 x 7 天网格 */}
                       <div className="flex gap-1.5 items-start">
-                        <div className="flex flex-col justify-between text-[10px] text-gray-400 dark:text-gray-500 pt-[2px] w-[22px] h-[98px] select-none shrink-0">
+                        <div className="flex flex-col justify-between text-[10px] text-gray-400 pt-[2px] w-[22px] h-[98px] select-none shrink-0">
                           <span>周一</span>
                           <span>周三</span>
                           <span>周五</span>
@@ -956,7 +956,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                             return (
                               <div
                                 key={cell.date}
-                                className={`rounded-[2px] border cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${
+                                className={`rounded-[2px] border cursor-pointer transition-transform hover:scale-[1.35] hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 ${
                                   heatColors[level]
                                 }`}
                                 onMouseEnter={(e) => {
@@ -987,7 +987,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                     </div>
 
                     {/* 较少 -> 重度使用 图例 */}
-                    <div className="flex items-center justify-end gap-1.5 pt-3 text-[11px] text-gray-500 dark:text-gray-400 select-none">
+                    <div className="flex items-center justify-end gap-1.5 pt-3 text-[11px] text-gray-500 select-none">
                       <span>较少</span>
                       <div className="flex items-center gap-[3px]">
                         {heatColors.map((swatch) => (
@@ -1011,7 +1011,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       <>
                         {/* 小时刻度：与下方 24 列共用同一套列宽，整点每 3 小时标一次 */}
                         <div
-                          className="grid text-[10px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                          className="grid text-[10px] text-gray-400 font-mono select-none"
                           style={{
                             gridTemplateColumns: `repeat(${HEAT_HOURS}, minmax(0, 1fr))`,
                             columnGap: `${HEAT_HOUR_GAP_PX}px`,
@@ -1027,7 +1027,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                         {hourlyRows.map((row) => (
                           <div key={row.date} className="flex items-center gap-1.5">
                             <span
-                              className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500 font-mono select-none"
+                              className="shrink-0 text-[10px] text-gray-400 font-mono select-none"
                               style={{ width: `${HEAT_HOUR_LABEL_PX}px` }}
                             >
                               {row.date.slice(5)}
@@ -1045,7 +1045,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                 return (
                                   <div
                                     key={hour}
-                                    className={`h-4 rounded-[3px] border cursor-pointer transition-transform hover:scale-110 hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 dark:hover:outline-white ${heatColors[level]}`}
+                                    className={`h-4 rounded-[3px] border cursor-pointer transition-transform hover:scale-110 hover:z-20 hover:outline hover:outline-[1.5px] hover:outline-gray-900 ${heatColors[level]}`}
                                     onMouseEnter={(e) => {
                                       const rect = e.currentTarget.getBoundingClientRect();
                                       const rows = [
@@ -1074,7 +1074,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                             </div>
                           </div>
                         ))}
-                        <div className="flex items-center justify-end gap-1.5 pt-2 text-[11px] text-gray-500 dark:text-gray-400 select-none">
+                        <div className="flex items-center justify-end gap-1.5 pt-2 text-[11px] text-gray-500 select-none">
                           <span>较少</span>
                           <div className="flex items-center gap-[3px]">
                             {heatColors.map((swatch) => (
@@ -1102,17 +1102,17 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                       <h2 className="text-sm font-bold text-gray-900">
                         {stats.trend.title || "每日 Token 消耗与节约构成"}
                       </h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                      <p className="text-xs text-gray-500">
                         {stats.trend.subtitle || "分层解析：Prompt 命中 / 全新输入 / 推理思考 / 节约对比"}
                       </p>
                     </div>
-                    <div className="flex items-center gap-3 text-[11px] font-mono text-gray-600 dark:text-gray-400 select-none flex-wrap justify-end">
+                    <div className="flex items-center gap-3 text-[11px] font-mono text-gray-600 select-none flex-wrap justify-end">
                       <span className="flex items-center gap-1">
                         <span className="h-2 w-2 rounded-[2px] bg-emerald-500" />
                         缓存命中
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="h-2 w-2 rounded-[2px] bg-blue-600" />
+                        <span className="h-2 w-2 rounded-[2px] bg-blue-500" />
                         未命中输入
                       </span>
                       <span className="flex items-center gap-1">
@@ -1124,7 +1124,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                         正文输出
                       </span>
                       <span className="flex items-center gap-1">
-                        <span className="w-3 h-0.5 border-t border-dashed border-gray-400 dark:border-gray-500" />
+                        <span className="w-3 h-0.5 border-t border-dashed border-gray-400" />
                         未压缩基线
                       </span>
                     </div>
@@ -1159,7 +1159,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                               textAnchor="end"
                               fontSize="10"
                               fill="currentColor"
-                              className="text-gray-400 dark:text-gray-500 font-mono"
+                              className="text-gray-400 font-mono"
                             >
                               {tick.val >= 10000 ? `${Math.round(tick.val / 10000)}w` : tick.val}
                             </text>
@@ -1175,7 +1175,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                         />
                         <path
                           d={trendPaths.dInput}
-                          className="text-blue-600"
+                          className="text-blue-500"
                           fill="currentColor"
                           fillOpacity="0.85"
                         />
@@ -1191,7 +1191,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           d={trendPaths.dRaw}
                           fill="none"
                           stroke="currentColor"
-                          className="text-gray-400 dark:text-gray-500"
+                          className="text-gray-400"
                           strokeWidth="1.8"
                           strokeDasharray="4 4"
                         />
@@ -1209,7 +1209,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                 textAnchor="middle"
                                 fontSize="10.5"
                                 fill="currentColor"
-                                className="text-gray-400 dark:text-gray-500 font-mono select-none"
+                                className="text-gray-400 font-mono select-none"
                               >
                                 {d.date}
                               </text>
@@ -1285,7 +1285,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           ? "模型用量分布"
                           : "Subagent 角色分布"}
                       </h2>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">用量与计费占比分解</p>
+                      <p className="text-xs text-gray-500">用量与计费占比分解</p>
                     </div>
                     <div className="inline-flex rounded-control border border-line/60 bg-sunken p-0.5 text-xs">
                       {(
@@ -1302,7 +1302,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           className={`rounded-control px-2.5 py-1 text-[11.5px] transition-all ${
                             breakdownDim === key
                               ? "bg-surface font-semibold text-gray-900 shadow-card"
-                              : "text-gray-500 dark:text-gray-400 hover:text-gray-900"
+                              : "text-gray-500 hover:text-gray-900"
                           }`}
                         >
                           {label}
@@ -1362,12 +1362,12 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                                 className="h-2 w-2 rounded-full shrink-0"
                                 style={{ backgroundColor: item.color }}
                               />
-                              <span className="text-gray-700 dark:text-gray-200 font-medium truncate">
+                              <span className="text-gray-700 font-medium truncate">
                                 {item.name}
                               </span>
                             </div>
                             <div className="flex items-center gap-3 font-mono text-[11.5px] shrink-0">
-                              <span className="text-gray-500 dark:text-gray-400">
+                              <span className="text-gray-500">
                                 {fmtTokens(item.tokens)}
                               </span>
                               <span className="text-gray-900 font-bold w-9 text-right">
@@ -1387,14 +1387,14 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                 <div className="flex items-center justify-between border-b border-line/60 pb-2">
                   <div>
                     <h2 className="text-sm font-bold text-gray-900">用量溯源：高消耗会话排行</h2>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-xs text-gray-500">
                       排查上下文臃肿与长链调用（按 Token 排序）
                     </p>
                   </div>
-                  <span className="font-mono text-xs text-gray-500 dark:text-gray-400">按 Token 排序</span>
+                  <span className="font-mono text-xs text-gray-500">按 Token 排序</span>
                 </div>
                 {stats.top_sessions.length === 0 ? (
-                  <div className="py-6 text-center text-xs text-gray-500 dark:text-gray-400">
+                  <div className="py-6 text-center text-xs text-gray-500">
                     区间内无会话用量
                   </div>
                 ) : (
@@ -1408,7 +1408,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           <div className="truncate font-medium text-gray-900 text-[12.5px]">
                             {sess.title}
                           </div>
-                          <div className="flex items-center gap-2 font-mono text-[10.5px] text-gray-500 dark:text-gray-400">
+                          <div className="flex items-center gap-2 font-mono text-[10.5px] text-gray-500">
                             <span className="rounded-control bg-sunken px-1.5 py-0.5 border border-line/50">{sess.thread_id}</span>
                             <span>{sess.model ?? '—'}</span>
                             <span>{sess.turns} 轮次</span>
@@ -1418,7 +1418,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
                           <div className="font-bold text-gray-900 text-sm">
                             {fmtTokens(sess.tokens)}
                           </div>
-                          <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                          <div className="text-[11px] text-emerald-600 font-semibold">
                             {fmtPct(sess.cache_rate)} 命中
                           </div>
                         </div>
@@ -1442,7 +1442,7 @@ export const UsageDashboardDialog: React.FC<UsageDashboardDialogProps> = ({ onCl
           {tooltip.rows.map((r) => (
             <div
               key={r.label}
-              className="flex items-center justify-between gap-3 font-mono text-xs text-gray-500 dark:text-gray-400"
+              className="flex items-center justify-between gap-3 font-mono text-xs text-gray-500"
             >
               <span style={{ color: r.color }}>{r.label}:</span>
               <span className="font-semibold text-gray-900">{r.val}</span>

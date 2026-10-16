@@ -34,9 +34,15 @@ REGISTERED_TOOL_NAMES = {
     "get_goal",
     "create_goal",
     "update_goal",
+    "list_project_tasks",
+    "get_project_task",
+    "create_project_task",
+    "update_project_task",
+    "delete_project_task",
 }
 
 HISTORICAL_APPROVAL_SET = {"execute", "write_file", "edit_file", "patch"}
+PROJECT_TASK_WRITES = {"create_project_task", "update_project_task", "delete_project_task"}
 
 
 def test_every_registered_tool_has_a_contract() -> None:
@@ -54,7 +60,9 @@ def test_every_contract_is_scoped_and_rated() -> None:
 
 
 def test_readonly_exclusions_include_host_code_execution() -> None:
-    assert readonly_excluded_tools() == HISTORICAL_APPROVAL_SET | {"run_code"}
+    assert readonly_excluded_tools() == (
+        HISTORICAL_APPROVAL_SET | {"run_code"} | PROJECT_TASK_WRITES
+    )
 
 
 def test_approval_requirements_include_host_code_execution() -> None:

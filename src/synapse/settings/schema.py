@@ -249,6 +249,7 @@ class Settings(BaseSettings):
         validation_alias="CHECKPOINT_PATH",
     )
     sessions_path: Path | None = Field(default=None, validation_alias="SESSIONS_PATH")
+    tasks_path: Path | None = Field(default=None, validation_alias="TASKS_PATH")
 
     # Global project catalog (user-layer ~/.synapse/catalog.sqlite projection).
     # Enables cross-project session lists / search and future orchestration.
@@ -281,6 +282,9 @@ class Settings(BaseSettings):
     # 每 thread 一个持久化目标，Agent 可跨回合自动续跑直至完成/受阻/预算耗尽。
     # enable_goals=False 时不给 Agent 注入 goal 工具，也不做用量记账。
     enable_goals: bool = Field(default=True, validation_alias="AGENT_ENABLE_GOALS")
+    enable_project_tasks: bool = Field(
+        default=True, validation_alias="AGENT_ENABLE_PROJECT_TASKS"
+    )
     # 回合结束后若目标仍 active，自动开启下一回合继续推进（长程执行核心）。
     # 用户取消回合或输入新消息时不会触发。
     goal_auto_continue: bool = Field(
@@ -502,6 +506,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "sessions_path",
+        "tasks_path",
         "models_config_path",
         "mcp_config_path",
         "project_catalog_path",
@@ -557,12 +562,20 @@ class Settings(BaseSettings):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         if self.sessions_path is not None:
             self.sessions_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.tasks_path is not None:
+            self.tasks_path.parent.mkdir(parents=True, exist_ok=True)
         self.resolved_tool_output_db_path().parent.mkdir(parents=True, exist_ok=True)
 
     def resolved_sessions_path(self) -> Path:
         if self.sessions_path is not None:
             return Path(self.sessions_path).expanduser().resolve()
         return self.checkpoint_path.parent / "sessions.sqlite"
+
+    def resolved_tasks_path(self) -> Path:
+        """SQLite database for project-level task planning and backlog."""
+        if self.tasks_path is not None:
+            return Path(self.tasks_path).expanduser().resolve()
+        return self.resolved_sessions_path().parent / "tasks.sqlite"
 
     def resolved_catalog_path(self) -> Path:
         """User-layer global project catalog database."""

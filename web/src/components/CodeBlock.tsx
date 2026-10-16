@@ -9,10 +9,10 @@ const TOKEN_CLASS: Record<HighlightKind, string> = {
   comment: 'text-gray-400',
   string: 'text-emerald-700',
   number: 'text-amber-700',
-  keyword: 'text-violet-700',
+  keyword: 'text-purple-600',
   added: 'text-emerald-700',
   removed: 'text-red-700',
-  meta: 'text-blue-600',
+  meta: 'text-blue-500',
 };
 
 export interface CodeBlockProps {

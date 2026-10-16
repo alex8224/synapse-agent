@@ -75,11 +75,11 @@ function renderStatusBadge(file: GitFileChangeView) {
   } else if (index === 'M' && worktree === 'M') {
     label = '已暂存+已修改';
     short = 'M+';
-    colorClass = 'text-orange-600 bg-orange-500/10 border-orange-500/30';
+    colorClass = 'text-amber-600 bg-amber-500/10 border-amber-500/30';
   } else if (index === 'M') {
     label = '已暂存';
     short = 'S';
-    colorClass = 'text-blue-600 bg-blue-500/10 border-blue-500/30';
+    colorClass = 'text-blue-500 bg-blue-500/10 border-blue-500/30';
   }
 
   return (
@@ -344,7 +344,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
                         type="button"
                         onClick={(e) => handleOpenVSCode(e, file.path)}
                         title="在 VS Code 中打开"
-                        className="ui-icon-button ui-compact text-gray-400 hover:text-blue-600 hover:bg-surface-hover transition-colors"
+                        className="ui-icon-button ui-compact text-gray-400 hover:text-blue-500 hover:bg-surface-hover transition-colors"
                       >
                         <Code16Regular className="text-xs" />
                       </button>
@@ -377,7 +377,7 @@ export const ChangesContent: React.FC<{ context: RightDockContext }> = () => {
                   <div className="bg-canvas border-t border-line/60 max-h-[480px] overflow-auto">
                     {cache?.loading ? (
                       <div className="flex items-center justify-center py-10 text-gray-400">
-                        <ArrowClockwise16Regular className="animate-spin mr-2 text-base text-accent" />
+                        <ArrowClockwise16Regular className="animate-spin mr-2 text-base text-accent-fg" />
                         <span className="font-sans text-xs">正在计算代码差异…</span>
                       </div>
                     ) : (

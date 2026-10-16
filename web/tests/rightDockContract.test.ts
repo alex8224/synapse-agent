@@ -60,6 +60,7 @@ test('manifest.tsx registers all shipped tab modules in rightDock', () => {
     'goalsTab.tsx',
     'peerSessionTab.tsx',
     'previewTab.tsx',
+    'tasksTab.tsx',
     'trajectoryTab.tsx',
   ]);
 });

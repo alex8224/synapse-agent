@@ -118,7 +118,9 @@ test('status codes and labels follow git', () => {
 test('diff lines are coloured by role', () => {
   assert.equal(diffLineClass('+added'), 'text-green-700');
   assert.equal(diffLineClass('-removed'), 'text-red-700');
-  assert.equal(diffLineClass('@@ -1,2 +1,2 @@'), 'text-blue-700');
+  // The hunk header is a *label*, so it takes the brand foreground step: `blue-700`
+  // is the dark theme's brand background (a deep navy) and cannot be read there.
+  assert.equal(diffLineClass('@@ -1,2 +1,2 @@'), 'text-blue-500');
   assert.equal(diffLineClass('--- a/x'), 'text-gray-500');
   assert.equal(diffLineClass(' context'), 'text-gray-700');
 });
@@ -174,6 +176,6 @@ test('an untracked file is read here instead of being sent elsewhere', () => {
   // are coloured by the same rule as any other diff.
   assert.equal(diffLineClass('+++ b/fresh.txt'), 'text-gray-500');
   assert.equal(diffLineClass('--- /dev/null'), 'text-gray-500');
-  assert.equal(diffLineClass('@@ -0,0 +1,2 @@'), 'text-blue-700');
+  assert.equal(diffLineClass('@@ -0,0 +1,2 @@'), 'text-blue-500');
   assert.equal(diffLineClass('+one'), 'text-green-700');
 });

@@ -70,7 +70,7 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
   return (
     <div className="flex h-full flex-col overflow-y-auto p-4 text-xs font-sans">
       {goalActionError && (
-        <div className="mb-3 rounded bg-red-50 dark:bg-red-900/30 p-2 text-red-600 dark:text-red-300">
+        <div className="mb-3 rounded bg-red-50 p-2 text-red-600">
           {goalActionError}
         </div>
       )}
@@ -90,10 +90,10 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
             <span
               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                 goal.status === 'active'
-                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                  ? 'bg-emerald-500/15 text-emerald-700 border border-emerald-500/30'
                   : goal.status === 'paused'
-                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
-                  : 'bg-surface-sunken text-gray-600 border border-line/60'
+                  ? 'bg-amber-500/15 text-amber-700 border border-amber-500/30'
+                  : 'bg-sunken text-gray-600 border border-line/60'
               }`}
             >
               {goal.status}
@@ -109,7 +109,7 @@ export const GoalsContent: React.FC<{ context: RightDockContext }> = () => {
                   {tokenUsed.toLocaleString()} / {goal.token_budget?.toLocaleString()} ({progressPct}%)
                 </span>
               </div>
-              <div className="mt-1.5 h-1.5 w-full rounded-full bg-surface-sunken overflow-hidden border border-line/40">
+              <div className="mt-1.5 h-1.5 w-full rounded-full bg-sunken overflow-hidden border border-line/40">
                 <div
                   className="h-full rounded-full bg-accent transition-all duration-300"
                   style={{ width: `${progressPct}%` }}

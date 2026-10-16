@@ -94,7 +94,7 @@ export const PreviewContent: React.FC<{ context: RightDockContext }> = () => {
               setInputUrl(preset);
             }}
             className={`rounded-full px-2 py-0.5 border transition-colors ${
-              url === preset ? 'bg-accent/15 text-accent border-accent/30 font-semibold' : 'border-line/60 bg-surface/50 text-gray-600 hover:bg-surface-hover hover:text-gray-900'
+              url === preset ? 'bg-accent/15 text-accent-fg border-accent-fg/30 font-semibold' : 'border-line/60 bg-surface/50 text-gray-600 hover:bg-surface-hover hover:text-gray-900'
             }`}
           >
             {preset.replace('http://localhost', '')}

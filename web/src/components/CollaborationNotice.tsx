@@ -154,7 +154,7 @@ export const CollaborationNotice: React.FC = () => {
           return (
             <div
               key={request.requestId}
-              className="flex flex-wrap items-center gap-2 rounded-control border border-line/70 px-2 py-1 text-xs shadow-flyout material-flyout"
+              className="flex flex-wrap items-center gap-2 rounded-control border border-line/70 px-2 py-1 text-xs shadow-flyout material-flyout flyout-in"
             >
               {request.replied ? (
                 <CheckmarkCircle16Regular

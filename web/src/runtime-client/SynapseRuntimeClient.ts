@@ -72,6 +72,15 @@ import type {
   ReconcileSessionParams,
   RegisterProjectParams,
   RegisterProjectResult,
+  CreateProjectTaskParams,
+  DeleteProjectTaskParams,
+  DeleteProjectTaskResult,
+  GetProjectTaskParams,
+  ListProjectTasksParams,
+  ProjectTaskListResult,
+  ProjectTaskResult,
+  ProjectTaskView,
+  UpdateProjectTaskParams,
   SessionRecoverabilityResult,
   SetProjectThinkingLevelResult,
   SetThinkingLevelResult,
@@ -568,6 +577,26 @@ export class SynapseRuntimeClient {
           options.reconnect.stableConnectionMs ?? DEFAULT_RECONNECT_POLICY.stableConnectionMs,
       };
     }
+  }
+
+  public async listProjectTasks(params: ListProjectTasksParams): Promise<ProjectTaskListResult> {
+    return this.call<ProjectTaskListResult>('runtime.project.task.list', params);
+  }
+
+  public async getProjectTask(params: GetProjectTaskParams): Promise<ProjectTaskView | null> {
+    return this.call<ProjectTaskView | null>('runtime.project.task.get', params);
+  }
+
+  public async createProjectTask(params: CreateProjectTaskParams): Promise<ProjectTaskResult> {
+    return this.call<ProjectTaskResult>('runtime.project.task.create', params);
+  }
+
+  public async updateProjectTask(params: UpdateProjectTaskParams): Promise<ProjectTaskResult> {
+    return this.call<ProjectTaskResult>('runtime.project.task.update', params);
+  }
+
+  public async deleteProjectTask(params: DeleteProjectTaskParams): Promise<DeleteProjectTaskResult> {
+    return this.call<DeleteProjectTaskResult>('runtime.project.task.delete', params);
   }
 
   /**

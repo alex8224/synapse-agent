@@ -155,7 +155,7 @@ export const BottomTerminalPanel: React.FC = () => {
     <div
       inert={!open}
       style={{ height: open ? panelHeight : '0px' }}
-      className={`material-pane terminal-pane relative w-full shrink-0 flex flex-col overflow-hidden select-none border-t border-line shadow-panel ${
+      className={`material-pane terminal-pane relative w-full shrink-0 flex flex-col overflow-hidden select-none border-t border-line shadow-card ${
         open ? 'opacity-100' : 'opacity-0 pointer-events-none border-t-0'
       } ${isDragging ? '' : 'transition-[height] duration-250 ease-[cubic-bezier(0,0,0,1)]'}`}
     >
@@ -187,11 +187,11 @@ export const BottomTerminalPanel: React.FC = () => {
                 onClick={() => setActiveSession(session.id)}
                 className={`group flex items-center gap-1.5 rounded-control px-2.5 py-1 text-xs font-mono font-medium transition-colors cursor-pointer shrink-0 border ${
                   isActive
-                    ? 'bg-surface text-gray-900 border-line/60 shadow-xs'
+                    ? 'bg-surface text-gray-900 border-line/60 shadow-card'
                     : 'text-gray-500 hover:text-gray-900 hover:bg-surface-hover/70 border-transparent'
                 }`}
               >
-                <WindowConsole20Regular className={`text-xs ${isActive ? 'text-accent' : 'text-gray-400'}`} style={{ fontSize: '14px' }} />
+                <WindowConsole20Regular className={`text-xs ${isActive ? 'text-accent-fg' : 'text-gray-400'}`} style={{ fontSize: '14px' }} />
                 <span className="truncate max-w-[130px]">{session.title}</span>
                 <button
                   type="button"
@@ -242,7 +242,7 @@ export const BottomTerminalPanel: React.FC = () => {
                 : `最大化终端面板 (${TERMINAL_MAXIMIZE_CHORD})`
             }
             className={`ui-icon-button ui-compact text-gray-500 hover:text-gray-900 ${
-              isMaximized ? 'text-accent' : ''
+              isMaximized ? 'text-accent-fg' : ''
             }`}
           >
             <SquareMultiple16Regular className="text-xs" />

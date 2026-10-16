@@ -391,6 +391,12 @@
     --surface-sunken: 243 244 245;
     --line: 229 231 235;
     --accent: 37 99 235;
+    /* The brand as *foreground*: the fill above is a layer a white label sits on,
+       and a layer is deliberately darker than the text drawn on top of it (the
+       dark theme's brand background is a deep navy, which is unreadable as text).
+       Anything that paints an accent *mark* -- an icon, a label, a stroke -- names
+       this role instead, so it stays legible on either surface. */
+    --accent-fg: 29 78 216;
     --on-accent: 255 255 255;
     --danger: 220 38 38;
     /* State fills and the disabled foreground: a subtle surface (a log chip, a
@@ -512,6 +518,7 @@
     --surface-pressed: 235 235 235; /* colorSubtleBackgroundPressed */
     --fg-disabled: 189 189 189;     /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
+    --accent-fg: var(--f-brand-text);   /* colorBrandForeground1 */
     --focus-ring: 15 108 189;       /* colorBrandForeground1 */
     --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
     --danger: 177 14 28;              /* colorStatusDangerForeground1 */
@@ -672,6 +679,7 @@
     --surface-pressed: 51 51 51;    /* colorSubtleBackgroundPressed */
     --fg-disabled: 92 92 92;        /* colorNeutralForegroundDisabled */
     --accent: var(--f-brand);
+    --accent-fg: var(--f-brand-text);   /* colorBrandForeground1 */
     --focus-ring: 71 158 245;       /* colorBrandForeground1 */
     --on-accent: 255 255 255;       /* colorNeutralForegroundOnBrand */
     --danger: 220 98 109;              /* colorStatusDangerForeground1 */

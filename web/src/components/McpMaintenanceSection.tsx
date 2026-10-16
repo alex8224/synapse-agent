@@ -406,7 +406,7 @@ export const McpMaintenanceSection: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-base font-semibold text-gray-900">MCP 服务维护</h3>
-            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-500">
               共 {totalServers} 个服务器 · {attachedCount} 已连接 · {disabledCount} 已停用
             </span>
           </div>
@@ -659,7 +659,7 @@ export const McpMaintenanceSection: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleSelectAllTools(srv, true)}
-                              className="text-[11px] text-blue-600 hover:underline"
+                              className="text-[11px] text-blue-500 hover:underline"
                             >
                               全选
                             </button>
@@ -667,7 +667,7 @@ export const McpMaintenanceSection: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleSelectAllTools(srv, false)}
-                              className="text-[11px] text-blue-600 hover:underline"
+                              className="text-[11px] text-blue-500 hover:underline"
                             >
                               全不选
                             </button>
@@ -767,8 +767,8 @@ export const McpMaintenanceSection: React.FC = () => {
       {/* Add / Edit MCP Server Modal */}
       {isModalOpen && (
         <Portal>
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-            <div className="w-full max-w-lg rounded-window border border-line bg-surface p-5 shadow-2xl flex flex-col max-h-[90vh]">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+            <div className="w-full max-w-lg rounded-card border border-line bg-surface p-5 shadow-2xl flex flex-col max-h-[90vh]">
               <div className="flex items-center justify-between border-b border-line pb-3">
                 <h3 className="text-base font-semibold text-gray-900">
                   {editingOriginalName ? `编辑 MCP 服务器: ${editingOriginalName}` : '添加 MCP 服务器'}
@@ -958,8 +958,8 @@ export const McpMaintenanceSection: React.FC = () => {
       {/* Delete Confirmation Modal */}
       {deleteConfirmName && (
         <Portal>
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-            <div className="w-full max-w-md rounded-window border border-line bg-surface p-5 shadow-2xl">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+            <div className="w-full max-w-md rounded-card border border-line bg-surface p-5 shadow-2xl">
               <h3 className="text-base font-semibold text-gray-900">确认删除 MCP 服务器</h3>
               <p className="mt-2 text-xs text-gray-600">
                 确定要删除服务器 <span className="font-semibold text-red-600 font-mono">{deleteConfirmName}</span> 吗？

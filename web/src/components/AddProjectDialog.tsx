@@ -132,7 +132,7 @@ export const AddProjectDialog: React.FC<AddProjectDialogProps> = ({ onClose }) =
                   disabled={busy}
                   title={`转到 ${root}`}
                   className={`ui-button border text-xs ${
-                    listing.path === root ? 'ui-primary border-accent' : 'border-line bg-surface'
+                    listing.path === root ? 'ui-primary border-accent-fg' : 'border-line bg-surface'
                   }`}
                 >
                   {root}
@@ -245,7 +245,7 @@ export const AddProjectDialog: React.FC<AddProjectDialogProps> = ({ onClose }) =
               }}
               disabled={listing === null || loading || busy}
               title={listing === null ? '选择当前目录并新建会话' : `选择 ${listing.path} 并新建会话`}
-              className="ui-button ui-primary border border-accent"
+              className="ui-button ui-primary border border-accent-fg"
             >
               {busy ? '正在添加…' : '选择当前目录并新建会话'}
             </button>

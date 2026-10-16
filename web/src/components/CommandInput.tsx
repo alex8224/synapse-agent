@@ -165,7 +165,7 @@ export const CommandInput: React.FC = () => {
   const handleSelectSuggestion = useCallback(
     (action: SuggestedAction) => {
       if (action.mode === 'fill') {
-        composerRef.current?.insertSpoken(action.prompt);
+        composerRef.current?.insertText(action.prompt);
         composerRef.current?.focus();
         return;
       }

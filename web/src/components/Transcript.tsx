@@ -98,7 +98,7 @@ function ActivityLine({ activity }: { activity: ActivityView | null }) {
   if (activity === null || !activity.active) return null;
   return (
     <div className="flex select-none items-center gap-1.5 font-mono text-xs text-gray-500">
-      <span className="h-1.5 w-1.5 rounded-full bg-blue-600 animate-pulse" />
+      <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
       <span>{activity.phase}</span>
       {activity.detail && <span className="text-gray-400">{activity.detail}</span>}
     </div>

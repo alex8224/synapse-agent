@@ -216,7 +216,7 @@ export function App() {
       underneath the sidebar; scoping them here is what makes the sidebar read as
       one continuous rail from the top edge to the bottom.
     */
-    <div className="console-shell material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-editor-selection">
+    <div className="console-shell material-canvas text-on-background flex h-screen w-screen overflow-hidden font-body-md selection:bg-accent/25">
       {((mobile && drawerOpen) || (tablet && !tabletCollapsed)) && (
         <button className="navigation-scrim" aria-label="关闭导航" onClick={closeNavigationDrawer} tabIndex={-1} />
       )}

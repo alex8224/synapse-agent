@@ -21,7 +21,7 @@ export const TauriWindowControls: React.FC = () => {
           e.stopPropagation();
           void tauriMinimize();
         }}
-        className="w-7 h-6 flex items-center justify-center rounded text-muted hover:text-foreground hover:bg-surface-elevated transition-colors cursor-pointer"
+        className="w-7 h-6 flex items-center justify-center rounded text-gray-500 hover:text-gray-900 hover:bg-surface-hover transition-colors cursor-pointer"
       >
         <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <line x1="5" y1="12" x2="19" y2="12" />
@@ -36,7 +36,7 @@ export const TauriWindowControls: React.FC = () => {
           e.stopPropagation();
           void tauriToggleMaximize();
         }}
-        className="w-7 h-6 flex items-center justify-center rounded text-muted hover:text-foreground hover:bg-surface-elevated transition-colors cursor-pointer"
+        className="w-7 h-6 flex items-center justify-center rounded text-gray-500 hover:text-gray-900 hover:bg-surface-hover transition-colors cursor-pointer"
       >
         <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -51,7 +51,7 @@ export const TauriWindowControls: React.FC = () => {
           e.stopPropagation();
           void tauriClose();
         }}
-        className="w-7 h-6 flex items-center justify-center rounded text-muted hover:text-red-100 hover:bg-red-600 transition-colors cursor-pointer"
+        className="w-7 h-6 flex items-center justify-center rounded text-gray-500 hover:text-red-100 hover:bg-red-600 transition-colors cursor-pointer"
       >
         <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <line x1="6" y1="6" x2="18" y2="18" />

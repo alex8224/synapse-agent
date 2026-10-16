@@ -126,6 +126,17 @@ from synapse.runtime.service.project_list import (
     ProjectListPage,
 )
 from synapse.runtime.service.project_register import RegisterProjectCommand
+from synapse.runtime.service.project_tasks import (
+    CreateProjectTaskCommand,
+    DeleteProjectTaskCommand,
+    DeleteProjectTaskResult,
+    GetProjectTaskQuery,
+    ListProjectTasksQuery,
+    ProjectTaskListPage,
+    ProjectTaskResult,
+    ProjectTaskView,
+    UpdateProjectTaskCommand,
+)
 from synapse.runtime.service.queries import (
     GetSessionGoalQuery,
     GetSessionQuery,
@@ -392,6 +403,36 @@ class AgentRuntimeService(Protocol):
         ``codex.usage.read``: a read-only grant must not change account state.
         Optional delegate method: see ``get_codex_usage``.
         """
+        ...
+
+    async def list_project_tasks(
+        self, query: ListProjectTasksQuery
+    ) -> ProjectTaskListPage:
+        """List tasks of a project."""
+        ...
+
+    async def get_project_task(
+        self, query: GetProjectTaskQuery
+    ) -> ProjectTaskView | None:
+        """Get a single project task."""
+        ...
+
+    async def create_project_task(
+        self, command: CreateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        """Create a new project task."""
+        ...
+
+    async def update_project_task(
+        self, command: UpdateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        """Update an existing project task."""
+        ...
+
+    async def delete_project_task(
+        self, command: DeleteProjectTaskCommand
+    ) -> DeleteProjectTaskResult:
+        """Delete a project task."""
         ...
 
     async def list_sessions(self, query: ListSessionsQuery) -> SessionListPage: ...

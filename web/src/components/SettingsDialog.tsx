@@ -286,7 +286,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                     aria-pressed={appearance === option.value}
                     className={`ui-button border ${
                       appearance === option.value
-                        ? 'ui-primary border-accent'
+                        ? 'ui-primary border-accent-fg'
                         : 'border-line bg-surface'
                     }`}
                   >
@@ -420,7 +420,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
               <button
                 type="button"
                 onClick={() => setActiveTab('models')}
-                className="text-xs text-accent hover:underline"
+                className="text-xs text-accent-fg hover:underline"
               >
                 管理模型端点配置…
               </button>
@@ -546,7 +546,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
             <button
               type="button"
               onClick={() => setActiveTab('mcp')}
-              className="ui-button ui-compact text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50/50"
+              className="ui-button ui-compact text-xs text-blue-500 hover:text-blue-800 hover:bg-blue-50/50"
             >
               前往 MCP 维护面板 →
             </button>

@@ -192,6 +192,17 @@ from synapse.runtime.service.project_list import (
     ProjectListProvider,
 )
 from synapse.runtime.service.project_register import RegisterProjectCommand
+from synapse.runtime.service.project_tasks import (
+    CreateProjectTaskCommand,
+    DeleteProjectTaskCommand,
+    DeleteProjectTaskResult,
+    GetProjectTaskQuery,
+    ListProjectTasksQuery,
+    ProjectTaskListPage,
+    ProjectTaskResult,
+    ProjectTaskView,
+    UpdateProjectTaskCommand,
+)
 from synapse.runtime.service.queries import (
     ApprovalActionView,
     GetSessionGoalQuery,
@@ -1564,6 +1575,213 @@ class LocalAgentRuntimeService:
         except ValueError as exc:
             # The adapter's messages are controlled (never a raw OS string).
             raise InvalidRequestError(str(exc)) from exc
+
+    async def list_project_tasks(
+        self, query: ListProjectTasksQuery
+    ) -> ProjectTaskListPage:
+        if type(query) is not ListProjectTasksQuery:
+            raise InvalidRequestError(
+                "query must be a ListProjectTasksQuery, "
+                f"got type {type(query).__name__!r}"
+            )
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, query.project_id
+        )
+        tasks_path = manager.settings.resolved_tasks_path()
+
+        def _do_list() -> ProjectTaskListPage:
+            from synapse.tasks.model import TaskStatus
+            from synapse.tasks.store import TaskStore, read_tasks_readonly
+
+            st = None
+            if query.status:
+                try:
+                    st = TaskStatus(query.status)
+                except ValueError:
+                    pass
+            tasks = read_tasks_readonly(
+                tasks_path,
+                status=st,
+                label=query.label,
+                limit=query.limit,
+                offset=query.offset,
+            )
+            count = 0
+            if Path(tasks_path).is_file():
+                try:
+                    store = TaskStore(tasks_path)
+                    count = store.count(status=st)
+                    store.close()
+                except Exception:
+                    count = len(tasks)
+            task_views = tuple(
+                ProjectTaskView(
+                    id=t.id,
+                    title=t.title,
+                    description=t.description,
+                    status=t.status.value,
+                    priority=t.priority.value,
+                    labels=tuple(t.labels),
+                    assigned_thread_id=t.assigned_thread_id,
+                    created_at_ms=t.created_at_ms,
+                    updated_at_ms=t.updated_at_ms,
+                    completed_at_ms=t.completed_at_ms,
+                )
+                for t in tasks
+            )
+            return ProjectTaskListPage(
+                project_id=query.project_id,
+                tasks=task_views,
+                total_count=count,
+            )
+
+        return await asyncio.to_thread(_do_list)
+
+    async def get_project_task(
+        self, query: GetProjectTaskQuery
+    ) -> ProjectTaskView | None:
+        if type(query) is not GetProjectTaskQuery:
+            raise InvalidRequestError("query must be a GetProjectTaskQuery")
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, query.project_id
+        )
+        tasks_path = manager.settings.resolved_tasks_path()
+
+        def _do_get() -> ProjectTaskView | None:
+            from synapse.tasks.store import read_task_readonly
+
+            task = read_task_readonly(tasks_path, query.task_id)
+            if task is None:
+                return None
+            return ProjectTaskView(
+                id=task.id,
+                title=task.title,
+                description=task.description,
+                status=task.status.value,
+                priority=task.priority.value,
+                labels=tuple(task.labels),
+                assigned_thread_id=task.assigned_thread_id,
+                created_at_ms=task.created_at_ms,
+                updated_at_ms=task.updated_at_ms,
+                completed_at_ms=task.completed_at_ms,
+            )
+
+        return await asyncio.to_thread(_do_get)
+
+    async def create_project_task(
+        self, command: CreateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        if type(command) is not CreateProjectTaskCommand:
+            raise InvalidRequestError("command must be a CreateProjectTaskCommand")
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, command.project_id
+        )
+        tasks_path = manager.settings.resolved_tasks_path()
+
+        def _do_create() -> ProjectTaskResult:
+            from synapse.tasks.service import get_task_service
+
+            service = get_task_service(tasks_path)
+            task = service.create_task(
+                title=command.title,
+                description=command.description,
+                priority=command.priority,
+                labels=list(command.labels),
+                assigned_thread_id=command.assigned_thread_id,
+            )
+            view = ProjectTaskView(
+                id=task.id,
+                title=task.title,
+                description=task.description,
+                status=task.status.value,
+                priority=task.priority.value,
+                labels=tuple(task.labels),
+                assigned_thread_id=task.assigned_thread_id,
+                created_at_ms=task.created_at_ms,
+                updated_at_ms=task.updated_at_ms,
+                completed_at_ms=task.completed_at_ms,
+            )
+            return ProjectTaskResult(
+                project_id=command.project_id,
+                task=view,
+                status="ok",
+            )
+
+        return await asyncio.to_thread(_do_create)
+
+    async def update_project_task(
+        self, command: UpdateProjectTaskCommand
+    ) -> ProjectTaskResult:
+        if type(command) is not UpdateProjectTaskCommand:
+            raise InvalidRequestError("command must be a UpdateProjectTaskCommand")
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, command.project_id
+        )
+        tasks_path = manager.settings.resolved_tasks_path()
+
+        def _do_update() -> ProjectTaskResult:
+            from synapse.tasks.service import get_task_service
+
+            service = get_task_service(tasks_path)
+            labels = list(command.labels) if command.labels is not None else None
+            task = service.update_task(
+                command.task_id,
+                title=command.title,
+                description=command.description,
+                status=command.status,
+                priority=command.priority,
+                labels=labels,
+                assigned_thread_id=command.assigned_thread_id,
+                clear_assigned_thread=command.clear_assigned_thread,
+            )
+            if task is None:
+                return ProjectTaskResult(
+                    project_id=command.project_id,
+                    task=None,
+                    status="not_found",
+                )
+            view = ProjectTaskView(
+                id=task.id,
+                title=task.title,
+                description=task.description,
+                status=task.status.value,
+                priority=task.priority.value,
+                labels=tuple(task.labels),
+                assigned_thread_id=task.assigned_thread_id,
+                created_at_ms=task.created_at_ms,
+                updated_at_ms=task.updated_at_ms,
+                completed_at_ms=task.completed_at_ms,
+            )
+            return ProjectTaskResult(
+                project_id=command.project_id,
+                task=view,
+                status="ok",
+            )
+
+        return await asyncio.to_thread(_do_update)
+
+    async def delete_project_task(
+        self, command: DeleteProjectTaskCommand
+    ) -> DeleteProjectTaskResult:
+        if type(command) is not DeleteProjectTaskCommand:
+            raise InvalidRequestError("command must be a DeleteProjectTaskCommand")
+        manager = await asyncio.to_thread(
+            self._resolve_manager_project, command.project_id
+        )
+        tasks_path = manager.settings.resolved_tasks_path()
+
+        def _do_delete() -> DeleteProjectTaskResult:
+            from synapse.tasks.service import get_task_service
+
+            service = get_task_service(tasks_path)
+            deleted = service.delete_task(command.task_id)
+            return DeleteProjectTaskResult(
+                project_id=command.project_id,
+                task_id=command.task_id,
+                deleted=deleted,
+            )
+
+        return await asyncio.to_thread(_do_delete)
 
     async def list_directories(self, query: ListDirectoriesQuery) -> DirectoryListing:
         """List one host directory's immediate sub-directories (bounded, read-only).

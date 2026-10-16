@@ -100,6 +100,10 @@ export default {
         raised: "rgb(var(--surface-raised) / <alpha-value>)",
         "fg-disabled": "rgb(var(--fg-disabled) / <alpha-value>)",
         accent: "rgb(var(--accent) / <alpha-value>)",
+        // The accent as foreground (an icon, a label, a stroke): the fill role
+        // above is a layer a label sits *on*, so it is darker than the text a
+        // theme can draw with it.
+        "accent-fg": "rgb(var(--accent-fg) / <alpha-value>)",
         "on-accent": "rgb(var(--on-accent) / <alpha-value>)",
         danger: "rgb(var(--danger) / <alpha-value>)",
 

@@ -170,7 +170,7 @@ export const SpeechEngineSection: React.FC = () => {
                       : (option.reason ?? option.detail)
                 }
                 className={`ui-button border ${
-                  engine === option.id ? 'ui-primary border-accent' : 'border-line bg-surface'
+                  engine === option.id ? 'ui-primary border-accent-fg' : 'border-line bg-surface'
                 }`}
               >
                 {option.label}

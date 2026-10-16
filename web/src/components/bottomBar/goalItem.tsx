@@ -18,9 +18,9 @@ export const GOAL_ITEM_ID = 'goal';
 const GOAL_STATUS_CLASS: Record<string, string> = {
   active: 'font-medium text-gray-900',
   paused: 'text-gray-400',
-  stalled: 'text-yellow-600',
-  'usage limited': 'text-yellow-600',
-  'limited by budget': 'text-yellow-600',
+  stalled: 'text-amber-600',
+  'usage limited': 'text-amber-600',
+  'limited by budget': 'text-amber-600',
   complete: 'text-green-600',
 };
 

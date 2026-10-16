@@ -76,6 +76,7 @@ test('the theme contract names roles, not shades', () => {
     '--fg-disabled',
     '--line',
     '--accent',
+    '--accent-fg',
     '--on-accent',
     '--danger',
     '--radius-card',
@@ -208,6 +209,7 @@ test('a theme replaces the roles it claims to', () => {
       '--fg-disabled',
       '--line',
       '--accent',
+      '--accent-fg',
       // Shape, type, elevation, material and motion are part of a theme too:
       // Fluent is not just another palette.
       '--radius-control',
@@ -372,4 +374,123 @@ test('navigation selection has a marker and picker choices are keyboard buttons'
   const collapsed = sidebar.slice(sidebar.indexOf('{/* Minimal Rail View'), sidebar.indexOf('{/* Expanded Sidebar View'));
   assert.ok(collapsed.includes('setSettingsOpen(true)'), 'collapsed rail must open settings');
   assert.ok(sidebar.includes('{settingsOpen && <SettingsDialog'), 'shared settings dialog must remain mounted');
+});
+
+/**
+ * Every `.ts`/`.tsx` module under `src/` whose text matches `pattern`.
+ *
+ * The patterns below are deliberately source-level: a class that names a colour the
+ * theme cannot reach is invisible to `tsc` and to a rendering test alike, and the
+ * only place it is visible is the class list itself.
+ */
+function filesMatching(pattern: RegExp): string[] {
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      if (pattern.test(readFileSync(full, 'utf8'))) offenders.push(entry.name);
+    }
+  };
+  walk(join(webRoot, 'src'));
+  return offenders.sort();
+}
+
+/**
+ * The terminal's own 16-colour palette (`src/markdown/ansi.ts`).
+ *
+ * A command's output arrives with the SGR colours that program chose, so those
+ * classes are a semantic mapping (ANSI magenta, ANSI cyan) rather than a surface the
+ * console paints: it is the one module allowed to name a family the contract does
+ * not define.
+ */
+const TERMINAL_PALETTE = 'ansi.ts';
+
+test('the console has one theme mechanism, so a `dark:` variant is dead code', () => {
+  // Tailwind is configured `darkMode: 'class'` and no `dark` class is ever applied:
+  // `stores/appearance.ts` writes `data-theme="fluent-light" | "fluent-dark"` on the
+  // document, and the contract replaces the palette steps per theme.  A dark variant
+  // therefore never fires -- and switching one on would double-invert, because the
+  // dark theme's neutral ramp is *already* inverted (its `--gray-100` is the dark
+  // hover fill, so a dark:text-gray-100 would ask for a near-black label).  Anything
+  // a reader needs in both themes is a step the contract replaces.
+  assert.deepEqual(
+    // A variant is `dark:<utility>`; the lookahead keeps a TS object key (`dark: {`)
+    // and prose that names the theme (`fluent-dark: ...`) out of the net.
+    filesMatching(/\bdark:(?=[a-z[])/),
+    [],
+    'the console themes through `data-theme`; a `dark:` variant never fires',
+  );
+});
+
+test('every colour a component names is one the theme can reach', () => {
+  // Tailwind's built-in families (`zinc`, `indigo`, `orange`, `rose`, ...) are fixed
+  // values: they do not follow `data-theme`, so a chip painted with them keeps its
+  // *light* step in the dark theme.  That is what made the project board unreadable
+  // in one theme or the other -- a `bg-zinc-800` selected filter stayed a black pill
+  // on a black surface, and a `text-zinc-400` timestamp stayed too pale on white.
+  // `tailwind.config.js` points every family a component may use at the contract.
+  const outsideContract =
+    /\b(?:bg|text|border|ring|fill|stroke|from|to|via|decoration|divide|outline|placeholder|caret|accent)-(?:slate|zinc|neutral|stone|orange|yellow|lime|teal|cyan|sky|indigo|violet|fuchsia|pink|rose)-\d{2,3}\b/;
+  const offenders = filesMatching(outsideContract).filter((name) => name !== TERMINAL_PALETTE);
+  assert.deepEqual(offenders, [], 'paint through the palette the contract replaces');
+});
+
+test('a mark takes the foreground role, never the fill it sits on', () => {
+  // `--accent` is a *fill*: the dark theme maps it to Fluent's colorBrandBackground
+  // (a deep navy) because white labels sit on it, which makes it unreadable as text
+  // or as a stroke (~2.2:1 on the dark surface).  `--accent-fg` is the matching
+  // foreground role (colorBrandForeground1) and is identical to `--accent` in the
+  // light theme, so a mark names that one.
+  assert.deepEqual(
+    filesMatching(/\b(?:text|border|fill|stroke)-accent(?!-fg)\b/),
+    [],
+    'an accent mark must name accent-fg, not the accent fill',
+  );
+});
+
+test('blue text takes the brand foreground step, not the background step', () => {
+  // The blue family is the one ramp whose dark theme repoints its `600`/`700` steps
+  // to *backgrounds* (17 94 163 / 15 108 189): a blue label painted with them is a
+  // navy on a dark surface.  `blue-500` is colorBrandForeground1 in both themes --
+  // 71 158 245 on dark and 15 108 189 on light, i.e. exactly what `blue-600` already
+  // resolves to in the light theme -- so blue text always names `500`.
+  assert.deepEqual(
+    filesMatching(/\btext-blue-(?:600|700)\b/),
+    [],
+    'blue text must name text-blue-500 (the brand foreground step)',
+  );
+});
+
+test('no component names a utility the palette does not define', () => {
+  // `primary` / `primary-foreground` came from another design system: Tailwind emits
+  // no CSS for them, so the control they were meant to paint kept the colour it
+  // inherited -- a dark label on the dark theme's surface, with no background at all.
+  // The console's own role names are `accent` (fill) and `on-accent` (its label).
+  assert.deepEqual(
+    filesMatching(/\b(?:bg|text|border|ring|fill|stroke)-primary(?:-foreground)?\b/),
+    [],
+    'the palette has no `primary` role: use accent / on-accent',
+  );
+});
+
+test('no component names a utility this palette does not define at all', () => {
+  // A class Tailwind has no value for emits *nothing*: no warning, no rule, no
+  // build error -- the element simply keeps whatever it inherited.  A build of the
+  // console was diffed against every class the sources name to find these: they are
+  // names borrowed from Tailwind 4 or from a shadcn-style token set, and each was a
+  // silent no-op (no fill on a panel, no shadow on a chip, no width on a popover,
+  // no colour on a window control).  The console's own names are the roles in
+  // `src/index.css`: `sunken` / `canvas` / `surface-hover` / `line` / `shadow-card`.
+  const undefinedUtility =
+    /\b(?:bg-surface-sunken|bg-surface-canvas|bg-surface-elevated|bg-control-hover|bg-editor-selection|shadow-xs|shadow-panel|border-line-subtle|border-line-strong|rounded-window|text-muted|text-foreground|backdrop-blur-xs|w-88|py-0\.2)\b/;
+  assert.deepEqual(
+    filesMatching(undefinedUtility),
+    [],
+    'these classes have no value in this palette: they render as nothing',
+  );
 });

@@ -300,7 +300,7 @@ export const FilesContent: React.FC<{ context: RightDockContext }> = () => {
                   type="button"
                   onClick={(e) => handleQuote(e, entry.path)}
                   title="引用此路径到输入框 (@path)"
-                  className="ui-icon-button ui-compact text-gray-400 hover:text-blue-600 hover:bg-surface-hover transition-colors"
+                  className="ui-icon-button ui-compact text-gray-400 hover:text-blue-500 hover:bg-surface-hover transition-colors"
                 >
                   <Mention16Regular className="text-xs" />
                 </button>

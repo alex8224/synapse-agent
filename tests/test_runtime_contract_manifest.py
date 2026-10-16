@@ -145,6 +145,11 @@ V1_AUTHORIZATION_CAPABILITIES = frozenset(
 #: method).  A new method must be listed here *and* in the wire baseline diff.
 ADDITIVE_WIRE_METHODS = {
     "runtime.project.list": "list_projects",
+    "runtime.project.task.list": "list_project_tasks",
+    "runtime.project.task.get": "get_project_task",
+    "runtime.project.task.create": "create_project_task",
+    "runtime.project.task.update": "update_project_task",
+    "runtime.project.task.delete": "delete_project_task",
     "runtime.session.create": "create_session",
     "runtime.session.rename": "rename_session",
     "runtime.session.fork": "fork_session",
@@ -201,6 +206,7 @@ ADDITIVE_WIRE_METHODS = {
 ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
     {
         "project.list",
+        "project.tasks",
         "session.create",
         "session.rename",
         "session.fork",
@@ -238,6 +244,15 @@ ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
         "ListProjectsParams",
         "ProjectListItem",
         "ProjectListResult",
+        "CreateProjectTaskParams",
+        "DeleteProjectTaskParams",
+        "DeleteProjectTaskResult",
+        "GetProjectTaskParams",
+        "ListProjectTasksParams",
+        "ProjectTaskListResult",
+        "ProjectTaskResult",
+        "ProjectTaskView",
+        "UpdateProjectTaskParams",
         # Session-collaboration DTOs added by the collaboration slice.  The
         # console reads them and fences its own generation; there is no wire
         # method that starts a request, so no client type exists for one.

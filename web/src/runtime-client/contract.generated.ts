@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 74 wire methods: 72 service methods
+ * The 79 wire methods: 77 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -63,6 +63,11 @@ export const WIRE_METHODS = [
   "runtime.models.test",
   "runtime.project.list",
   "runtime.project.register",
+  "runtime.project.task.create",
+  "runtime.project.task.delete",
+  "runtime.project.task.get",
+  "runtime.project.task.list",
+  "runtime.project.task.update",
   "runtime.project.thinking.set",
   "runtime.protocol.negotiate",
   "runtime.screenshot.cancel",
@@ -120,7 +125,7 @@ export const PROTOCOL_FEATURES = {
 } as const;
 export type ProtocolFeature = keyof typeof PROTOCOL_FEATURES;
 
-/** Authorization capabilities enforced by the ACL layer (46). */
+/** Authorization capabilities enforced by the ACL layer (47). */
 export const AUTHORIZATION_CAPABILITIES = [
   "apps.list",
   "artifacts.list",
@@ -143,6 +148,7 @@ export const AUTHORIZATION_CAPABILITIES = [
   "models.write",
   "project.list",
   "project.register",
+  "project.tasks",
   "project.thinking",
   "screenshot.control",
   "screenshot.read",
@@ -229,6 +235,11 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.models.test": "models.read",
   "runtime.project.list": "project.list",
   "runtime.project.register": "project.register",
+  "runtime.project.task.create": "project.tasks",
+  "runtime.project.task.delete": "project.tasks",
+  "runtime.project.task.get": "project.tasks",
+  "runtime.project.task.list": "project.tasks",
+  "runtime.project.task.update": "project.tasks",
   "runtime.project.thinking.set": "project.thinking",
   "runtime.screenshot.cancel": "screenshot.control",
   "runtime.screenshot.capture": "screenshot.control",
@@ -661,6 +672,27 @@ export interface ConsumeCodexResetCommand {
   confirmed: boolean;
 }
 
+export interface CreateProjectTaskCommand {
+  project_id: string;
+  title: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  description?: string;
+  /**
+   * python_default_kind=value python_default="medium"
+   */
+  priority?: string;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  labels?: string[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  assigned_thread_id?: string | null;
+}
+
 /**
  * Metadata-only create: it persists the session row and never opens a runtime or builds an agent.
  * ``thread_id`` is optional; when it is absent the server allocates the real id and returns it, so a client never invents one.
@@ -706,6 +738,17 @@ export interface DeleteMcpServerCommand {
 export interface DeleteModelCommand {
   session: SessionRef;
   alias: string;
+}
+
+export interface DeleteProjectTaskCommand {
+  project_id: string;
+  task_id: string;
+}
+
+export interface DeleteProjectTaskResult {
+  project_id: string;
+  task_id: string;
+  deleted: boolean;
 }
 
 /**
@@ -928,6 +971,11 @@ export interface GetCodexUsageQuery {
    * python_default_kind=value python_default=false
    */
   force?: boolean;
+}
+
+export interface GetProjectTaskQuery {
+  project_id: string;
+  task_id: string;
 }
 
 export interface GetRuntimeConfigQuery {
@@ -1157,6 +1205,26 @@ export interface ListMcpServersQuery {
  */
 export interface ListModelsQuery {
   session: SessionRef;
+}
+
+export interface ListProjectTasksQuery {
+  project_id: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  status?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  label?: string | null;
+  /**
+   * python_default_kind=value python_default=50
+   */
+  limit?: number;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  offset?: number;
 }
 
 /**
@@ -1485,6 +1553,64 @@ export interface ProjectListPage {
   projects: ProjectListItem[];
   next_offset: number | null;
   total: number;
+}
+
+export interface ProjectTaskListPage {
+  project_id: string;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  tasks: ProjectTaskView[];
+  /**
+   * python_default_kind=value python_default=0
+   */
+  total_count: number;
+}
+
+export interface ProjectTaskResult {
+  project_id: string;
+  task: ProjectTaskView | null;
+  /**
+   * python_default_kind=value python_default="ok"
+   */
+  status: string;
+}
+
+export interface ProjectTaskView {
+  id: string;
+  title: string;
+  /**
+   * python_default_kind=value python_default=""
+   */
+  description: string;
+  /**
+   * python_default_kind=value python_default="todo"
+   */
+  status: string;
+  /**
+   * python_default_kind=value python_default="medium"
+   */
+  priority: string;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  labels: string[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  assigned_thread_id: string | null;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  created_at_ms: number;
+  /**
+   * python_default_kind=value python_default=0
+   */
+  updated_at_ms: number;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  completed_at_ms: number | null;
 }
 
 export interface ReadArtifactQuery {
@@ -2640,6 +2766,39 @@ export interface UnwatchResult {
   removed: boolean;
 }
 
+export interface UpdateProjectTaskCommand {
+  project_id: string;
+  task_id: string;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  title?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  description?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  status?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  priority?: string | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  labels?: string[] | null;
+  /**
+   * python_default_kind=value python_default=null
+   */
+  assigned_thread_id?: string | null;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  clear_assigned_thread?: boolean;
+}
+
 export interface UsagePayload {
   /**
    * python_default_kind=value python_default=0
@@ -2836,18 +2995,22 @@ export type CodexResetCreditsResult = CodexResetCreditsView;
 export type CodexUsageResult = CodexUsageView;
 export type CollaborationResult = CollaborationPage;
 export type ConsumeCodexResetParams = ConsumeCodexResetCommand;
+export type CreateProjectTaskParams = CreateProjectTaskCommand;
 export type CreateSessionParams = CreateSessionCommand;
+export type DeleteProjectTaskParams = DeleteProjectTaskCommand;
 export type DeleteSessionParams = DeleteSessionCommand;
 export type EditSessionGoalParams = EditSessionGoalCommand;
 export type ForkSessionParams = ForkSessionCommand;
 export type GetCodexResetCreditsParams = GetCodexResetCreditsQuery;
 export type GetCodexUsageParams = GetCodexUsageQuery;
+export type GetProjectTaskParams = GetProjectTaskQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;
 export type ListCollaborationsParams = ListCollaborationsQuery;
 export type ListDirectoriesParams = ListDirectoriesQuery;
 export type ListDirectoriesResult = DirectoryListing;
+export type ListProjectTasksParams = ListProjectTasksQuery;
 export type ListProjectsParams = ListProjectsQuery;
 export type ListSessionsParams = ListSessionsQuery;
 export type ListSkillsParams = ListSkillsQuery;
@@ -2856,6 +3019,7 @@ export type McpServerState = McpServerStateView;
 export type NegotiateParams = Negotiation;
 export type PauseSessionGoalParams = PauseSessionGoalCommand;
 export type ProjectListResult = ProjectListPage;
+export type ProjectTaskListResult = ProjectTaskListPage;
 export type ReadSessionHistoryParams = ReadSessionHistoryQuery;
 export type RebindSessionParams = RebindSessionCommand;
 export type ReconcileSessionParams = ReconcileSessionQuery;
@@ -2875,4 +3039,5 @@ export type SteerTurnParams = SteerTurnCommand;
 export type StopCollaborationParams = StopCollaborationCommand;
 export type StopCollaborationView = StopCollaborationResult;
 export type SubmitTurnParams = SubmitTurnCommand;
+export type UpdateProjectTaskParams = UpdateProjectTaskCommand;
 export type WatchEventsParams = WatchSpec;

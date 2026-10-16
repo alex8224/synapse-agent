@@ -98,7 +98,7 @@ const TruncatedText: React.FC<{
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="mt-1 text-[10px] text-accent hover:underline font-sans cursor-pointer select-none inline-block font-medium"
+        className="mt-1 text-[10px] text-accent-fg hover:underline font-sans cursor-pointer select-none inline-block font-medium"
       >
         {expanded ? '收起部分内容' : `展开显示完整内容 (共 ${text.length} 字符)`}
       </button>
@@ -126,7 +126,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
   onCopyText,
 }) => {
   return (
-    <div className="overflow-hidden rounded-control border border-line/60 bg-surface/60 shadow-xs transition-all hover:bg-surface/80 hover:border-line/80 hover:shadow-card">
+    <div className="overflow-hidden rounded-control border border-line/60 bg-surface/60 shadow-card transition-all hover:bg-surface/80 hover:border-line/80 hover:shadow-card">
       {/* Turn Header Card */}
       <div
         onClick={() => onToggleTurn(turn.key)}
@@ -144,7 +144,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
           </span>
 
           {/* Turn Badge */}
-          <span className="rounded-control bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-accent shrink-0">
+          <span className="rounded-control bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-accent-fg shrink-0">
             Turn {turn.turnIndex}
           </span>
 
@@ -154,7 +154,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
           </span>
 
           {/* Step count badge */}
-          <span className="rounded-full bg-sunken px-1.5 py-0.2 font-mono text-[9px] text-gray-500 shrink-0">
+          <span className="rounded-full bg-sunken px-1.5 py-0.5 font-mono text-[9px] text-gray-500 shrink-0">
             {turn.steps.length} 步
           </span>
         </div>
@@ -185,7 +185,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
             return (
               <div
                 key={step.id}
-                className="overflow-hidden rounded-control border border-line/70 bg-surface shadow-xs"
+                className="overflow-hidden rounded-control border border-line/70 bg-surface shadow-card"
               >
                 {/* Step Header */}
                 <div
@@ -208,7 +208,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
                     </span>
 
                     <div className="flex items-center gap-1.5 truncate">
-                      {step.kind === 'user' && <Person16Regular className="text-blue-600 shrink-0 text-xs" />}
+                      {step.kind === 'user' && <Person16Regular className="text-blue-500 shrink-0 text-xs" />}
                       {step.kind === 'thought' && <Brain16Regular className="text-purple-600 shrink-0 text-xs" />}
                       {step.kind === 'tool' && <Wrench16Regular className="text-amber-600 shrink-0 text-xs" />}
                       {step.kind === 'assistant' && <Bot16Regular className="text-emerald-600 shrink-0 text-xs" />}
@@ -259,8 +259,8 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
 
                     {/* Thought process block */}
                     {step.thoughtContent && (
-                      <div className="rounded-control border border-purple-200/60 bg-purple-50/30 p-2.5 dark:border-purple-900/40 dark:bg-purple-950/20">
-                        <div className="flex items-center justify-between pb-1.5 border-b border-purple-200/40 text-[11px] font-semibold text-purple-700 dark:text-purple-300">
+                      <div className="rounded-control border border-purple-200/60 bg-purple-50/30 p-2.5">
+                        <div className="flex items-center justify-between pb-1.5 border-b border-purple-200/40 text-[11px] font-semibold text-purple-700">
                           <span className="flex items-center gap-1">
                             <Sparkle16Regular className="text-xs" />
                             思考过程 (CoT)
@@ -281,7 +281,7 @@ const TurnCard: React.FC<TurnCardProps> = React.memo(({
                         </div>
                         <TruncatedText
                           text={step.thoughtContent}
-                          className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] text-gray-700 dark:text-gray-300 select-text leading-relaxed overflow-x-auto"
+                          className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] text-gray-700 select-text leading-relaxed overflow-x-auto"
                         />
                       </div>
                     )}

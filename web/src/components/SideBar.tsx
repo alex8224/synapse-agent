@@ -450,7 +450,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                     {projectLabel(project)}
                   </span>
                   {isActive && (
-                    <CheckmarkCircle20Regular aria-label="当前项目" className="shrink-0 text-accent" />
+                    <CheckmarkCircle20Regular aria-label="当前项目" className="shrink-0 text-accent-fg" />
                   )}
                 </button>
                 {/* Row actions stay in the layout (so the label never jumps) but
@@ -702,7 +702,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
       {deleting === null && (sessionActionError !== null || sessionNotice !== null) && (
         <div
           role={sessionActionError !== null ? 'alert' : 'status'}
-          className={`mx-3 mt-2 rounded-control border backdrop-blur-sm px-2 py-1.5 text-[10px] shadow-xs ${
+          className={`mx-3 mt-2 rounded-control border backdrop-blur-sm px-2 py-1.5 text-[10px] shadow-card ${
             sessionActionError !== null
               ? 'border-red-200/80 bg-red-50/80 text-red-900'
               : 'border-line bg-surface/80 text-gray-700'

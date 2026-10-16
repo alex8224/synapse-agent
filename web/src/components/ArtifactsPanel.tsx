@@ -573,12 +573,12 @@ export const ArtifactsPanel: React.FC<{
                   {entry.kind === 'directory' ? (
                     <Folder16Regular
                       aria-hidden="true"
-                      className={`shrink-0 ${isSelected ? 'text-blue-600' : 'text-gray-500'}`}
+                      className={`shrink-0 ${isSelected ? 'text-blue-500' : 'text-gray-500'}`}
                     />
                   ) : (
                     <Document16Regular
                       aria-hidden="true"
-                      className={`shrink-0 ${isSelected ? 'text-blue-600' : 'text-gray-500'}`}
+                      className={`shrink-0 ${isSelected ? 'text-blue-500' : 'text-gray-500'}`}
                     />
                   )}
                   <span className="min-w-0 flex-1 truncate font-mono text-[13px]">

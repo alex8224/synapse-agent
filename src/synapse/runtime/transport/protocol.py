@@ -155,6 +155,17 @@ from synapse.runtime.service.project_register import (
     MAX_WORKSPACE_PATH_BYTES,
     RegisterProjectCommand,
 )
+from synapse.runtime.service.project_tasks import (
+    MAX_TASK_DESCRIPTION_CHARS,
+    MAX_TASK_TITLE_CHARS,
+    TASK_LIST_LIMIT_DEFAULT,
+    TASK_LIST_LIMIT_MAX,
+    CreateProjectTaskCommand,
+    DeleteProjectTaskCommand,
+    GetProjectTaskQuery,
+    ListProjectTasksQuery,
+    UpdateProjectTaskCommand,
+)
 from synapse.runtime.service.recovery import (
     MAX_RECONCILE_PROBE_TURNS,
     MAX_RECONCILE_TURN_ID_BYTES,
@@ -1198,6 +1209,106 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 maximum=SESSION_SEARCH_OFFSET_MAX,
             ),
         )
+    if method == "runtime.project.task.list":
+        _optional_fields(params, {"project_id"}, {"status", "label", "limit", "offset"})
+        return ListProjectTasksQuery(
+            project_id=_session_text(params["project_id"]),
+            status=params.get("status"),
+            label=params.get("label"),
+            limit=_bounded_integer(
+                params.get("limit", TASK_LIST_LIMIT_DEFAULT),
+                minimum=1,
+                maximum=TASK_LIST_LIMIT_MAX,
+            ),
+            offset=_bounded_integer(params.get("offset", 0), minimum=0, maximum=100_000),
+        )
+    if method == "runtime.project.task.get":
+        _fields(params, {"project_id", "task_id"})
+        return GetProjectTaskQuery(
+            project_id=_session_text(params["project_id"]),
+            task_id=_session_text(params["task_id"]),
+        )
+    if method == "runtime.project.task.create":
+        _optional_fields(
+            params,
+            {"project_id", "title"},
+            {"description", "priority", "labels", "assigned_thread_id"},
+        )
+        raw_desc = params.get("description", "")
+        clean_desc = (
+            _bounded_text(raw_desc, MAX_TASK_DESCRIPTION_CHARS * 4, nonempty=False)
+            if raw_desc
+            else ""
+        )
+        raw_assigned = params.get("assigned_thread_id")
+        clean_assigned = _session_text(raw_assigned) if raw_assigned else None
+        return CreateProjectTaskCommand(
+            project_id=_session_text(params["project_id"]),
+            title=_bounded_text(params["title"], MAX_TASK_TITLE_CHARS * 4),
+            description=clean_desc,
+            priority=str(params.get("priority", "medium")),
+            labels=tuple(str(x) for x in params.get("labels") or ()),
+            assigned_thread_id=clean_assigned,
+        )
+    if method == "runtime.project.task.update":
+        _optional_fields(
+            params,
+            {"project_id", "task_id"},
+            {
+                "title",
+                "description",
+                "status",
+                "priority",
+                "labels",
+                "assigned_thread_id",
+                "clear_assigned_thread",
+            },
+        )
+        labels = (
+            tuple(str(x) for x in params["labels"])
+            if "labels" in params and params["labels"] is not None
+            else None
+        )
+        raw_desc = params.get("description")
+        clean_desc = (
+            _bounded_text(raw_desc, MAX_TASK_DESCRIPTION_CHARS * 4, nonempty=False)
+            if raw_desc is not None
+            else None
+        )
+        raw_assigned = params.get("assigned_thread_id")
+        clean_assigned = _session_text(raw_assigned) if raw_assigned else None
+        title = (
+            _bounded_text(params["title"], MAX_TASK_TITLE_CHARS * 4)
+            if "title" in params and params["title"] is not None
+            else None
+        )
+        status = (
+            str(params["status"])
+            if "status" in params and params["status"] is not None
+            else None
+        )
+        priority = (
+            str(params["priority"])
+            if "priority" in params and params["priority"] is not None
+            else None
+        )
+        return UpdateProjectTaskCommand(
+            project_id=_session_text(params["project_id"]),
+            task_id=_session_text(params["task_id"]),
+            title=title,
+            description=clean_desc,
+            status=status,
+            priority=priority,
+            labels=labels,
+            assigned_thread_id=clean_assigned,
+            clear_assigned_thread=bool(params.get("clear_assigned_thread", False)),
+        )
+    if method == "runtime.project.task.delete":
+        _fields(params, {"project_id", "task_id"})
+        return DeleteProjectTaskCommand(
+            project_id=_session_text(params["project_id"]),
+            task_id=_session_text(params["task_id"]),
+        )
     if method == "runtime.project.list":
         # No project position and no client-supplied visibility: the server
         # computes the visible set and applies it before pagination.
@@ -1544,6 +1655,16 @@ async def dispatch(
         return await service.delete_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.search":
         return await service.search_sessions(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.task.list":
+        return await service.list_project_tasks(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.task.get":
+        return await service.get_project_task(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.task.create":
+        return await service.create_project_task(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.task.update":
+        return await service.update_project_task(dto)  # type: ignore[arg-type]
+    if method == "runtime.project.task.delete":
+        return await service.delete_project_task(dto)  # type: ignore[arg-type]
     if method == "runtime.project.list":
         return await service.list_projects(dto)  # type: ignore[arg-type]
     if method == "runtime.project.register":

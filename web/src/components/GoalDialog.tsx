@@ -306,7 +306,7 @@ export const GoalDialog: React.FC<GoalDialogProps> = ({ onClose }) => {
         {(goalActionError !== null || goalNotice !== null) && (
           <div
             className={`flex items-start justify-between gap-2 rounded px-2 py-1.5 text-[11px] ${
-              goalActionError !== null ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+              goalActionError !== null ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-500'
             }`}
           >
             <span>{goalActionError ?? goalNotice}</span>

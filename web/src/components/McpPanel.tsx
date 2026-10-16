@@ -310,7 +310,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         disabled={!dirty}
                         className={`rounded px-2 py-0.5 font-mono text-[10px] ${
                           dirty
-                            ? 'cursor-pointer bg-blue-50 text-blue-600 hover:bg-blue-100'
+                            ? 'cursor-pointer bg-blue-50 text-blue-500 hover:bg-blue-100'
                             : 'cursor-not-allowed text-gray-300'
                         }`}
                       >

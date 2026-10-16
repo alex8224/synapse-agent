@@ -53,7 +53,7 @@ export const UserRow = React.memo(function UserRow({ message }: RowRenderProps) 
     <div data-turn-id={message.id} className="flex justify-end">
       <div className="mr-[20%] flex max-w-[80%] flex-col items-end gap-1.5 group">
         {isEditing ? (
-          <div className="w-full flex flex-col gap-2 rounded-card border border-accent bg-surface p-2.5 shadow-card">
+          <div className="w-full flex flex-col gap-2 rounded-card border border-accent-fg bg-surface p-2.5 shadow-card">
             <textarea
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
@@ -111,7 +111,7 @@ export const UserRow = React.memo(function UserRow({ message }: RowRenderProps) 
                           title={segment.raw}
                           className="mx-0.5 inline-flex items-center gap-1 rounded-control border border-line bg-surface px-1.5 py-0.5 align-baseline font-mono text-xs text-gray-800"
                         >
-                          <Chat16Regular aria-hidden="true" className="shrink-0 text-accent" />
+                          <Chat16Regular aria-hidden="true" className="shrink-0 text-accent-fg" />
                           @{peer.displayName}
                         </span>
                       );
@@ -133,7 +133,7 @@ export const UserRow = React.memo(function UserRow({ message }: RowRenderProps) 
                 aria-label="复制消息"
                 className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-surface-hover cursor-pointer transition-colors"
               >
-                {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent" /> : <Copy16Regular aria-hidden="true" />}
+                {copied ? <Checkmark16Regular aria-hidden="true" className="text-accent-fg" /> : <Copy16Regular aria-hidden="true" />}
               </button>
               <button
                 type="button"

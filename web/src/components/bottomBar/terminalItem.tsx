@@ -40,13 +40,13 @@ export const terminalItem: BottomBarItemDefinition = {
         aria-expanded={open}
         className={`flex cursor-pointer items-center gap-1.5 rounded-control px-1.5 py-0.5 transition-colors ${
           open
-            ? 'bg-accent/15 text-accent font-semibold'
+            ? 'bg-accent/15 text-accent-fg font-semibold'
             : 'text-gray-700 hover:text-gray-900 hover:bg-surface-hover'
         }`}
       >
         <WindowConsole20Regular
           aria-hidden="true"
-          className={`shrink-0 ${open ? 'text-accent' : 'text-gray-500'}`}
+          className={`shrink-0 ${open ? 'text-accent-fg' : 'text-gray-500'}`}
           style={{ fontSize: '15px' }}
         />
         <span>{label}</span>

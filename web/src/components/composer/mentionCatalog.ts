@@ -26,6 +26,7 @@ import {
   Chat20Regular,
   Database20Regular,
   DocumentText20Regular,
+  Folder20Regular,
   PuzzlePiece20Regular,
 } from '@fluentui/react-icons';
 import { displaySessionTitle } from '../../stores/sessionList.ts';
@@ -46,11 +47,37 @@ export interface MentionEntry {
 
 /** The section a kind is rendered under, in flyout order. */
 export const MENTION_GROUP_TITLE: Record<MentionEntry['kind'], string> = {
+  project: '项目',
   file: '工作区文件',
   skill: 'Agent 技能',
   context: '运行上下文',
   session: '会话',
 };
+
+/** Build a project mention from a console project record. */
+export function projectMention(entry: {
+  project_id: string;
+  name?: string | null;
+  workspace_path?: string | null;
+  session_count?: number | null;
+}): MentionEntry {
+  const label =
+    entry.name ||
+    (entry.workspace_path ? entry.workspace_path.split(/[/\\]/).filter(Boolean).pop() : '') ||
+    entry.project_id.slice(0, 8);
+  const count =
+    entry.session_count !== undefined && entry.session_count !== null
+      ? `${entry.session_count} 个会话`
+      : '';
+  const detail = [entry.workspace_path, count].filter(Boolean).join(' · ');
+  return {
+    kind: 'project',
+    id: `project:${entry.project_id}`,
+    label,
+    detail: detail || entry.project_id,
+    token: `@${label}:`,
+  };
+}
 
 /**
  * The order the flyout renders groups in.
@@ -63,10 +90,11 @@ export const MENTION_GROUP_TITLE: Record<MentionEntry['kind'], string> = {
  * inserts, the wrong row when the arrows walk the list.  `MENTION_KIND_ORDER`
  * therefore has to match that build order.
  */
-export const MENTION_KIND_ORDER = ['file', 'session', 'skill', 'context'] as const;
+export const MENTION_KIND_ORDER = ['project', 'session', 'file', 'skill', 'context'] as const;
 
 /** Short label shown at the right edge of a row. */
 export const MENTION_KIND_LABEL: Record<MentionEntry['kind'], string> = {
+  project: '项目',
   file: '文件',
   skill: '技能',
   context: '上下文',
@@ -91,6 +119,7 @@ export const MENTION_KIND_ICON: Record<
     'aria-label'?: string;
   }>
 > = {
+  project: Folder20Regular,
   file: DocumentText20Regular,
   skill: PuzzlePiece20Regular,
   context: Database20Regular,
@@ -166,12 +195,133 @@ export const CONTEXT_MENTIONS: readonly MentionEntry[] = [
   },
 ];
 
+/** Parse special prefixes in user mention query. */
+export interface ParsedMentionQuery {
+  raw: string;
+  isSessionScope: boolean;
+  projectFilter: string | null;
+  sessionFilter: string;
+}
+
+export function parseMentionQuery(query: string): ParsedMentionQuery {
+  const raw = query.trim().toLowerCase();
+  if (raw.startsWith('session:')) {
+    const after = raw.slice(8).trim();
+    if (after.includes(':') || after.includes('/')) {
+      const delimiter = after.includes(':') ? ':' : '/';
+      const [proj, ...rest] = after.split(delimiter);
+      return {
+        raw,
+        isSessionScope: true,
+        projectFilter: proj.trim().toLowerCase(),
+        sessionFilter: rest.join(delimiter).trim().toLowerCase(),
+      };
+    }
+    return {
+      raw,
+      isSessionScope: true,
+      projectFilter: after.toLowerCase() || null,
+      sessionFilter: '',
+    };
+  }
+
+  if (raw.includes(':') || raw.includes('/')) {
+    const delimiter = raw.includes(':') ? ':' : '/';
+    const [first, ...rest] = raw.split(delimiter);
+    const prefix = first.trim().toLowerCase();
+    // Exclude reserved namespaces so `@context:git` or `@skill:cua` behaves normally
+    if (prefix !== 'file' && prefix !== 'skill' && prefix !== 'context') {
+      return {
+        raw,
+        isSessionScope: true,
+        projectFilter: prefix,
+        sessionFilter: rest.join(delimiter).trim().toLowerCase(),
+      };
+    }
+  }
+
+  return {
+    raw,
+    isSessionScope: false,
+    projectFilter: null,
+    sessionFilter: raw,
+  };
+}
+
 /** Rank a row against the typed query; `-1` means "no match". */
 function score(entry: MentionEntry, needle: string): number {
   if (needle === '') return 0;
+  const parsed = parseMentionQuery(needle);
+  const { raw, isSessionScope, projectFilter, sessionFilter } = parsed;
+
+  if (isSessionScope) {
+    if (entry.kind === 'project') {
+      if (!projectFilter) return 80;
+      const pLabel = entry.label.toLowerCase();
+      const pId = entry.id.toLowerCase();
+      if (sessionFilter === '') {
+        if (pLabel === projectFilter) return 95;
+        if (pLabel.startsWith(projectFilter)) return 85;
+        if (pLabel.includes(projectFilter) || pId.includes(projectFilter)) return 75;
+      }
+      return -1;
+    }
+
+    if (entry.kind === 'session') {
+      const sLabel = entry.label.toLowerCase();
+      const sDetail = entry.detail.toLowerCase();
+      const sToken = entry.token.toLowerCase();
+
+      if (projectFilter) {
+        const matchesProject =
+          sDetail.includes(projectFilter) ||
+          sToken.includes(projectFilter) ||
+          sLabel.includes(projectFilter);
+        if (!matchesProject) return -1;
+
+        if (sessionFilter === '') return 80;
+        if (sLabel === sessionFilter) return 100;
+        if (sLabel.startsWith(sessionFilter)) return 95;
+        if (sLabel.includes(sessionFilter)) return 90;
+        if (sToken.includes(sessionFilter) || sDetail.includes(sessionFilter)) return 85;
+        return -1;
+      }
+
+      if (sessionFilter === '') return 70;
+      if (sLabel === sessionFilter) return 100;
+      if (sLabel.startsWith(sessionFilter)) return 90;
+      if (sLabel.includes(sessionFilter)) return 80;
+      if (sToken.includes(sessionFilter) || sDetail.includes(sessionFilter)) return 75;
+      return -1;
+    }
+
+    if (entry.kind === 'context' && raw.startsWith('session') && entry.token.toLowerCase().includes(raw)) {
+      return 60;
+    }
+    return -1;
+  }
+
   const label = entry.label.toLowerCase();
   const detail = entry.detail.toLowerCase();
   const token = entry.token.toLowerCase();
+
+  if (entry.kind === 'project') {
+    if (label === raw) return 95;
+    if (label.startsWith(raw)) return 85;
+    if (label.includes(raw)) return 70;
+    if (detail.includes(raw)) return 50;
+    return -1;
+  }
+
+  if (entry.kind === 'session') {
+    if (label === raw) return 100;
+    if (label.startsWith(raw)) return 85;
+    if (label.includes(raw)) return 75;
+    if (token.includes(raw)) return 65;
+    if (detail.includes(raw)) return 60;
+    return -1;
+  }
+
   if (label === needle) return 100;
   if (label.startsWith(needle)) return 80;
   if (label.includes(needle)) return 60;

@@ -1,4 +1,4 @@
-import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular } from '@fluentui/react-icons';
+import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular, TaskListSquareLtr16Regular } from '@fluentui/react-icons';
 import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -45,6 +45,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     gitDirty,
     gitStatus,
     sessionTitle,
+    projectTasks,
     loadGitStatus,
   } = useConsoleStore(
     // Only the fields this bar paints: a reasoning delta must not re-render it.
@@ -56,6 +57,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
       gitDirty: state.gitDirty,
       gitStatus: state.gitStatus,
       sessionTitle: state.sessionTitle,
+      projectTasks: state.projectTasks,
       loadGitStatus: state.loadGitStatus,
     })),
   );
@@ -199,7 +201,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
         title={sessionTitle}
         className="ui-session-title wco-caption-controls flex min-w-0 max-w-[14rem] sm:max-w-[20rem] md:max-w-[24rem] lg:max-w-[32rem] cursor-pointer items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 transition-colors hover:bg-surface-hover/50"
       >
-        <Chat20Regular aria-hidden="true" className="shrink-0 text-accent" />
+        <Chat20Regular aria-hidden="true" className="shrink-0 text-accent-fg" />
         <span className="truncate font-medium">{sessionTitle}</span>
       </button>
 
@@ -210,6 +212,30 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           In an installed window it is also what keeps the window buttons clear of
           the chips: the reserve is the width the OS draws them in (0 elsewhere). */}
       <div className="flex items-center justify-end gap-1 shrink-0 min-w-fit">
+        {/* Project Tasks Quick Entrance */}
+        <button
+          type="button"
+          data-tauri-drag-region="false"
+          onClick={() => {
+            const dock = useRightDockStore.getState();
+            if (dock.open && dock.activeTabId === 'tasks') {
+              dock.setOpen(false);
+            } else {
+              useRightDockStore.setState({ open: true, activeTabId: 'tasks' });
+            }
+          }}
+          title="项目待办看板"
+          aria-label="打开项目待办看板"
+          className="ui-button wco-caption-controls flex items-center gap-1 h-7 text-xs px-2 rounded-control text-gray-700 hover:bg-surface-hover active:bg-surface-pressed transition-colors"
+        >
+          <TaskListSquareLtr16Regular aria-hidden="true" className="shrink-0 text-accent-fg" />
+          <span className="font-medium hidden sm:inline">待办</span>
+          {projectTasks.length > 0 && (
+            <span className="rounded-full bg-accent/10 text-accent-fg px-1.5 py-0.5 text-[10px] font-semibold">
+              {projectTasks.filter((t) => t.status !== 'done').length}
+            </span>
+          )}
+        </button>
         <button
           type="button"
           data-tauri-drag-region="false"
@@ -218,7 +244,7 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           aria-label="展开/收起辅助工作台"
           aria-expanded={rightDockOpen}
           className={`ui-icon-button wco-caption-controls text-gray-500 hover:text-gray-900 ${
-            rightDockOpen ? 'text-accent bg-accent/10 font-bold' : ''
+            rightDockOpen ? 'text-accent-fg bg-accent/10 font-bold' : ''
           }`}
         >
           <PanelRight20Regular aria-hidden="true" />

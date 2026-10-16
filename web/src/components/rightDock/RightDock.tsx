@@ -175,15 +175,15 @@ export const RightDock: React.FC = () => {
                     showLabels ? 'px-2.5' : 'px-2'
                   } ${
                     isActive
-                      ? 'bg-surface text-gray-900 font-semibold shadow-xs border-line/60'
+                      ? 'bg-surface text-gray-900 font-semibold shadow-card border-line/60'
                       : 'border-transparent text-gray-700 hover:text-gray-900 hover:bg-surface-hover'
                   }`}
                 >
-                  {Icon && <Icon className={`shrink-0 text-sm ${isActive ? 'text-accent' : 'text-gray-400'}`} />}
+                  {Icon && <Icon className={`shrink-0 text-sm ${isActive ? 'text-accent-fg' : 'text-gray-400'}`} />}
                   {showLabels && <span className="whitespace-nowrap">{tab.label}</span>}
                   {badgeValue !== null && badgeValue !== undefined && (
                     <span
-                      className={`rounded-full px-1.5 py-0.5 font-mono text-[9.5px] font-bold leading-none text-on-accent shadow-xs ${
+                      className={`rounded-full px-1.5 py-0.5 font-mono text-[9.5px] font-bold leading-none text-on-accent shadow-card ${
                         tab.badgeVariant === 'diff'
                           ? 'bg-amber-600'
                           : tab.badgeVariant === 'goal'

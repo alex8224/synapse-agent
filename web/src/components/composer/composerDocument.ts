@@ -19,11 +19,11 @@
  */
 
 /** The four mention kinds the `@` flyout offers, plus the image pill. */
-export type ComposerPillKind = 'file' | 'skill' | 'context' | 'session' | 'image';
+export type ComposerPillKind = 'file' | 'skill' | 'context' | 'session' | 'project' | 'image';
 
 /** One non-image pill: what the `@` flyout inserted. */
 export interface ComposerMentionPill {
-  kind: 'file' | 'skill' | 'context' | 'session';
+  kind: 'file' | 'skill' | 'context' | 'session' | 'project';
   /** Local, DOM-only identity (never sent anywhere). */
   pillId: string;
   /** Canonical token the model receives (`@src/app.py`, `@skill:cua-driver`). */
