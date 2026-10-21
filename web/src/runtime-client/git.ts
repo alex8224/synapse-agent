@@ -242,6 +242,22 @@ export interface GitWorktreeView {
   isMain: boolean;
 }
 
+/**
+ * What `tauri_git_worktree_add` created.
+ *
+ * The shell derives the location from a fixed convention (`<repo>@<branch>` next
+ * to the main checkout), so the console never chooses a path -- it only needs to
+ * learn the one git actually used, because that directory is what it registers
+ * as a project.
+ */
+export interface GitWorktreeAddView {
+  /** Absolute path of the new worktree. */
+  path: string;
+  branch: string;
+  /** True when the call also created the branch, not just the worktree. */
+  createdBranch: boolean;
+}
+
 export interface GitRefsView {
   current: string | null;
   branches: GitBranchView[];
@@ -310,6 +326,7 @@ const BRANCH_KEYS = [
 const TAG_KEYS = ['name', 'target_sha', 'annotated', 'date', 'subject'] as const;
 const STASH_KEYS = ['index', 'name', 'message'] as const;
 const WORKTREE_KEYS = ['path', 'head_sha', 'branch', 'is_main'] as const;
+const WORKTREE_ADD_KEYS = ['path', 'branch', 'created_branch'] as const;
 const REFS_KEYS = ['current', 'branches', 'tags', 'stashes', 'worktrees', 'truncated'] as const;
 const COMMIT_KEYS = ['sha', 'short_sha', 'parents', 'author', 'authored_at', 'subject'] as const;
 const LOG_KEYS = ['rev', 'commits', 'more'] as const;
@@ -418,6 +435,17 @@ export function parseGitRefs(payload: unknown): GitRefsView {
       };
     }),
     truncated: flag(record['truncated'], 'git refs truncated'),
+  };
+}
+
+/** Decode one `tauri_git_worktree_add` result. */
+export function parseGitWorktreeAdd(payload: unknown): GitWorktreeAddView {
+  const record = asRecord(payload, 'git worktree add');
+  exactKeys(record, WORKTREE_ADD_KEYS, 'git worktree add');
+  return {
+    path: text(record['path'], 'git worktree add path'),
+    branch: text(record['branch'], 'git worktree add branch'),
+    createdBranch: flag(record['created_branch'], 'git worktree add created_branch'),
   };
 }
 

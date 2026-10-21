@@ -1,4 +1,4 @@
-import { Bot20Regular, Dismiss20Regular, PuzzlePiece20Regular, Settings20Regular } from '@fluentui/react-icons';
+import { Bot20Regular, Dismiss20Regular, Globe20Regular, PuzzlePiece20Regular, Settings20Regular } from '@fluentui/react-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { CONSOLE_VERSION } from '../consoleInfo.ts';
 import { APPEARANCE_OPTIONS, useAppearanceStore } from '../stores/appearance.ts';
@@ -6,6 +6,7 @@ import { Portal } from './Portal.tsx';
 import { SpeechEngineSection } from './SpeechEngineSection.tsx';
 import { ModelMaintenanceSection } from './ModelMaintenanceSection.tsx';
 import { McpMaintenanceSection } from './McpMaintenanceSection.tsx';
+import { RemoteAccessSection } from './RemoteAccessSection.tsx';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -137,7 +138,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
   // The sidebar's settings button keeps the focus, and the dialog is portalled
   // to the body, so without this the arrows and Tab would walk the console
   // behind it before ever reaching a control inside.
-  const [activeTab, setActiveTab] = useState<'general' | 'models' | 'mcp'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'models' | 'mcp' | 'remote'>('general');
   const onKeyDown = useDialogKeyboardNav(dialogRef, true);
 
   useEffect(() => {
@@ -218,6 +219,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
               <PuzzlePiece20Regular aria-hidden="true" className="shrink-0" />
               <span>MCP 维护</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'remote'}
+              data-selected={activeTab === 'remote'}
+              onClick={() => setActiveTab('remote')}
+              className="ui-nav-row flex items-center gap-2.5 px-3 py-2 text-left font-medium text-gray-700"
+            >
+              <Globe20Regular aria-hidden="true" className="shrink-0" />
+              <span>远程访问</span>
+            </button>
           </div>
 
           <div className="no-scrollbar flex-1 min-w-0 overflow-y-auto pr-1">
@@ -229,6 +241,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
         ) : activeTab === 'mcp' ? (
           <div className="pt-1">
             <McpMaintenanceSection />
+          </div>
+        ) : activeTab === 'remote' ? (
+          <div className="pt-1">
+            <RemoteAccessSection />
           </div>
         ) : (
           <>

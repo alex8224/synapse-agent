@@ -14,6 +14,7 @@ import {
   isTaskTitleValid,
   parseTaskLabels,
   planTaskArrange,
+  formatTaskExecutionPrompt,
   STATUS_LABELS,
   PRIORITY_LABELS,
   taskDraftChanges,
@@ -254,4 +255,22 @@ test('an opening snapshot yields only user edits, not stale fields from a refres
   assert.equal(afterSave.description, refreshed.description);
   assert.equal(afterSave.status, 'blocked');
   assert.equal(afterSave.assigned_thread_id, 'new-session');
+});
+
+test('formatTaskExecutionPrompt formats title, description, and labels into a structured prompt', () => {
+  const prompt = formatTaskExecutionPrompt({
+    title: '实现会话执行',
+    description: '自动填入提示词并一键执行',
+    labels: ['ui', 'feature'],
+  });
+  assert.ok(prompt.includes('请开始执行项目待办任务：【实现会话执行】'));
+  assert.ok(prompt.includes('任务描述：\n自动填入提示词并一键执行'));
+  assert.ok(prompt.includes('任务标签：ui, feature'));
+});
+
+test('formatTaskExecutionPrompt omits empty description and labels cleanly', () => {
+  const prompt = formatTaskExecutionPrompt({
+    title: '简单任务',
+  });
+  assert.equal(prompt, '请开始执行项目待办任务：【简单任务】\n\n请根据以上需求分析、规划并执行任务，完成相关修改与验证。');
 });

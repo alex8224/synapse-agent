@@ -594,7 +594,7 @@ export function reduceRuntimeEvent(
     const id = `collaboration-${messageId}`;
     if (!state.messages.some((message) => message.id === id)) {
       next.messages = [...state.messages, {
-        id, type: 'info', timestamp: stamp, turnId, content: asText(payload.text),
+        id, type: 'collaboration', timestamp: stamp, turnId, content: asText(payload.text),
         infoLevel: 'info', work: { startedAt: at, ended: false },
       }];
     }

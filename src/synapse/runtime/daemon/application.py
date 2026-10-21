@@ -9,7 +9,7 @@ import inspect
 import logging
 import os
 import signal
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from typing import Any
 
@@ -132,6 +132,7 @@ def apply_mcp_rebinding(
     enabled: bool | None,
     include_tools: tuple[str, ...] | None,
     binding: Any,
+    extra_tools: Iterable[Any] | None = None,
 ) -> tuple[Any, Any]:
     """Apply one MCP session action and rebuild that session's agent graph.
 
@@ -139,6 +140,10 @@ def apply_mcp_rebinding(
     without writing any config, reusing the live connection when one exists.  A
     flag/whitelist write releases the pool first, so the new config is honoured
     by a fresh connection instead of the cached tool list.
+
+    ``extra_tools`` carries the tools the daemon injects into every graph of a
+    project (the collaboration tools). A rebind builds a brand-new graph, so
+    they have to be handed over again or the session silently loses them.
 
     The rebuilt agent also carries ``_coding_mcp_server_states`` (configured
     selection + discovered/loaded tools per server) for the runtime service to
@@ -191,6 +196,7 @@ def apply_mcp_rebinding(
             load_mcp=False,
             prompt_cache_key=lambda: thread_id,
             mcp_pool_key=pool_key,
+            extra_tools=extra_tools,
         )
     else:
         agent = build_coding_agent(
@@ -199,6 +205,7 @@ def apply_mcp_rebinding(
             load_mcp=True,
             prompt_cache_key=lambda: thread_id,
             mcp_pool_key=pool_key,
+            extra_tools=extra_tools,
         )
     active = tuple(getattr(agent, "_coding_mcp_servers", ()) or ())
     pool = registry.get(pool_key)
@@ -409,6 +416,7 @@ class RuntimeDaemon:
                 enabled=enabled,
                 include_tools=include_tools,
                 binding=binding,
+                extra_tools=self._collaboration_tools(descriptor.project_id) or None,
             )
 
         def build_thinking_rebinding(
@@ -899,12 +907,28 @@ class RuntimeDaemon:
         """The collaboration tools for one project's agent, or none."""
         coordinator = self.collaboration
         if coordinator is None:
+            # Named, not silent: a session without contact_session has to be
+            # explainable from the log alone, and "the coordinator never
+            # started" is a different problem from "building the tools failed".
+            _LOGGER.warning(
+                "collaboration tools unavailable for project %s: "
+                "coordinator not started",
+                project_id,
+            )
             return []
         try:
             from synapse.runtime.collaboration.tools import build_collaboration_tools
 
             return build_collaboration_tools(coordinator, source_project=project_id)
-        except Exception:  # noqa: BLE001 - a tool import must not block the agent
+        except Exception as exc:  # noqa: BLE001 - a tool import must not block the agent
+            # Degradation boundary: the agent still runs, but this session
+            # cannot reach another session, so the reason must be recorded.
+            _LOGGER.warning(
+                "collaboration tools unavailable for project %s: %s: %s",
+                project_id,
+                type(exc).__name__,
+                exc,
+            )
             return []
 
     def _cancel_collaboration_turn(self, ref: SessionRef, turn_id: str) -> bool:

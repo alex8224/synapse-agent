@@ -59,6 +59,43 @@ def test_default_prompt_describes_search_glob_as_include_filter(
     assert "exclude common build artifacts and caches via `glob`" not in prompt
 
 
+def test_session_tool_prompt_routes_mentions_to_contact_session() -> None:
+    from synapse.content.prompts import session_tool_prompt
+
+    text = session_tool_prompt()
+
+    assert "only reach the current project's sessions" in text
+    assert "`@session:<project_id>:<thread_id>` mention" in text
+    assert "call `contact_session` with that" in text
+    assert "instead of substituting `read_session`" in text
+
+
+def test_session_tool_prompt_middleware_survives_a_custom_prompt() -> None:
+    from synapse.runtime.session_tool_prompt_middleware import (
+        build_session_tool_prompt_middleware,
+    )
+
+    class _Request:
+        def __init__(self, system_message: SystemMessage) -> None:
+            self.system_message = system_message
+
+        def override(self, **changes):  # noqa: ANN003
+            return _Request(changes.get("system_message", self.system_message))
+
+    middleware = build_session_tool_prompt_middleware()
+    request = _Request(SystemMessage(content="my own prompt"))
+
+    updated = middleware.wrap_model_call(request, lambda current: current)
+    text = "\n".join(
+        str(block.get("text", ""))
+        for block in updated.system_message.content_blocks
+        if isinstance(block, dict)
+    )
+
+    assert text.startswith("my own prompt")
+    assert "call `contact_session` with that" in text
+
+
 def test_default_prompt_matches_active_filesystem_tools(tmp_path: Path, monkeypatch) -> None:
     from synapse.content import prompts as prompts_mod
 

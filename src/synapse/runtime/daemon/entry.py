@@ -15,7 +15,14 @@ from synapse.runtime.daemon.config import DaemonConfig, ensure_directory
 
 
 def _configure_error_log(state_dir: Path) -> RotatingFileHandler:
-    """Persist bounded daemon errors even when launched without a console."""
+    """Persist bounded daemon warnings and errors without a console.
+
+    A GUI-launched daemon has no reachable stdout/stderr, so this file is the
+    only durable channel. ``WARNING`` is included because the runtime reports
+    *degradations* (a disabled capability, a refused cross-project target) at
+    that level: filtering them out left a session missing a tool with no
+    evidence anywhere.
+    """
     ensure_directory(state_dir)
     log_path = state_dir / "errors.log"
     if log_path.is_symlink():
@@ -25,7 +32,7 @@ def _configure_error_log(state_dir: Path) -> RotatingFileHandler:
     )
     if os.name != "nt":
         log_path.chmod(0o600)
-    handler.setLevel(logging.ERROR)
+    handler.setLevel(logging.WARNING)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logger = logging.getLogger("synapse.runtime.codex_usage")
     logger.addHandler(handler)

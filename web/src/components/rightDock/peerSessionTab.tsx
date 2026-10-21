@@ -19,6 +19,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { useRightDockStore } from '../../stores/useRightDockStore.ts';
 import { collaborationView, resolveCollaborationPeer } from '../../stores/collaborationView.ts';
+import { Markdown } from '../Markdown.tsx';
 import type { HistoryEvent } from '../../runtime-client/types.ts';
 import { RpcCallError } from '../../runtime-client/SynapseRuntimeClient.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
@@ -225,9 +226,9 @@ export const PeerSessionContent: React.FC<{ context: RightDockContext }> = () =>
               {events.map((event, index) => (
                 <li key={`${event.kind}-${index}`} className="text-xs">
                   <div className="text-[11px] text-gray-500">{eventLabel(event.kind)}</div>
-                  <p className="mt-0.5 whitespace-pre-wrap break-words text-gray-700">
-                    {event.text}
-                  </p>
+                  <div className="mt-0.5 break-words min-w-0 text-gray-700">
+                    <Markdown text={event.text} />
+                  </div>
                 </li>
               ))}
             </ul>

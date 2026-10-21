@@ -145,6 +145,9 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
     from synapse.runtime.session_header_middleware import (
         build_session_header_middleware,
     )
+    from synapse.runtime.session_tool_prompt_middleware import (
+        build_session_tool_prompt_middleware,
+    )
 
     settings = context.settings
     middleware: list[Any] = [
@@ -156,6 +159,9 @@ def build_agent_middleware(context: MiddlewareContext) -> list[Any]:
         build_image_window_middleware(model=context.model),
         build_agent_md_middleware(context.project_root),
         build_filesystem_tool_prompt_middleware(context.model_request_excluded_tools),
+        # Session tools are project-scoped while `@session:` names any project:
+        # the routing rule has to outlive a user-authored system_prompt.md.
+        build_session_tool_prompt_middleware(),
         build_describe_image_middleware(
             image_input=context.primary_image_input,
             config=context.vision_config,

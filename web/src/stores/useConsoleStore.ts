@@ -105,6 +105,7 @@ import {
   displaySessionTitle,
   isPlaceholderSessionTitle,
   normalizeSessionTitle,
+  sameWorkspacePath,
   sessionTitleFrom,
 } from './sessionList.ts';
 import {
@@ -114,7 +115,7 @@ import {
   parseSessionGoalResult,
 } from './goalView.ts';
 import type { SessionGoalView } from './goalView.ts';
-import { planTaskArrange } from './taskView.ts';
+import { planTaskArrange, formatTaskExecutionPrompt } from './taskView.ts';
 import type { ProjectTaskView, TaskArrangeMode, TaskArrangeResult } from './taskView.ts';
 import type { ArtifactPageView } from '../runtime-client/artifacts.ts';
 
@@ -805,6 +806,13 @@ interface ConsoleStore {
    */
   addProject: (workspacePath: string) => Promise<string | null>;
   /**
+   * Open an already-existing workspace directory: switch to the project that
+   * owns it when the console has one, else register it first (a git worktree the
+   * shell just created is the second case).  Resolves ``null`` on success, else
+   * the user-facing reason.
+   */
+  openWorkspaceProject: (workspacePath: string) => Promise<string | null>;
+  /**
    * List one host directory's immediate sub-directories for the "add project"
    * picker (``runtime.fs.list``).  Rejects when the runtime is not ready or the
    * listing fails; the dialog surfaces the reason.
@@ -1040,6 +1048,8 @@ interface ConsoleStore {
     tasks: readonly ProjectTaskView[],
     mode: TaskArrangeMode,
   ) => Promise<TaskArrangeResult>;
+  /** Launch execution for a project task directly. */
+  executeTask: (task: ProjectTaskView) => Promise<boolean>;
 
   // Timeline Transcript
   messages: TranscriptMessage[];
@@ -2863,6 +2873,12 @@ async function loadInitialHistory(epoch: number): Promise<void> {
     } else {
       // No transcript projection: show an explicit unavailable state instead of
       // pretending the conversation is empty; never fall back to a checkpoint.
+      const isNewSession =
+        store.getState().activeTurnId === null &&
+        (store.getState().sessionUsage === null ||
+          ((store.getState().sessionUsage?.input ?? 0) === 0 &&
+            (store.getState().sessionUsage?.output ?? 0) === 0)) &&
+        store.getState().messages.length === 0;
       store.setState({
         messages: store.getState().activeTurnId ? restoreTranscriptViews([{
           id: `work-${store.getState().activeTurnId}`, type: 'info', timestamp: '',
@@ -2870,7 +2886,7 @@ async function loadInitialHistory(epoch: number): Promise<void> {
           work: { ended: false },
         }], readTranscriptViews(currentSession)) : [],
         historyLoading: false,
-        historyAvailable: false,
+        historyAvailable: isNewSession ? null : false,
         historyError: null,
         historyHasMore: false,
         historyStartTurn: 0,
@@ -3890,6 +3906,110 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     if (stale()) return { bound: 0, sessions: [] };
     return { bound, sessions };
   },
+  executeTask: async (task) => {
+    const client = requireRuntimeClient();
+    const { activeProjectId, currentSession } = get();
+    if (!client || activeProjectId === '') return false;
+
+    const projectId = activeProjectId;
+    const epoch = authEpoch;
+    const scope = projectTasksScope;
+    const stale = () => !projectTasksScopeCurrent(scope, client, projectId, epoch);
+
+    let threadId = task.assigned_thread_id;
+    if (!threadId) {
+      const created = await client
+        .createSession({ project_id: projectId, title: task.title })
+        .catch((err: unknown) => {
+          if (stale()) return null;
+          console.error('Failed to create session for task execution:', err);
+          set({ projectTasksError: describeError(err) || '创建执行会话失败' });
+          return null;
+        });
+      if (stale() || created === null) return false;
+      threadId = created.session.thread_id;
+    }
+
+    if (task.assigned_thread_id !== threadId || task.status !== 'in_progress') {
+      const ok = await get().updateProjectTask(task.id, {
+        status: 'in_progress',
+        assignedThreadId: threadId,
+      });
+      if (stale() || !ok) return false;
+    }
+
+    const prompt = formatTaskExecutionPrompt(task);
+    const targetSession: SessionRef = { project_id: projectId, thread_id: threadId };
+
+    if (currentSession.project_id === projectId && currentSession.thread_id === threadId) {
+      return await get().submitPrompt(prompt);
+    }
+
+    try {
+      const opened = await client.openSession(targetSession);
+      if (stale()) return false;
+      const latestSequence = opened.view?.latest_sequence ?? 0;
+      const watch = await client.watchEvents(targetSession, latestSequence);
+      if (stale()) {
+        void client.unwatchEvents(watch.subscription_id);
+        return false;
+      }
+
+      const targetKey = sessionKey(targetSession);
+      const userMessage: TranscriptMessage = {
+        id: `user-${Date.now()}`,
+        type: 'user',
+        timestamp: new Date().toISOString(),
+        content: prompt,
+      };
+      const bgView: BackgroundSessionView = {
+        subscriptionId: watch.subscription_id,
+        messages: [userMessage],
+        settledTurnIds: [],
+        activeTurnId: null,
+        runtimeStatus: 'running',
+        steerQueueCount: 0,
+        pendingApproval: null,
+        activity: null,
+        usage: null,
+        metricsLabel: '',
+        sessionUsage: parseSessionUsage(opened.view?.usage),
+        modelName: opened.view?.active_model || opened.view?.model || get().modelName,
+        historyAvailable: true,
+        historyHasMore: false,
+        historyStartTurn: 0,
+        historyEndTurn: 0,
+        historyTotalTurns: 0,
+        historyError: null,
+        recoveryState: 'idle',
+        recoveryDetail: null,
+        liveBufferDroppedCount: 0,
+        liveEpoch: lastLiveEpoch,
+        touchedAt: Date.now(),
+      };
+
+      set((s) => ({
+        backgroundViews: {
+          ...s.backgroundViews,
+          [targetKey]: bgView,
+        },
+      }));
+
+      await client.submitTurn({
+        session: targetSession,
+        text: prompt,
+      });
+
+      await get().fetchSessions();
+      return true;
+    } catch (err) {
+      console.error('Failed to submit task execution turn:', err);
+      if (!stale()) {
+        set({ projectTasksError: describeError(err) || '启动待办执行失败' });
+      }
+      return false;
+    }
+  },
   requestSessionSearchFocus: () =>
     set((s) => ({ searchFocusToken: s.searchFocusToken + 1, isSidebarCollapsed: false })),
   loadProjects: async () => {
@@ -3985,6 +4105,25 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       console.warn('Failed to add project:', err);
       return describeError(err);
     }
+  },
+  openWorkspaceProject: async (workspacePath) => {
+    // Two ways in, one decision: an already-registered directory is switched to
+    // (attaching its first session, or creating one when it has none), while a
+    // directory the console has never seen is registered first.  A git worktree
+    // the desktop shell just created is the second case; coming back to it later
+    // is the first, so re-opening a worktree never forks a second project.
+    const existing = get().projects.find((project) =>
+      sameWorkspacePath(project.workspace_path, workspacePath),
+    );
+    if (existing !== undefined) {
+      await get().switchProject(existing.project_id);
+      // `switchProject` returns silently when a newer switch won or the runtime
+      // is not ready, so the outcome is read back rather than assumed: the caller
+      // closes its menu on success and must not close it on a no-op.
+      if (get().activeProjectId !== existing.project_id) return '未能切换到该项目';
+      return null;
+    }
+    return get().addProject(workspacePath);
   },
   listDirectories: async (path) => {
     const client = requireRuntimeClient();

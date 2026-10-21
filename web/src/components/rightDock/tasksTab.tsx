@@ -41,6 +41,7 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from '../../stores/taskView.ts';
+import { sessionKey } from '../../stores/sessionViews.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import type { RightDockContext, RightDockTabDefinition } from './contract.ts';
 
@@ -73,6 +74,10 @@ export const TasksContent: React.FC<{ context: RightDockContext }> = () => {
     deleteProjectTask,
     arrangeTasks,
     switchSession,
+    executeTask,
+    backgroundViews,
+    currentSession,
+    runtimeStatus,
   } = useConsoleStore(
     useShallow((state) => ({
       activeProjectId: state.activeProjectId,
@@ -87,6 +92,10 @@ export const TasksContent: React.FC<{ context: RightDockContext }> = () => {
       deleteProjectTask: state.deleteProjectTask,
       arrangeTasks: state.arrangeTasks,
       switchSession: state.switchSession,
+      executeTask: state.executeTask,
+      backgroundViews: state.backgroundViews,
+      currentSession: state.currentSession,
+      runtimeStatus: state.runtimeStatus,
     })),
   );
 
@@ -383,6 +392,54 @@ export const TasksContent: React.FC<{ context: RightDockContext }> = () => {
     if (task.assigned_thread_id) void switchSession(task.assigned_thread_id);
   };
 
+  const isSessionRunning = (threadId: string | null) => {
+    if (!threadId) return false;
+    if (currentSession.project_id === activeProjectId && currentSession.thread_id === threadId && runtimeStatus === 'running') {
+      return true;
+    }
+    const bg = backgroundViews[sessionKey({ project_id: activeProjectId, thread_id: threadId })];
+    return bg?.runtimeStatus === 'running';
+  };
+
+  const handleExecute = async (task: ProjectTaskView) => {
+    if (busyTaskId !== null || arranging) return;
+    const generation = lifecycleRef.current;
+    const scope = currentBoardScope();
+    setBusyTaskId(task.id);
+    setNotice(null);
+    try {
+      const ok = await executeTask(task);
+      if (!scopeCurrent(generation, scope)) return;
+      if (ok) {
+        setNotice(`已启动待办「${task.title}」的执行会话（后台运行中）`);
+      }
+    } finally {
+      if (generation === lifecycleRef.current) setBusyTaskId(null);
+    }
+  };
+
+  const handleBatchExecute = async (tasks: readonly ProjectTaskView[]) => {
+    if (tasks.length === 0 || busyTaskId !== null || arranging) return;
+    const generation = lifecycleRef.current;
+    const scope = currentBoardScope();
+    setBusyTaskId('batch');
+    setNotice(null);
+    let count = 0;
+    try {
+      for (const task of tasks) {
+        if (!scopeCurrent(generation, scope)) return;
+        const ok = await executeTask(task);
+        if (ok) count += 1;
+      }
+      if (scopeCurrent(generation, scope)) {
+        setNotice(`已批量启动 ${count} 项待办的执行会话（后台运行中）`);
+        setSelectedIds(new Set());
+      }
+    } finally {
+      if (generation === lifecycleRef.current) setBusyTaskId(null);
+    }
+  };
+
   const handleBatchStatus = async (status: TaskStatus) => {
     const targets = projectTasks.filter((task) => selectedIds.has(task.id));
     if (targets.length === 0) return;
@@ -660,6 +717,15 @@ export const TasksContent: React.FC<{ context: RightDockContext }> = () => {
             >
               每项并行会话
             </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void handleBatchExecute(selectedTasks)}
+              title="为选中的待办直接一键启动执行会话（生成提示词并在后台开始运行）"
+              className="ui-button ui-compact text-[11px]"
+            >
+              批量执行
+            </button>
             {/*
               四个状态都可达，但不堆四个按钮挤爆卡片：一个原生 select 选择目标，
               再由「应用」提交。选择本身不发 RPC，所以误选不会写任何东西。
@@ -841,25 +907,37 @@ export const TasksContent: React.FC<{ context: RightDockContext }> = () => {
                       同样不会自动执行，也不会把当前会话切走。
                     */}
                     {task.assigned_thread_id ? (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenSession(task)}
-                        title="打开该待办所在的会话（仅切换视图，不会自动执行）"
-                        className="flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 font-medium text-accent-fg hover:bg-accent/20 transition"
-                      >
-                        <ArrowCircleRight16Regular className="text-xs" />
-                        <span>前往会话</span>
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleExecute(task)}
+                          disabled={busy || isSessionRunning(task.assigned_thread_id)}
+                          title={isSessionRunning(task.assigned_thread_id) ? "该待办关联的会话正在运行中" : "在关联会话中一键开始执行该待办（后台运行）"}
+                          className="flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 font-medium text-accent-fg hover:bg-accent/20 transition disabled:opacity-50"
+                        >
+                          <Play16Regular className="text-xs" />
+                          <span>{isSessionRunning(task.assigned_thread_id) ? '执行中' : '执行'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenSession(task)}
+                          title="打开该待办所在的会话（仅切换视图）"
+                          className="flex items-center gap-1 rounded bg-surface px-2 py-0.5 font-medium text-gray-700 border border-line/60 hover:bg-surface-hover transition"
+                        >
+                          <ArrowCircleRight16Regular className="text-xs" />
+                          <span>前往会话</span>
+                        </button>
+                      </div>
                     ) : (
                       <button
                         type="button"
-                        onClick={() => void handleArrange([task], 'parallel')}
+                        onClick={() => void handleExecute(task)}
                         disabled={busy}
-                        title="为该待办准备一个后台会话并绑定（不会自动执行，也不会切换当前会话）"
+                        title="为该待办创建会话并直接一键开始执行（生成结构化提示词并在后台开始运行）"
                         className="flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 font-medium text-accent-fg hover:bg-accent/20 transition"
                       >
                         <Play16Regular className="text-xs" />
-                        <span>安排会话</span>
+                        <span>执行待办</span>
                       </button>
                     )}
                   </div>

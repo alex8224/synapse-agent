@@ -75,8 +75,8 @@ test('the change statistics hang off the branch chip', () => {
     'the statistics must follow the branch name they describe',
   );
   assert.ok(
-    chip.includes('refreshAndOpenExplorer'),
-    'the statistics chip must refresh and open the explorer',
+    chip.includes('setBranchMenuOpen'),
+    'the chip must open the branch/worktree menu the statistics describe',
   );
   assert.ok(chip.includes('+{insertions}'), 'the added lines render as +N');
   assert.ok(chip.includes('-{deletions}'), 'the removed lines render as -M');
@@ -182,22 +182,28 @@ test('the sidebar keeps its actions and the header owns the session info', () =>
   );
 });
 
-test('the combined branch and statistics chip opens the git explorer', () => {
-  const opens = source.match(/onClick=\{refreshAndOpenExplorer\}/g) ?? [];
-  assert.equal(opens.length, 1, 'the combined chip must call the refresh-and-open handler');
-  assert.ok(source.includes('openGitExplorer()'), 'the handler must open the explorer');
+test('the combined branch and statistics chip opens the branch menu', () => {
+  // The chip is the branch context and the console's only write surface, so it
+  // opens the branch/worktree menu; the menu carries the read-only explorer entry
+  // and is what re-reads `runtime.git.status` before acting on a branch.
+  const opens = source.match(/onClick=\{\(\) => setBranchMenuOpen/g) ?? [];
+  assert.equal(opens.length, 1, 'the combined chip must toggle the branch menu');
+  assert.ok(source.includes('<BranchMenu'), 'the menu must be rendered from the header');
   assert.ok(
-    /refreshAndOpenExplorer[\s\S]*?loadGitStatus\(\)/.test(source),
-    'the handler must re-read runtime.git.status before opening',
+    /branchMenuOpen && \(\s*<BranchMenu anchor=\{branchAnchor\}/.test(source),
+    'the menu must hang from the chip that opened it',
   );
+  const menu = readFileSync(join(here, '..', 'src', 'components', 'BranchMenu.tsx'), 'utf8');
+  assert.ok(menu.includes('openGitExplorer()'), 'the menu must reach the explorer');
+  assert.ok(menu.includes('loadGitStatus()'), 'the menu must re-read runtime.git.status');
   const branch = source.slice(
     source.indexOf("gitBranch !== ''"),
     source.indexOf('{/* Centre track'),
   );
   assert.ok(branch.includes('<button'), 'the branch chip must be a button, not a div');
   assert.ok(
-    branch.includes('refreshAndOpenExplorer'),
-    'the branch chip must refresh and open the explorer',
+    branch.includes('setBranchMenuOpen'),
+    'the branch chip must open the branch menu',
   );
   // Statistics share the branch button rather than adding another narrow-screen control.
   assert.ok(
@@ -228,5 +234,9 @@ test('a narrow window drops the secondary chip, not the title or the branch', ()
     source.indexOf("gitBranch !== ''"),
     source.indexOf('{/* Centre track'),
   );
-  assert.equal(/\bhidden\b/.test(classNamesOf('onClick={refreshAndOpenExplorer}')), false, 'the branch button must stay visible');
+  assert.equal(
+    /\bhidden\b/.test(classNamesOf('onClick={() => setBranchMenuOpen')),
+    false,
+    'the branch button must stay visible',
+  );
 });

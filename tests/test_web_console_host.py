@@ -2112,6 +2112,12 @@ def test_relay_scope_guard_reads_only_the_whitelisted_project_positions() -> Non
                 "ref": {"session": {"project_id": other, "thread_id": "t-1"}, "path": "a.txt"}
             },
         },
+        "source.project_id": {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "runtime.session.fork",
+            "params": {"source": {"project_id": other, "thread_id": "t-1"}},
+        },
     }
     # The whitelist is exhaustive for the frozen protocol, not a sample of it.
     assert set(cross_project) == set(SCOPE_PROJECT_POSITIONS)
@@ -2124,7 +2130,7 @@ def test_relay_scope_guard_reads_only_the_whitelisted_project_positions() -> Non
         assert error["data"]["service_code"] == SCOPE_REJECTION_SERVICE_CODE, position
         # The typed rejection never echoes the other project's identity.
         assert other not in rejection, position
-    assert guard.rejected == 3
+    assert guard.rejected == 4
 
     accepted = (
         # The console's own project.
@@ -2155,7 +2161,7 @@ def test_relay_scope_guard_reads_only_the_whitelisted_project_positions() -> Non
     # Unreadable frames are forwarded (the daemon stays the validity authority).
     for payload in ("", "not json", "[]", json.dumps({"jsonrpc": "2.0", "id": None})):
         assert guard.rejection(payload) is None, payload
-    assert guard.rejected == 3
+    assert guard.rejected == 4
 
 
 def test_relay_rejects_another_project_before_it_reaches_the_daemon(tmp_path: Path) -> None:

@@ -745,6 +745,11 @@ def build_coding_agent(
     )
     agent._coding_mcp_scope_key = mcp_pool_key  # type: ignore[attr-defined]
     agent._coding_steer_queue = steer_queue  # type: ignore[attr-defined]
+    # Rebuild paths (model/MCP rebind) build a fresh graph; without this
+    # snapshot they silently drop injected tools such as ``contact_session``,
+    # which is how a daemon session lost the collaboration tools after an MCP
+    # attach.
+    agent._coding_extra_tools = list(extra_tools or [])  # type: ignore[attr-defined]
     # Codex OAuth prompt-cache key provider; inherited by cheap rebuilds so
     # session-scoped cache keys survive model/MCP switches.
     agent._coding_prompt_cache_key = prompt_cache_key  # type: ignore[attr-defined]
@@ -854,6 +859,7 @@ def rebuild_coding_agent(
         steer_queue=steer_queue,
         progress=progress,
         prompt_cache_key=prompt_cache_key,
+        extra_tools=getattr(agent, "_coding_extra_tools", None) or None,
     )
 
 
@@ -885,6 +891,7 @@ def attach_mcp_to_agent(
         load_mcp=pool is None,
         steer_queue=steer_queue,
         prompt_cache_key=prompt_cache_key,
+        extra_tools=getattr(agent, "_coding_extra_tools", None) or None,
     )
 
 

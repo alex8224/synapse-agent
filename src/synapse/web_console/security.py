@@ -108,12 +108,22 @@ def normalize_origin(value: str) -> str | None:
     return format_origin(host, port)
 
 
-def origin_allowed(origin: str | None, *, bound_port: int) -> bool:
-    """True when ``Origin`` is exactly one of the effective host origins."""
+def origin_allowed(
+    origin: str | None, *, bound_port: int, allow_remote: bool = False
+) -> bool:
+    """True when ``Origin`` is an effective host origin (or matches bound port in remote mode)."""
     if not isinstance(origin, str):
         return False
     normalized = normalize_origin(origin)
-    return normalized is not None and normalized in allowed_origins(bound_port)
+    if normalized is None:
+        return False
+    if normalized in allowed_origins(bound_port):
+        return True
+    if allow_remote:
+        parsed = urlsplit(normalized)
+        if parsed.scheme.lower() in ("http", "https") and parsed.port == bound_port:
+            return True
+    return False
 
 
 def parse_host_header(value: str | None) -> tuple[str, int | None] | None:
@@ -152,8 +162,10 @@ def parse_host_header(value: str | None) -> tuple[str, int | None] | None:
     return name.lower(), port
 
 
-def host_allowed(host_header: str | None, *, bound_port: int) -> bool:
-    """True when ``Host`` names a loopback host and, if present, the bound port.
+def host_allowed(
+    host_header: str | None, *, bound_port: int, allow_remote: bool = False
+) -> bool:
+    """True when ``Host`` names an allowed host and, if present, the bound port.
 
     A missing port is accepted so plain ``curl``/``Host: 127.0.0.1`` still works;
     a *wrong* port is not (DNS-rebinding and port-confusion defence).
@@ -162,7 +174,7 @@ def host_allowed(host_header: str | None, *, bound_port: int) -> bool:
     if parsed is None:
         return False
     name, port = parsed
-    if name not in LOOPBACK_HOSTS:
+    if not allow_remote and name not in LOOPBACK_HOSTS:
         return False
     return port is None or port == bound_port
 

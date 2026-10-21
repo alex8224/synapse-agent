@@ -17,6 +17,22 @@ export type SessionGroupKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'olde
 export const SESSION_TITLE_MAX = 120;
 
 /**
+ * A workspace path folded for comparison: separators unified, no trailing one.
+ *
+ * The catalog stores `resolve()`d paths, while a path the desktop shell just
+ * produced (a worktree it created) arrives with whatever separators and case the
+ * OS used, so callers compare folded values instead of byte-equal ones.
+ */
+export function normalizeWorkspacePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/** Whether two workspace paths name the same directory. */
+export function sameWorkspacePath(left: string, right: string): boolean {
+  return normalizeWorkspacePath(left) === normalizeWorkspacePath(right);
+}
+
+/**
  * Trim a user-entered session title.
  *
  * Returns `null` when the server would reject it (blank or longer than

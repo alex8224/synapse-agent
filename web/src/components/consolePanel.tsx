@@ -26,13 +26,19 @@ export const ConsolePanel: React.FC<{
   onClose: () => void;
   side?: 'top' | 'bottom';
   align?: 'start' | 'end' | 'center';
+  /**
+   * The panel's own element, for a caller that has to tell a click inside the
+   * panel from one outside it (a menu dismisses itself on the latter).
+   */
+  panelRef?: React.Ref<HTMLDivElement>;
   children: React.ReactNode;
-}> = ({ title, anchor, onClose, side = 'top', align = 'start', children }) => (
+}> = ({ title, anchor, onClose, side = 'top', align = 'start', panelRef, children }) => (
   <FloatingPanel
     anchor={anchor}
     label={title}
     side={side}
     align={align}
+    panelRef={panelRef}
     className="w-96 max-w-[calc(100vw-2rem)] rounded-card border border-line/80 material-flyout flyout-in p-3.5 text-left shadow-flyout"
   >
     <div className="mb-2.5 flex items-center justify-between border-b border-line/60 pb-2">

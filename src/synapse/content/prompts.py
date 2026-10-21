@@ -289,6 +289,27 @@ def load_coding_system_prompt(
     return DEFAULT_CODING_SYSTEM_PROMPT.strip()
 
 
+def session_tool_prompt() -> str:
+    """Authoritative routing for `@session:` references and the session tools.
+
+    Appended as an always-on section by
+    ``synapse.runtime.session_tool_prompt_middleware`` rather than written into
+    ``DEFAULT_CODING_SYSTEM_PROMPT``: an external ``system_prompt.md`` replaces
+    the built-in body wholesale, so a rule that only lived there would never
+    reach a user who has their own prompt file.
+    """
+    return (
+        "`search_session` and `read_session` only reach the current project's sessions.\n"
+        "An `@session:<project_id>:<thread_id>` mention names one specific session, which\n"
+        "may belong to another project: when the user wants that session to do something\n"
+        "(ask it, delegate to it, get its summary), call `contact_session` with that\n"
+        "reference and do not poll. Use `read_session` only to read or compare stored\n"
+        "history, and never pass a `<project_id>:<thread_id>` reference to it. If\n"
+        "`contact_session` is not in the tool list, say that this session cannot reach the\n"
+        "other one instead of substituting `read_session`.\n"
+    )
+
+
 def filesystem_tool_prompt(
     excluded_tools: Iterable[str] | None = None,
     *,

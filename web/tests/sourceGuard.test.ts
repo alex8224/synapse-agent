@@ -63,6 +63,7 @@ const storageExempt = new Set([
   join(webRoot, 'src', 'stores', 'appearance.ts'),
   join(webRoot, 'src', 'stores', 'usagePrefs.ts'),
   join(webRoot, 'src', 'stores', 'lastProject.ts'),
+  join(webRoot, 'src', 'client', 'remoteAccess.ts'),
 ]);
 
 const forbidden: Array<{ name: string; pattern: RegExp }> = [

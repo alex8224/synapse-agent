@@ -31,6 +31,7 @@ import { CodeBlock } from '../CodeBlock.tsx';
 import { Markdown } from '../Markdown.tsx';
 import { TerminalOutput } from '../TerminalOutput.tsx';
 import { FoldStatusPill } from './FoldStatusPill.tsx';
+import { OutgoingCollaborationCard } from './CollaborationRow.tsx';
 import type { RowRenderProps } from './context.ts';
 import { updateSpotlight } from './spotlight.ts';
 
@@ -74,6 +75,14 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
    * rows, so what ran is on screen without opening a group first.
    */
   const renderToolRow = (t: ToolItemView, nested = false) => {
+    if (t.name === 'contact_session' || t.name === 'reply_to_collaboration') {
+      return (
+        <div key={t.id} className="my-1">
+          <OutgoingCollaborationCard tool={t} />
+        </div>
+      );
+    }
+
     // A live batch first identifies a call by call_id and later replaces it with the
     // item_id from tool_started.  Prefer call_id so the local fold does not close
     // while that lifecycle update arrives.

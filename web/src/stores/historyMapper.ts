@@ -147,7 +147,7 @@ export function markRevertedPath(
 
 export interface TranscriptMessage {
   id: string;
-  type: 'user' | 'thought' | 'tool_group' | 'assistant' | 'info' | 'changes';
+  type: 'user' | 'thought' | 'tool_group' | 'assistant' | 'info' | 'changes' | 'collaboration';
   timestamp: string;
   /** Runtime turn identity, or a stable history cursor for legacy projections. */
   turnId?: string;
@@ -374,7 +374,7 @@ export function mapHistoryEvents(
       if (content || attachments.length > 0) {
         out.push({
           id: ev.collaboration ? `collaboration-${ev.collaboration.message_id}` : `hist-u-${tag}`,
-          type: ev.collaboration ? 'info' : 'user',
+          type: ev.collaboration ? 'collaboration' : 'user',
           timestamp: `Turn ${turn}`,
           turnId,
           work: {

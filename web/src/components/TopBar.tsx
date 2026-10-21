@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel } from '../stores/sessionList.ts';
+import { BranchMenu } from './BranchMenu.tsx';
 import { GitExplorer } from './GitExplorer.tsx';
 import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 import { TauriWindowControls } from './TauriWindowControls.tsx';
@@ -18,10 +19,12 @@ import { useRightDockStore } from '../stores/useRightDockStore.ts';
  * chips on either side; the tracks are separate cells, so a narrow window never
  * overlaps the title with them (the secondary project chip drops first).  The
  * left track carries identity (sidebar toggle, project, branch), the right track
- * the change statistics.  The branch chip and the statistics chip both re-read
- * `runtime.git.status` and then open the read-only git explorer, so the explorer
- * stays reachable even before
- * `runtime.git.status` has been read.  The workspace path moved to the sidebar's
+ * the change statistics.  The branch chip and the statistics share one button:
+ * it opens the branch/worktree menu, which re-reads `runtime.git.status` and
+ * `tauri_git_refs` on open and whose last row opens the read-only git explorer --
+ * so the explorer stays reachable even before `runtime.git.status` has been
+ * read, and the console's only git writes sit next to the branch they act on.
+ * The workspace path moved to the sidebar's
  * identity row, the workspace files, runtime diagnostics and logout live with the
  * settings entry there, and the telemetry lives in the status strip under the
  * composer.  The session info opens from the title itself: the title is the
@@ -46,7 +49,6 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     gitStatus,
     sessionTitle,
     projectTasks,
-    loadGitStatus,
   } = useConsoleStore(
     // Only the fields this bar paints: a reasoning delta must not re-render it.
     useShallow((state) => ({
@@ -58,18 +60,19 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
       gitStatus: state.gitStatus,
       sessionTitle: state.sessionTitle,
       projectTasks: state.projectTasks,
-      loadGitStatus: state.loadGitStatus,
     })),
   );
   const gitExplorer = useConsoleStore((state) => state.gitExplorer);
-  const openGitExplorer = useConsoleStore((state) => state.openGitExplorer);
   const closeGitExplorer = useConsoleStore((state) => state.closeGitExplorer);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const rightDockOpen = useRightDockStore((s) => s.open);
   const toggleRightDock = useRightDockStore((s) => s.toggleOpen);
   // The panel anchors to the title.  The element is held in state rather than read
   // off a ref while rendering, so the anchor belongs to the render that uses it.
   const [titleAnchor, setTitleAnchor] = useState<HTMLButtonElement | null>(null);
+  // Same rule for the branch chip: the menu hangs from the element that opened it.
+  const [branchAnchor, setBranchAnchor] = useState<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!infoOpen) return;
@@ -79,14 +82,6 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [infoOpen]);
-
-  // The chrome is a snapshot taken when the session was attached, so a click
-  // re-reads it before opening the explorer (a commit made outside the console
-  // is otherwise invisible until the next attach).
-  const refreshAndOpenExplorer = () => {
-    void loadGitStatus();
-    openGitExplorer();
-  };
 
   // The project label comes from the project list the sidebar already holds, and
   // is simply omitted until that list has loaded: no placeholder name.
@@ -147,14 +142,19 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
             ) : (
               <span className="h-3.5 w-px bg-line/80 mx-1 inline-block" aria-hidden="true" />
             )}
-            {/* Clicking the branch chip opens the same read-only git explorer as
-                the statistics chip; the tracking counts come from
-                `runtime.git.status`. */}
+            {/* The chip is the branch context *and* the only place the console
+                writes git: it opens the branch/worktree menu, whose last row
+                opens the read-only explorer.  The tracking counts still come
+                from `runtime.git.status`, read next to the branch they
+                describe. */}
             <button
               type="button"
-              onClick={refreshAndOpenExplorer}
-              title="刷新并打开 Git Explorer（只读：变更文件与逐文件 diff）"
-              aria-label="查看 Git 变更"
+              ref={setBranchAnchor}
+              onClick={() => setBranchMenuOpen((open) => !open)}
+              title="分支与工作树：切换分支、新建/删除工作树；菜单底部可打开只读的变更视图"
+              aria-label="分支与工作树"
+              aria-haspopup="dialog"
+              aria-expanded={branchMenuOpen}
               className="ui-button min-w-0 h-7 text-xs px-2 rounded-control text-gray-700 hover:bg-surface-hover active:bg-surface-pressed transition-colors"
             >
               <Branch20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
@@ -255,6 +255,9 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     </header>
     {gitExplorer !== null && (
       <GitExplorer initialPath={gitExplorer.path} onClose={closeGitExplorer} />
+    )}
+    {branchMenuOpen && (
+      <BranchMenu anchor={branchAnchor} onClose={() => setBranchMenuOpen(false)} />
     )}
     {infoOpen && <SessionInfoPanel anchor={titleAnchor} onClose={() => setInfoOpen(false)} />}
     </>

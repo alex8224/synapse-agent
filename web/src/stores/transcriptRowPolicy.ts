@@ -27,6 +27,7 @@ export const ROW_POLICY: Record<TranscriptMessage['type'], RowKindPolicy> = {
   info: { step: false },
   // The turn's outcome, not its process: a folded turn still shows what it changed.
   changes: { step: false },
+  collaboration: { step: false },
 };
 
 /** True when the row is a step of its turn's fold and has something to show. */

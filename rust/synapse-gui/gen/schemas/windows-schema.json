@@ -273,6 +273,24 @@
           "markdownDescription": "Enables the tauri_git_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_git_switch_branch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-switch-branch",
+          "markdownDescription": "Enables the tauri_git_switch_branch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_worktree_add command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-worktree-add",
+          "markdownDescription": "Enables the tauri_git_worktree_add command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_git_worktree_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-git-worktree-remove",
+          "markdownDescription": "Enables the tauri_git_worktree_remove command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_list_artifacts command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-list-artifacts",
@@ -439,6 +457,24 @@
           "type": "string",
           "const": "deny-tauri-git-status",
           "markdownDescription": "Denies the tauri_git_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_switch_branch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-switch-branch",
+          "markdownDescription": "Denies the tauri_git_switch_branch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_worktree_add command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-worktree-add",
+          "markdownDescription": "Denies the tauri_git_worktree_add command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_git_worktree_remove command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-git-worktree-remove",
+          "markdownDescription": "Denies the tauri_git_worktree_remove command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_list_artifacts command without any pre-configured scope.",

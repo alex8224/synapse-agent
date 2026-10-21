@@ -230,6 +230,58 @@ async fn tauri_git_stash(
     .await
 }
 
+// The three commands below are the only ones on this surface that write git.
+// Each is one named operation, so the webview never composes an argv: it picks
+// a branch or a worktree that `tauri_git_refs` just reported.
+
+/// Switch the workspace to `branch` (`create` makes it first).
+#[tauri::command]
+async fn tauri_git_switch_branch(
+    workspace: Option<String>,
+    branch: String,
+    create: Option<bool>,
+) -> Result<(), String> {
+    // `git switch` rewrites the working tree, so it never runs on the UI thread.
+    run_blocking("切换分支", move || {
+        git_fs::switch_branch(
+            &command_workspace(workspace),
+            &branch,
+            create.unwrap_or(false),
+        )
+    })
+    .await
+}
+
+/// Create the worktree for `branch` at its fixed sibling path.
+#[tauri::command(rename_all = "snake_case")]
+async fn tauri_git_worktree_add(
+    workspace: Option<String>,
+    branch: String,
+    create_branch: Option<bool>,
+) -> Result<git_fs::GitWorktreeAddView, String> {
+    run_blocking("创建工作树", move || {
+        git_fs::add_worktree(
+            &command_workspace(workspace),
+            &branch,
+            create_branch.unwrap_or(false),
+        )
+    })
+    .await
+}
+
+/// Remove one worktree of the workspace's repository.
+#[tauri::command(rename_all = "snake_case")]
+async fn tauri_git_worktree_remove(
+    workspace: Option<String>,
+    path: String,
+    force: Option<bool>,
+) -> Result<(), String> {
+    run_blocking("删除工作树", move || {
+        git_fs::remove_worktree(&command_workspace(workspace), &path, force.unwrap_or(false))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn tauri_list_artifacts(
     workspace: Option<String>,
@@ -542,6 +594,9 @@ fn main() {
             tauri_git_log,
             tauri_git_commit,
             tauri_git_stash,
+            tauri_git_switch_branch,
+            tauri_git_worktree_add,
+            tauri_git_worktree_remove,
             tauri_list_artifacts,
             tauri_stat_artifact,
             tauri_read_artifact,

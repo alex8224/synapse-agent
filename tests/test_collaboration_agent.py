@@ -156,3 +156,32 @@ def test_progress_through_production_agent_is_notification_only(tmp_path: Path) 
         assert str(tools[-1].content).startswith('recorded:')
         assert store.messages(request.id, source)[-1].kind is MessageKind.PROGRESS
         assert store.claim_next(source) is None
+
+
+def test_missing_coordinator_is_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A session without contact_session must be explainable from the log."""
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'daemon'))
+    assert daemon.collaboration is None
+    with caplog.at_level('WARNING', logger='synapse.runtime.daemon.application'):
+        assert daemon._collaboration_tools('p1') == []
+    assert 'coordinator not started' in caplog.text
+
+
+def test_tool_build_failure_is_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build failure degrades the agent but must not be silent."""
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'daemon'))
+    daemon.collaboration = object()
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError('schema mismatch')
+
+    monkeypatch.setattr(
+        'synapse.runtime.collaboration.tools.build_collaboration_tools', _boom
+    )
+    with caplog.at_level('WARNING', logger='synapse.runtime.daemon.application'):
+        assert daemon._collaboration_tools('p1') == []
+    assert 'schema mismatch' in caplog.text

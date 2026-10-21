@@ -138,7 +138,12 @@ test('the explorer stays read-only and is reachable from the branch chip', () =>
   // the same explorer on the file they name), and shows the tracking counts the
   // status carries.
   assert.ok(topBar.includes('<GitExplorer'), 'the header must render the explorer');
-  assert.ok(topBar.includes('openGitExplorer()'), 'the chip must open it');
+  // The chip opens the branch/worktree menu, and the menu's last row opens the
+  // explorer: the writes and the read-only view live in one popover, and the
+  // explorer itself still only reads.
+  const branchMenu = read('components/BranchMenu.tsx');
+  assert.ok(topBar.includes('<BranchMenu'), 'the chip must open the branch menu');
+  assert.ok(branchMenu.includes('openGitExplorer()'), 'the menu must open the explorer');
   assert.ok(
     topBar.includes('initialPath={gitExplorer.path}'),
     'a change card must be able to open it on its own file',

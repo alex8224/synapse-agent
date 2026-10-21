@@ -47,6 +47,16 @@ conversation_history/
 .vscode/
 *.swp
 
+# Local scratch dumps and packages
+*_dump.json
+*_merged.json
+tweets_*.json
+*replies*.json
+flyanlu_*.json
+*.zip
+*.zip.sha256
+bundle/
+
 # Runtime logs
 logs/
 site/

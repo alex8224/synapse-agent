@@ -21,11 +21,14 @@
  */
 import { create } from 'zustand';
 import {
+  addGitWorktree,
   fetchGitCommit,
   fetchGitLog,
   fetchGitRefs,
   fetchGitStashDiff,
   hasNativeGitHistory,
+  removeGitWorktree,
+  switchGitBranch,
 } from '../client/tauriGitFs.ts';
 import {
   GIT_LOG_PAGE_SIZE,
@@ -78,6 +81,22 @@ export interface GitHistoryStoreState {
   // Stashes are read on demand, from the list.
   openStash: number | null;
   stashDiffs: Record<number, GitLazyDiff>;
+  // Writes (desktop only): one branch switch, one worktree add, one worktree
+  // remove.  Everything else in this store reads.
+  /** True while a write is in flight, so the menu can disable its rows. */
+  actionBusy: boolean;
+  /** The last write's refusal, verbatim from git. */
+  actionError: string | null;
+  clearActionError: () => void;
+  /** Switch the workspace to `branch`; false when git refused. */
+  switchBranch: (branch: string) => Promise<boolean>;
+  /**
+   * Create the worktree for `branch` and open it as the console's project.
+   * `createBranch` makes the branch first when it does not exist yet.
+   */
+  createWorktree: (branch: string, createBranch: boolean) => Promise<boolean>;
+  /** Remove one worktree; false when git refused (uncommitted work needs `force`). */
+  removeWorktree: (path: string, force: boolean) => Promise<boolean>;
 
   loadRefs: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -120,6 +139,8 @@ const EMPTY = {
   fileDiffs: {} as Record<string, GitLazyDiff>,
   openStash: null,
   stashDiffs: {} as Record<number, GitLazyDiff>,
+  actionBusy: false,
+  actionError: null,
 };
 
 function messageOf(error: unknown): string {
@@ -149,7 +170,15 @@ export const useGitHistoryStore = create<GitHistoryStoreState>((set, get) => ({
 
   loadRefs: async () => {
     if (!hasNativeGitHistory()) {
-      set({ refs: null, refsLoading: false, refsError: null });
+      // Not a git failure: this window has no desktop bridge, so there is no
+      // native reader to ask.  Saying so is the point -- an empty inventory looks
+      // exactly like a repository with no branches, and the reader cannot tell
+      // "nothing to show" from "cannot look".
+      set({
+        refs: null,
+        refsLoading: false,
+        refsError: '当前窗口没有桌面壳桥接（__TAURI_INTERNALS__ 不可用），读不到分支与工作树',
+      });
       return;
     }
     const token = ++refsToken;
@@ -344,6 +373,72 @@ export const useGitHistoryStore = create<GitHistoryStoreState>((set, get) => ({
   },
 
   closeStash: () => set({ openStash: null }),
+
+  clearActionError: () => set({ actionError: null }),
+
+  switchBranch: async (branch) => {
+    const workspace = workspacePathOf();
+    set({ actionBusy: true, actionError: null });
+    try {
+      await switchGitBranch(branch, false, workspace);
+      // HEAD moved under both this panel and the header's chrome, so both are
+      // re-read instead of being left describing the branch that is gone.
+      await get().refresh();
+      await useConsoleStore.getState().loadGitStatus();
+      return true;
+    } catch (error) {
+      set({ actionError: messageOf(error) });
+      return false;
+    } finally {
+      // Held until the reads settle: a second click while the refs still describe
+      // the branch just left would ask git for it again.
+      set({ actionBusy: false });
+    }
+  },
+
+  createWorktree: async (branch, createBranch) => {
+    const workspace = workspacePathOf();
+    set({ actionBusy: true, actionError: null });
+    try {
+      const added = await addGitWorktree(branch, createBranch, workspace);
+      // A project *is* a directory, so the new worktree becomes one and the
+      // console moves there: its agent root, its own `.synapse/` state and every
+      // later read belong to that worktree without a second mechanism.
+      const failure = await useConsoleStore.getState().openWorkspaceProject(added.path);
+      if (failure === null) return true;
+      // The worktree exists but could not be opened.  Re-read the inventory so
+      // its row is there to click, instead of leaving the reader to retry
+      // "create" and be told the directory already exists.
+      set({ actionError: failure });
+      await get().refresh();
+      return false;
+    } catch (error) {
+      set({ actionError: messageOf(error) });
+      return false;
+    } finally {
+      set({ actionBusy: false });
+    }
+  },
+
+  removeWorktree: async (path, force) => {
+    const workspace = workspacePathOf();
+    set({ actionBusy: true, actionError: null });
+    try {
+      await removeGitWorktree(path, force, workspace);
+      await get().refresh();
+      // The removed directory may still be a registered project: there is no
+      // `runtime.project.remove` contract yet, so its row survives.  Re-creating
+      // a worktree for the same branch restores the same fixed path, which makes
+      // that row valid again -- the row is stale, never wrong.
+      await useConsoleStore.getState().loadProjects();
+      return true;
+    } catch (error) {
+      set({ actionError: messageOf(error) });
+      return false;
+    } finally {
+      set({ actionBusy: false });
+    }
+  },
 
   reset: () => {
     refsToken += 1;

@@ -30,8 +30,12 @@
     <script>
       try {
         var choice = localStorage.getItem('synapse.console.appearance');
-        if (choice === 'dark') document.documentElement.dataset.theme = 'fluent-dark';
-        else if (choice === 'light') document.documentElement.dataset.theme = 'fluent-light';
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (choice === 'dark' || ((!choice || choice === 'system') && prefersDark)) {
+          document.documentElement.dataset.theme = 'fluent-dark';
+        } else {
+          document.documentElement.dataset.theme = 'fluent-light';
+        }
       } catch (e) {
         /* Blocked storage: the bundle falls back to following the system. */
       }

@@ -54,6 +54,10 @@ class WebConsoleConfig:
     ws_heartbeat_seconds: int = DEFAULT_WS_HEARTBEAT_SECONDS
     send_timeout_seconds: float = DEFAULT_SEND_TIMEOUT_SECONDS
     daemon_timeout_seconds: float = DEFAULT_DAEMON_TIMEOUT_SECONDS
+    #: Allow binding to non-loopback addresses at startup (e.g. 0.0.0.0).
+    #: The console also supports dynamically toggling remote LAN access at runtime
+    #: via the settings interface (/api/remote/toggle).
+    allow_remote: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -61,7 +65,7 @@ class WebConsoleConfig:
             or not self.host
             or self.host.strip() != self.host
             or "\x00" in self.host
-            or self.host not in LOOPBACK_HOSTS
+            or (not self.allow_remote and self.host not in LOOPBACK_HOSTS)
         ):
             raise ValueError(
                 "host must be a loopback address (127.0.0.1, localhost, or ::1); "

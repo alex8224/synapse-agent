@@ -132,6 +132,23 @@ const stubClient = {
           title: 'session',
         });
   },
+  openSession: (params: any) => {
+    calls.push({ method: 'runtime.session.open', params });
+    return Promise.resolve({
+      command_id: 'cmd',
+      session: params.session,
+      created: true,
+      view: { latest_sequence: 0, status: 'idle', usage: null },
+    });
+  },
+  watchEvents: (params: any) => {
+    calls.push({ method: 'runtime.session.watch', params });
+    return Promise.resolve({ subscription_id: 'sub-watch' });
+  },
+  submitTurn: (params: any) => {
+    calls.push({ method: 'runtime.turn.submit', params });
+    return Promise.resolve({ command_id: 'cmd', session: params.session, turn_id: 'turn-1' });
+  },
 };
 
 function methodCalls(method: string): Call[] {
@@ -196,6 +213,26 @@ async function muted<T>(fn: () => Promise<T>): Promise<T> {
 
 beforeEach(() => {
   resetStore();
+});
+
+test('executeTask creates session with task title, submits prompt, and binds task in progress', async () => {
+  resetStore();
+  updatePlan = [() => Promise.resolve(taskResult(PROJECT_A, task('exec-1', { status: 'in_progress', assigned_thread_id: 'allocated' })))];
+  const aTask = task('exec-1', { title: '自动任务', description: '任务详情' });
+  const ok = await useConsoleStore.getState().executeTask(aTask);
+  assert.equal(ok, true);
+  // Verify session created with task title
+  const created = methodCalls('runtime.session.create');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].params.title, '自动任务');
+  // Verify task marked in_progress
+  const updated = methodCalls('runtime.project.task.update');
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].params.status, 'in_progress');
+  // Verify turn submitted
+  const turns = methodCalls('runtime.turn.submit');
+  assert.equal(turns.length, 1);
+  assert.ok(turns[0].params.text.includes('请开始执行项目待办任务：【自动任务】'));
 });
 
 test('loadProjectTasks publishes the active project backlog and clears loading', async () => {

@@ -194,6 +194,9 @@ def build_session_tools(
         （例如“列出最近会话”“找之前那个 bug 讨论”“看看某某会话”）。
         闲聊、问候、普通编码/排障、意图不明、仅为“多了解上下文”时一律不要调用。
 
+        只覆盖**当前项目**的会话库：另一个项目的会话既不会被列出也不会被搜到，
+        要与那个会话沟通请用 `contact_session`。
+
         query 为空时返回最近会话列表。query 非空时同时匹配：
         1. 会话元数据（标题/摘要/模型/thread_id）；
         2. 会话消息全文（human/ai 文本，经本地增量索引，首次调用会先建立索引，
@@ -244,6 +247,9 @@ def build_session_tools(
         （通常先由 search_session 得到 thread_id，或用户直接给出会话 ID）。
         闲聊、问候、普通任务、未指明需要跨会话上下文时不要主动调用。
 
+        只读取**当前项目**的会话；`<project_id>:<thread_id>` 这类跨项目全局引用
+        读不到，要与那个会话沟通请用 `contact_session`。
+
         按轮次切分对话，每轮 = 一条用户消息 + 后续 AI/工具消息。
         默认只保留用户与 AI 的文本内容（去掉工具调用与工具返回），
         需要查看工具细节时传 include_tools=True。
@@ -264,6 +270,17 @@ def build_session_tools(
 
         info = store.get(thread_id)
         if info is None:
+            if ":" in thread_id:
+                # A global reference is a routing key for contact_session, never
+                # a local thread id: name that instead of the generic miss, or
+                # the model just retries the same unreadable id.
+                return (
+                    f"会话未找到: {thread_id}\n"
+                    f"这是跨项目全局引用（<project_id>:<thread_id>），"
+                    f"read_session 只读取当前项目的会话库。\n"
+                    f"要与那个会话沟通请用 contact_session；"
+                    f"要读它的历史，请在它所属项目的会话里查阅。"
+                )
             return (
                 f"会话未找到: {thread_id}\n"
                 f"提示：使用 search_session 查看可用会话列表，"

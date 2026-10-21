@@ -119,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Auto-register workspace in catalog if not registered",
     )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        default=False,
+        help="Allow binding to non-loopback addresses for remote access",
+    )
     return parser
 
 
@@ -158,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             max_concurrent_sockets=args.max_sockets,
             max_body_bytes=args.max_body_bytes,
             ws_heartbeat_seconds=args.ws_heartbeat_seconds,
+            allow_remote=args.allow_remote,
         )
         # One command should be enough to get a usable console: reuse the daemon
         # published for this state dir, otherwise start one and stop it again on

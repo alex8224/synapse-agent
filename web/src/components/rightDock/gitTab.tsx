@@ -462,6 +462,12 @@ export const GitContent: React.FC<{ context: RightDockContext }> = () => {
               </div>
             </div>
           ))}
+        {openGroups.worktrees && (
+          // This panel only reads.  Switching, creating and removing a worktree
+          // are writes, so they live in the header's branch menu, next to the
+          // branch they act on.
+          <Note>工作树的切换、新建与删除在顶栏的分支菜单里。</Note>
+        )}
 
         {refs.truncated && <Note>分支或标签超过上限，列表已截断。</Note>}
       </div>

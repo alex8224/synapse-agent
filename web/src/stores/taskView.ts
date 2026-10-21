@@ -272,3 +272,22 @@ export function formatTaskTime(timestampMs: number): string {
     minute: '2-digit',
   });
 }
+
+/**
+ * Format a task's title, description, and labels into a clean execution prompt.
+ */
+export function formatTaskExecutionPrompt(task: {
+  title: string;
+  description?: string | null;
+  labels?: readonly string[] | null;
+}): string {
+  const parts = [`请开始执行项目待办任务：【${task.title.trim()}】`];
+  if (task.description && task.description.trim()) {
+    parts.push(`任务描述：\n${task.description.trim()}`);
+  }
+  if (task.labels && task.labels.length > 0) {
+    parts.push(`任务标签：${task.labels.join(', ')}`);
+  }
+  parts.push('请根据以上需求分析、规划并执行任务，完成相关修改与验证。');
+  return parts.join('\n\n');
+}

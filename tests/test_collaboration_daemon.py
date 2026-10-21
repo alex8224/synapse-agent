@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,25 @@ from synapse.runtime.sessions.runtime import UserTurn
 A = SessionRef('p1', 'a')
 B = SessionRef('p1', 'b')
 OTHER = SessionRef('p2', 'c')
+
+
+def test_tool_degradation_reaches_the_daemon_error_log(tmp_path: Path) -> None:
+    """A session without contact_session must leave a durable reason behind."""
+    import logging
+
+    from synapse.runtime.daemon.entry import _configure_error_log
+
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'daemon'))
+    logs = tmp_path / 'logs'
+    handler = _configure_error_log(logs)
+    try:
+        assert daemon._collaboration_tools('p1') == []
+        handler.flush()
+        text = (logs / 'errors.log').read_text(encoding='utf-8')
+        assert 'coordinator not started' in text
+    finally:
+        logging.getLogger('synapse.runtime').removeHandler(handler)
+        handler.close()
 
 
 class _Router:

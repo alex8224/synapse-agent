@@ -92,7 +92,8 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
   且标题本身是按钮，点击开合「会话信息」面板（锚在标题下方，Esc 关闭；安装态窗口里
   标题带 `wco-caption-controls`，否则标题栏会吞掉这次点击）；
   右轨变更统计 `+N -M`（`runtime.git.status` 的**真实 tracked 增删行数**，不是文件数）；
-  分支 chip 与统计 chip 都是按钮、都能打开只读 Git Explorer，窄屏隐藏次要的项目 chip）、
+  分支 chip 是按钮，点击开合「分支与工作树」菜单（切换分支、新建/删除工作树，菜单底部一行
+  打开只读 Git Explorer，见「分支与工作树」一节），窄屏隐藏次要的项目 chip）、
   `RuntimeDiagnosticsBanner`（仅降级时出现）、`RecoveryNotice`（仅恢复/截断时出现，
   见「恢复与降级提示」）、`Transcript`、浮动的 `CommandInput`，
   以及 `BottomBar`（运行态、MCP、goal 与用量遥测，见下）。输入卡通过 ResizeObserver 发布实际高度，
@@ -318,7 +319,8 @@ iOS Safari、Android 软键盘及安装态 PWA 的安全区仍需真机验收，
 daemon 契约方法（`runtime.git.*` 仍然只有 `status` / `diff`）。因此普通浏览器里这个 tab 由可用性源
 `hasNativeGitHistory()` 直接隐藏——宁可没有入口，也不给一个永远加载不出来的面板。
 
-- **只读**：没有任何 add / commit / checkout / stage / push；读取一律带 `GIT_OPTIONAL_LOCKS=0`
+- **只读**：这一页没有任何 add / commit / checkout / stage / push（写操作只在顶栏的「分支与工作树」
+  菜单里，见下一节）；读取一律带 `GIT_OPTIONAL_LOCKS=0`
   （`git status` 不会顺手刷新索引）。传进来的版本名与路径都先校验（拒绝前导 `-`、`..`、`@{`、反斜杠、
   盘符等），因为它们落在 argv 位置，否则会被 git 当成选项。上限：分支与标签各 200、每页 50 条提交、
   一次提交 200 个文件、单个 diff 256KB（超出截断并显示提示）。
@@ -335,6 +337,43 @@ daemon 契约方法（`runtime.git.*` 仍然只有 `status` / `diff`）。因此
 验收：`node --test tests/gitHistory.test.ts`（解码器、原生专属、分页与按需读取、只读与「不从工作区推导」
 的静态守护）、`tests/rightDockContract.test.ts`（新 tab 的模块登记与 order）、
 `cargo test --manifest-path rust/synapse-gui/Cargo.toml`（读取器与参数校验，用临时仓库跑真实 git）。
+
+## 分支与工作树（顶栏分支菜单）
+
+顶栏的分支 chip 打开 `src/components/BranchMenu.tsx`：上半是本地分支（点一行即 `git switch`），
+中间是工作树（每行可「打开」或「删除」），下半是「新建工作树」（输入分支名，不存在则先建分支）。
+菜单底部一行「变更与历史（只读）」才进 Git Explorer——只读视图与写操作放在同一个弹层里，
+是因为它们作用在同一个对象（当前分支）上。
+
+**这是控制台唯一会写 git 的地方。** 三个命令都是原生专属、各对应一个具名操作，webview 从不自己拼 argv：
+
+| 命令 | 作用 | 拒绝的情形 |
+| --- | --- | --- |
+| `tauri_git_switch_branch` | `git switch --no-guess <branch>`（`create` 时 `-c`） | 分支被别的工作树占用、工作区有冲突改动——由 git 原话返回；`--no-guess` 保证不会顺手为一个只在远端的名字造跟踪分支 |
+| `tauri_git_worktree_add` | 在固定位置 `git worktree add` | 目标目录已存在、分支被别的工作树占用（同一分支不能同时检出两处） |
+| `tauri_git_worktree_remove` | `git worktree remove`（`force` 时 `--force`） | 不是本仓库的工作树、主工作树、**当前工作区所在的工作树**、有未提交改动 |
+
+- **固定位置**：工作树落在主仓库同级的 `<仓库>@<分支>`，分支名里的 `/` 换成 `-`
+  （`feature/x` → `<仓库>@feature-x`）。位置不可配置是有意的：壳、控制台与人都要能预测同一个路径。
+  主仓库由 `git worktree list` 的第一条确定，所以从工作树里建工作树也不会嵌套。
+- **删除只在本仓库范围内**：路径先与 `git worktree list` 的结果比对，命中才删——webview 给不出一个
+  任意目录来删。当前工作区自己的那一份在 Rust 侧直接拒绝（否则 git 只回一句 Windows 的
+  `Permission denied`）。有未提交改动时 git 会拒绝，按钮随即变成「强制删除」，再点一次才丢弃；
+  引用列表一重读，这个待确认状态就自动解除（它和读到的那份列表绑定）。
+- **建好即作为项目打开**：项目就是工作区目录，所以新建的工作树经 `runtime.project.register` 成为项目
+  并直接切过去——它自带 agent 根目录、自己的 `.synapse/` 状态、自己的会话与终端，不需要第二套机制。
+  已经注册过的目录走 `openWorkspaceProject`（命中则切换，否则注册），不会为同一目录建第二个项目。
+- **侧栏折叠**：工作树项目按目录名约定（`<主仓库路径>@<分支>`）折叠到对应仓库行之下并缩进一级；
+  父目录没注册的项目留在顶层；搜索时不分组，命中的行要能独立读懂。判据只是路径字符串，
+  因此不需要额外 IPC，也没有给 `ProjectListItem` 加字段。
+- **残留项目行**：删除工作树不会删除它的项目行（daemon 目前没有 `runtime.project.remove` 契约）；
+  同一分支重建工作树会得到同一个固定路径，那一行随即恢复有效。反过来说，**删掉工作树之后**
+  再点那一行会失败——目录已经不在，`activateProject` 不校验目录是否存在。
+- **目录名不是单射**：`feature/x` 与 `feature-x` 会折叠成同一个目录名，第二个建工作树时会因为
+  「目录已存在」失败；分支名或仓库名里本来就有 `@` 时，侧栏的折叠判据会认错父级（该行退回顶层）。
+
+验收：`node --test tests/gitWorktree.test.ts`（解码器、原生专属、命令名与参数形状）、
+`cargo test --manifest-path rust/synapse-gui/Cargo.toml worktree`（固定路径、切换、删除的拒绝条件）。
 
 ## 使用统计与工程效能面板
 

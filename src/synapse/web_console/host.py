@@ -47,9 +47,15 @@ from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 
 from synapse.runtime.daemon.auth import PROJECT_SCOPE_HEADER
 from synapse.web_console.config import (
+    LOOPBACK_HOSTS,
     RuntimeDiscoveryError,
     WebConsoleConfig,
     discover_runtime_endpoint,
+)
+from synapse.web_console.remote import (
+    DeviceRegistry,
+    PendingPairingManager,
+    get_lan_ips,
 )
 from synapse.web_console.security import (
     CONSOLE_HEADER_NAME,
@@ -64,6 +70,9 @@ from synapse.web_console.security import (
     origin_allowed,
     sec_fetch_site_ok,
 )
+
+DEVICE_COOKIE_NAME = "synapse_device_token"
+DEVICE_HEADER_NAME = "X-Device-Token" 
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +191,12 @@ def load_global_settings() -> Any:
 #: ``tests/test_web_console_host.py::test_scope_whitelist_is_bound_to_the_protocol_decoder``,
 #: so a protocol evolution that moves or adds a routing position fails that test
 #: instead of silently widening the guard's blind spot.
-SCOPE_PROJECT_POSITIONS = ("session.project_id", "project_id", "ref.session.project_id")
+SCOPE_PROJECT_POSITIONS = (
+    "session.project_id",
+    "project_id",
+    "ref.session.project_id",
+    "source.project_id",
+)
 
 #: Service code of the typed rejection used for a cross-project relay request.
 #: It is the code the runtime itself returns for a project it cannot resolve, so
@@ -254,6 +268,12 @@ def _scoped_project_ids(params: dict[str, Any]) -> tuple[list[str], bool]:
                     read(ref_session, "project_id")
                 else:
                     shape_ok = False
+        else:
+            shape_ok = False
+    if "source" in params:
+        source = params["source"]
+        if isinstance(source, dict):
+            read(source, "project_id")
         else:
             shape_ok = False
     return found, shape_ok
@@ -434,6 +454,10 @@ class WebConsoleHost:
         self._daemon_token = token
         self._sessions = SessionRegistry(ttl_seconds=config.session_ttl_seconds)
         self._pairing_enabled = config.pairing_required
+        self.remote_enabled: bool = config.allow_remote
+        devices_storage = Path(config.state_dir).expanduser() / "trusted_devices.json"
+        self._devices = DeviceRegistry(devices_storage)
+        self._pending_pairing = PendingPairingManager()
         generator = pairing_code_generator or (
             (lambda: pairing_code) if pairing_code is not None else generate_pairing_code
         )
@@ -461,6 +485,7 @@ class WebConsoleHost:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self.bound: tuple[str, int] | None = None
+        self._toggle_lock: asyncio.Lock = asyncio.Lock()
         self._app = self._build_app()
 
     def _build_app(self) -> web.Application:
@@ -480,6 +505,16 @@ class WebConsoleHost:
         app.router.add_get("/api/turn-suggestions", _method_not_allowed("POST"))
         app.router.add_post("/api/logout", self._handle_logout)
         app.router.add_get("/api/logout", _method_not_allowed("POST"))
+        app.router.add_get("/api/remote/status", self._handle_remote_status)
+        app.router.add_post("/api/remote/toggle", self._handle_remote_toggle)
+        app.router.add_post("/api/remote/request-access", self._handle_remote_request_access)
+        app.router.add_get("/api/remote/check-access", self._handle_remote_check_access)
+        app.router.add_get("/api/remote/pending", self._handle_remote_pending)
+        app.router.add_post("/api/remote/approve", self._handle_remote_approve)
+        app.router.add_post("/api/remote/reject", self._handle_remote_reject)
+        app.router.add_get("/api/remote/devices", self._handle_remote_devices)
+        app.router.add_post("/api/remote/revoke-device", self._handle_remote_revoke_device)
+        app.router.add_get("/api/remote/revoke-device", _method_not_allowed("POST"))
         # Kept as an explicit 405 (not a 404) so "GET must not mint a session"
         # stays directly assertable as a regression test.
         app.router.add_get("/api/bootstrap", self._handle_bootstrap_removed)
@@ -743,14 +778,34 @@ class WebConsoleHost:
             return self.project.project_id
         return None
 
+    def _is_loopback_request(self, request: web.Request) -> bool:
+        peer = request.remote
+        return peer in ("127.0.0.1", "localhost", "::1", "testclient", None)
+
+    def _is_authenticated(self, request: web.Request) -> bool:
+        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is not None:
+            return True
+        dev_token = request.cookies.get(DEVICE_COOKIE_NAME) or request.headers.get(
+            DEVICE_HEADER_NAME
+        )
+        if dev_token and self._devices.verify_token(dev_token) is not None:
+            return True
+        return False
+
     def _state_change_guard(self, request: web.Request) -> web.Response | None:
         """A3 steps 2-6: the CSRF chain shared by ``pair`` and ``logout``."""
         bound_port = self._bound_port()
-        if not host_allowed(request.headers.get("host"), bound_port=bound_port):
+        if not self._is_loopback_request(request) and not self.remote_enabled:
+            return _reject(403, "remote access is disabled", json_body=True)
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "forbidden host", json_body=True)
         if not sec_fetch_site_ok(request.headers):
             return _reject(403, "cross-site request is not allowed", json_body=True)
-        if not origin_allowed(request.headers.get("origin"), bound_port=bound_port):
+        if not origin_allowed(
+            request.headers.get("origin"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "cross-origin request is not allowed", json_body=True)
         if media_type(request.headers.get("content-type")) != "application/json":
             return _reject(415, "unsupported media type", json_body=True)
@@ -828,10 +883,23 @@ class WebConsoleHost:
         return response
 
     async def _handle_session(self, request: web.Request) -> web.Response:
-        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+        if not host_allowed(
+            request.headers.get("host"),
+            bound_port=self._bound_port(),
+            allow_remote=self.remote_enabled,
+        ):
             return _reject(403, "forbidden host", json_body=True)
         expires_in = self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME))
         if expires_in is None:
+            dev_token = request.cookies.get(DEVICE_COOKIE_NAME) or request.headers.get(
+                DEVICE_HEADER_NAME
+            )
+            if dev_token and self._devices.verify_token(dev_token) is not None:
+                token = self._sessions.create()
+                response = web.json_response(
+                    {**self._project_payload(), "expires_in": self.config.session_ttl_seconds}
+                )
+                return self._set_session_cookie(response, token)
             if not self._pairing_enabled:
                 return self._auto_pair(request)
             return _reject(401, "missing or invalid console session", json_body=True)
@@ -850,12 +918,18 @@ class WebConsoleHost:
         exactly why the caller is an explicit opt-in path.
         """
         bound_port = self._bound_port()
-        if not host_allowed(request.headers.get("host"), bound_port=bound_port):
+        if not self._is_loopback_request(request) and not self.remote_enabled:
+            return _reject(403, "remote access is disabled", json_body=True)
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "forbidden host", json_body=True)
         if not sec_fetch_site_ok(request.headers):
             return _reject(403, "cross-site request is not allowed", json_body=True)
         origin = request.headers.get("origin")
-        if origin is not None and not origin_allowed(origin, bound_port=bound_port):
+        if origin is not None and not origin_allowed(
+            origin, bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "cross-origin request is not allowed", json_body=True)
         return None
 
@@ -880,7 +954,7 @@ class WebConsoleHost:
         guard = self._state_change_guard(request)
         if guard is not None:
             return guard
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if not self._is_authenticated(request):
             return _reject(401, "missing or invalid console session", json_body=True)
         # Single-user semantics: logout invalidates *every* session, then a fresh
         # pairing code is issued and announced.
@@ -925,12 +999,13 @@ class WebConsoleHost:
 
     async def _handle_runtime_status(self, request: web.Request) -> web.Response:
         """``GET /api/runtime-status``: session-gated, read-only daemon status."""
-        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
-            return _reject(403, "forbidden host", json_body=True)
-        if (
-            self._pairing_enabled
-            and self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None
+        if not host_allowed(
+            request.headers.get("host"),
+            bound_port=self._bound_port(),
+            allow_remote=self.remote_enabled,
         ):
+            return _reject(403, "forbidden host", json_body=True)
+        if self._pairing_enabled and not self._is_authenticated(request):
             return _reject(401, "missing or invalid console session", json_body=True)
         response = web.json_response(self.runtime_status_payload())
         response.headers["Cache-Control"] = "no-store"
@@ -953,9 +1028,13 @@ class WebConsoleHost:
         token and no path outside the user catalog, and never changes any state
         (so it needs no CSRF chain).
         """
-        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+        if not host_allowed(
+            request.headers.get("host"),
+            bound_port=self._bound_port(),
+            allow_remote=self.remote_enabled,
+        ):
             return _reject(403, "forbidden host", json_body=True)
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if not self._is_authenticated(request):
             return _reject(401, "missing or invalid console session", json_body=True)
         response = web.json_response(self._projects_payload())
         response.headers["Cache-Control"] = "no-store"
@@ -976,9 +1055,13 @@ class WebConsoleHost:
         and the only token source is the real compression events (see
         ``synapse.web_console.usage_stats``).
         """
-        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+        if not host_allowed(
+            request.headers.get("host"),
+            bound_port=self._bound_port(),
+            allow_remote=self.remote_enabled,
+        ):
             return _reject(403, "forbidden host", json_body=True)
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if not self._is_authenticated(request):
             return _reject(401, "missing or invalid console session", json_body=True)
         from synapse.web_console.usage_stats import UsageStatsError, get_usage_statistics
 
@@ -1007,7 +1090,7 @@ class WebConsoleHost:
         guard = self._state_change_guard(request)
         if guard is not None:
             return guard
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if not self._is_authenticated(request):
             return _reject(401, "missing or invalid console session", json_body=True)
         payload, error = await self._read_json_object(request)
         if error is not None:
@@ -1036,16 +1119,17 @@ class WebConsoleHost:
 
     async def _handle_runtime_ws(self, request: web.Request) -> web.StreamResponse:
         bound_port = self._bound_port()
-        if not host_allowed(request.headers.get("host"), bound_port=bound_port):
+        if not self._is_loopback_request(request) and not self.remote_enabled:
+            return _reject(403, "remote access is disabled")
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "forbidden host")
-        # Browsers always send Origin on WebSocket upgrades.  Requiring an exact
-        # match protects the pure-cookie WebSocket from cross-site hijacking even
-        # when an attacker obtains the cookie value through some other flaw.
-        if not origin_allowed(request.headers.get("origin"), bound_port=bound_port):
+        if not origin_allowed(
+            request.headers.get("origin"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
             return _reject(403, "cross-origin websocket is not allowed")
-        # Expired and unknown cookies share one response code and one message so
-        # the endpoint is not an oracle for session existence.
-        if self._sessions.expires_in(request.cookies.get(SESSION_COOKIE_NAME)) is None:
+        if not self._is_authenticated(request):
             return _reject(403, "missing or invalid console session")
         if self._active_sockets >= self.config.max_concurrent_sockets:
             return _reject(503, "too many active console sockets")
@@ -1134,7 +1218,11 @@ class WebConsoleHost:
         return socket
 
     async def _handle_static(self, request: web.Request) -> web.StreamResponse:
-        if not host_allowed(request.headers.get("host"), bound_port=self._bound_port()):
+        if not host_allowed(
+            request.headers.get("host"),
+            bound_port=self._bound_port(),
+            allow_remote=self.remote_enabled,
+        ):
             return _reject(403, "forbidden host")
         raw_path = request.raw_path.split("?", 1)[0]
         kind, path = self._map_static(raw_path)
@@ -1220,6 +1308,210 @@ class WebConsoleHost:
         if "." in last or (parts and parts[0] == "assets"):
             return "missing", None
         return "spa", None
+
+    async def _handle_remote_status(self, request: web.Request) -> web.Response:
+        bound_port = self._bound_port()
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
+            return _reject(403, "forbidden host", json_body=True)
+        ips = get_lan_ips()
+        pairing_code = self._pairing.code if self._is_loopback_request(request) else None
+        pending_list = (
+            self._pending_pairing.list_pending() if self._is_loopback_request(request) else []
+        )
+        return web.json_response({
+            "allow_remote": self.config.allow_remote,
+            "remote_enabled": self.remote_enabled,
+            "bound_port": bound_port,
+            "lan_ips": ips,
+            "lan_urls": [f"http://{ip}:{bound_port}/" for ip in ips],
+            "pairing_code": pairing_code,
+            "trusted_devices": self._devices.list_devices(),
+            "pending_requests": pending_list,
+        })
+
+    async def _handle_remote_toggle(self, request: web.Request) -> web.Response:
+        guard = self._state_change_guard(request)
+        if guard is not None:
+            return guard
+        if not self._is_loopback_request(request):
+            return _reject(
+                403, "remote control toggle is only permitted from loopback", json_body=True
+            )
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        enabled = payload.get("enabled")
+        if type(enabled) is not bool:
+            return _reject(400, "enabled must be a boolean", json_body=True)
+
+        async with self._toggle_lock:
+            if enabled != self.remote_enabled:
+                bound_port = self._bound_port()
+                if self._runner is not None and self._site is not None:
+                    target_host = "0.0.0.0" if enabled else (
+                        self.config.host if self.config.host in LOOPBACK_HOSTS else "127.0.0.1"
+                    )
+                    current_host = self.bound[0] if self.bound else self.config.host
+                    if current_host != target_host:
+                        old_site = self._site
+                        await old_site.stop()
+                        try:
+                            new_site = web.TCPSite(self._runner, target_host, bound_port)
+                            await new_site.start()
+                            self._site = new_site
+                            sockets = getattr(new_site, "_server", None)
+                            addrs = (
+                                tuple(sock.getsockname() for sock in sockets.sockets)
+                                if sockets
+                                else ()
+                            )
+                            bound_host = addrs[0][0] if addrs else target_host
+                            self.bound = (bound_host, bound_port)
+                        except Exception as exc:
+                            logger.exception(
+                                "Failed to bind %s:%s, restoring %s",
+                                target_host,
+                                bound_port,
+                                current_host,
+                            )
+                            restore_site = web.TCPSite(self._runner, current_host, bound_port)
+                            await restore_site.start()
+                            self._site = restore_site
+                            self.bound = (current_host, bound_port)
+                            msg = f"failed to bind remote port: {exc}"
+                            return _reject(500, msg, json_body=True)
+                self.remote_enabled = enabled
+        return web.json_response({"status": "ok", "remote_enabled": self.remote_enabled})
+
+    async def _handle_remote_request_access(self, request: web.Request) -> web.Response:
+        bound_port = self._bound_port()
+        if not self.remote_enabled:
+            return _reject(403, "remote access is disabled on this host", json_body=True)
+        if not host_allowed(request.headers.get("host"), bound_port=bound_port, allow_remote=True):
+            return _reject(403, "forbidden host", json_body=True)
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        device_id = payload.get("device_id")
+        name = payload.get("name")
+        if not isinstance(device_id, str) or not device_id or len(device_id) > 128:
+            return _reject(400, "valid device_id is required", json_body=True)
+        if not isinstance(name, str) or not name or len(name) > 128:
+            name = "Remote Browser"
+        req = self._pending_pairing.create_request(
+            device_id=device_id,
+            name=name,
+            ip=request.remote or "",
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        return web.json_response(req.to_public_dict())
+
+    async def _handle_remote_check_access(self, request: web.Request) -> web.Response:
+        bound_port = self._bound_port()
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
+            return _reject(403, "forbidden host", json_body=True)
+        request_id = request.query.get("request_id")
+        if not request_id:
+            return _reject(400, "request_id is required", json_body=True)
+        req = self._pending_pairing.get_request(request_id)
+        if req is None:
+            return _reject(404, "request not found or expired", json_body=True)
+        if req.status == "approved" and req.device_token:
+            session_token = self._sessions.create()
+            response = web.json_response({
+                "status": "approved",
+                "device_token": req.device_token,
+                **self._project_payload(),
+            })
+            self._set_session_cookie(response, session_token)
+            response.set_cookie(
+                DEVICE_COOKIE_NAME,
+                req.device_token,
+                max_age=30 * 86400,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+            return response
+        return web.json_response(req.to_public_dict())
+
+    async def _handle_remote_pending(self, request: web.Request) -> web.Response:
+        bound_port = self._bound_port()
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
+            return _reject(403, "forbidden host", json_body=True)
+        if not self._is_loopback_request(request) and not self._is_authenticated(request):
+            return _reject(401, "unauthorized", json_body=True)
+        return web.json_response({"pending": self._pending_pairing.list_pending()})
+
+    async def _handle_remote_approve(self, request: web.Request) -> web.Response:
+        guard = self._state_change_guard(request)
+        if guard is not None:
+            return guard
+        if not self._is_loopback_request(request) and not self._is_authenticated(request):
+            return _reject(401, "unauthorized", json_body=True)
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return _reject(400, "request_id is required", json_body=True)
+        req, token = self._pending_pairing.approve(request_id, self._devices)
+        if req is None:
+            return _reject(404, "pending request not found", json_body=True)
+        return web.json_response({"status": "ok", "request_id": request_id})
+
+    async def _handle_remote_reject(self, request: web.Request) -> web.Response:
+        guard = self._state_change_guard(request)
+        if guard is not None:
+            return guard
+        if not self._is_loopback_request(request) and not self._is_authenticated(request):
+            return _reject(401, "unauthorized", json_body=True)
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return _reject(400, "request_id is required", json_body=True)
+        ok = self._pending_pairing.reject(request_id)
+        if not ok:
+            return _reject(404, "pending request not found", json_body=True)
+        return web.json_response({"status": "ok", "request_id": request_id})
+
+    async def _handle_remote_devices(self, request: web.Request) -> web.Response:
+        bound_port = self._bound_port()
+        if not host_allowed(
+            request.headers.get("host"), bound_port=bound_port, allow_remote=self.remote_enabled
+        ):
+            return _reject(403, "forbidden host", json_body=True)
+        if not self._is_loopback_request(request) and not self._is_authenticated(request):
+            return _reject(401, "unauthorized", json_body=True)
+        return web.json_response({"devices": self._devices.list_devices()})
+
+    async def _handle_remote_revoke_device(self, request: web.Request) -> web.Response:
+        guard = self._state_change_guard(request)
+        if guard is not None:
+            return guard
+        if not self._is_loopback_request(request) and not self._is_authenticated(request):
+            return _reject(401, "unauthorized", json_body=True)
+        payload, error = await self._read_json_object(request)
+        if error is not None:
+            return error
+        assert payload is not None
+        device_id = payload.get("device_id")
+        if not isinstance(device_id, str) or not device_id:
+            return _reject(400, "device_id is required", json_body=True)
+        self._devices.revoke(device_id)
+        return web.json_response({"status": "ok"})
 
 
 def _daemon_ws_url(host: str, port: int) -> str:

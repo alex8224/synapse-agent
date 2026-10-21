@@ -19,6 +19,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../../stores/useConsoleStore.ts';
 import { useRightDockStore } from '../../stores/useRightDockStore.ts';
+import { Markdown } from '../Markdown.tsx';
 import {
   collaborationView,
   canControlAssignment,
@@ -105,14 +106,14 @@ const RequestBlock: React.FC<{
             <Chat16Regular aria-hidden="true" />
             <span>{message.mine ? '本会话' : '对方'} · {message.kindLabel}</span>
           </div>
-          <p
+          <div
             className={
-              'mt-0.5 whitespace-pre-wrap break-words ' +
+              'mt-0.5 break-words min-w-0 ' +
               (message.isReply ? 'text-gray-900' : 'text-gray-700')
             }
           >
-            {message.body}
-          </p>
+            <Markdown text={message.body} />
+          </div>
         </li>
       ))}
     </ul>

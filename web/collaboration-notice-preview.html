@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synapse 协作通知 UI 升级原型方案</title>
+  <style>
+    :root {
+      --bg-page: #f8fafc;
+      --bg-card: rgba(255, 255, 255, 0.88);
+      --bg-card-sub: rgba(241, 245, 249, 0.7);
+      --border-card: rgba(226, 232, 240, 0.85);
+      --border-card-hover: rgba(203, 213, 225, 1);
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --text-sub: #94a3b8;
+      --accent: #2563eb;
+      --accent-bg: #eff6ff;
+      --accent-border: #bfdbfe;
+      --success: #059669;
+      --success-bg: #ecfdf5;
+      --success-border: #a7f3d0;
+      --warning: #d97706;
+      --warning-bg: #fffbeb;
+      --warning-border: #fde68a;
+      --shadow-flyout: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --radius-lg: 14px;
+      --radius-md: 8px;
+      --radius-full: 9999px;
+    }
+
+    body.dark {
+      --bg-page: #0b0f17;
+      --bg-card: rgba(23, 31, 46, 0.88);
+      --bg-card-sub: rgba(15, 23, 42, 0.75);
+      --border-card: rgba(51, 65, 85, 0.7);
+      --border-card-hover: rgba(71, 85, 105, 1);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-sub: #64748b;
+      --accent: #3b82f6;
+      --accent-bg: rgba(59, 130, 246, 0.15);
+      --accent-border: rgba(59, 130, 246, 0.35);
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.12);
+      --success-border: rgba(16, 185, 129, 0.3);
+      --warning: #f59e0b;
+      --warning-bg: rgba(245, 158, 11, 0.12);
+      --warning-border: rgba(245, 158, 11, 0.3);
+      --shadow-flyout: 0 10px 30px -5px rgba(0, 0, 0, 0.4);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg-page);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      transition: background 0.25s, color 0.25s;
+    }
+
+    /* 顶部导航与控制器 */
+    header {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-card);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 12px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-title h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .tag-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-weight: 500;
+      border: 1px solid var(--accent-border);
+    }
+
+    .controls-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .ctrl-select, .ctrl-btn {
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-card);
+      background: var(--bg-card);
+      color: var(--text-main);
+      cursor: pointer;
+      outline: none;
+      transition: all 0.15s;
+    }
+    .ctrl-select:hover, .ctrl-btn:hover {
+      border-color: var(--border-card-hover);
+    }
+    .ctrl-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* 方案标签切换栏 */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-card-sub);
+      padding: 4px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-card);
+    }
+    .tab-btn {
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-btn.active {
+      background: var(--bg-card);
+      color: var(--text-main);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* 主舞台区域：模拟对话主界面 */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 1000px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 32px 20px 180px;
+      position: relative;
+    }
+
+    /* 方案说明卡片 */
+    .meta-panel {
+      margin-bottom: 24px;
+      padding: 16px 20px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      box-shadow: var(--shadow-sm);
+    }
+    .meta-panel h2 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .meta-panel p {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .meta-features {
+      margin-top: 10px;
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-main);
+      flex-wrap: wrap;
+    }
+    .meta-feature-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .meta-feature-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    /* 模拟聊天流内容 */
+    .chat-bubble {
+      margin-bottom: 18px;
+      max-width: 80%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .chat-user {
+      align-self: flex-end;
+      background: var(--accent);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .chat-ai {
+      align-self: flex-start;
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      color: var(--text-main);
+      border-bottom-left-radius: 4px;
+    }
+
+    /* 底部悬浮固定区域（模拟输入框 + 协作通知） */
+    .composer-dock {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      padding: 0 20px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      pointer-events: none;
+    }
+    .composer-dock > * {
+      pointer-events: auto;
+    }
+
+    /* 模拟 Composer 输入框 */
+    .mock-composer {
+      width: 100%;
+      max-width: 800px;
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .mock-input {
+      color: var(--text-sub);
+      font-size: 14px;
+      flex: 1;
+    }
+    .mock-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .mock-send-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 1. 现状呈现 (Before 真实惨状还原)                              */
+    /* ------------------------------------------------------------- */
+    .before-container {
+      width: 100%;
+      max-width: 900px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .before-strip {
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+      color: #374151;
+      width: 100%;
+    }
+    .dark .before-strip {
+      background: #1f2937;
+      border-color: #374151;
+      color: #d1d5db;
+    }
+    .before-icon {
+      color: #059669;
+      flex-shrink: 0;
+    }
+    .before-role {
+      color: #4b5563;
+      flex-shrink: 0;
+    }
+    .dark .before-role { color: #9ca3af; }
+    .before-title {
+      font-weight: 500;
+      color: #111827;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .dark .before-title { color: #f3f4f6; }
+    .before-hash {
+      font-family: monospace;
+      font-size: 11px;
+      color: #6b7280;
+      flex-shrink: 0;
+    }
+    .before-state {
+      color: #4b5563;
+      flex-shrink: 0;
+    }
+    .before-btn {
+      border: 1px solid #d1d5db;
+      background: #f9fafb;
+      padding: 3px 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: #374151;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+    .before-close {
+      color: #9ca3af;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      padding: 2px;
+      border: none;
+      background: none;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 2. 方案 A：优雅双行悬浮微卡 (Two-Line Floating Card)           */
+    /* ------------------------------------------------------------- */
+    .after-card-a {
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 12px;
+      background: var(--bg-card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-flyout);
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+    }
+    .after-card-a:hover {
+      border-color: var(--border-card-hover);
+      box-shadow: 0 14px 30px -4px rgba(0, 0, 0, 0.12);
+    }
+    .card-row-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: var(--radius-full);
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .state-pill.replied {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid var(--success-border);
+    }
+    .state-pill.working {
+      background: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid var(--warning-border);
+    }
+    .state-pill.working .pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--warning);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .state-pill.waiting_input {
+      background: var(--accent-bg);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+    }
+
+    .peer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .target-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+    .btn-detail {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: var(--radius-md);
+      background: var(--accent-bg);
+      color: var(--accent);
+      border: 1px solid var(--accent-border);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .btn-detail:hover {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-dismiss {
+      width: 26px;
+      height: 26px;
+      border-radius: var(--radius-md);
+      border: none;
+      background: transparent;
+      color: var(--text-sub);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .btn-dismiss:hover {
+      background: var(--bg-card-sub);
+      color: var(--text-main);
+    }
+
+    /* 卡片第二行：摘要与辅助操作 */
+    .card-row-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 10px;
+      border-radius: var(--radius-md);
+      background: var(--bg-card-sub);
+      font-size: 12px;
+    }
+    .bottom-summary {
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .bottom-summary-prefix {
+      font-weight: 500;
+      color: var(--text-main);
+      flex-shrink: 0;
+    }
+    .bottom-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .btn-sub-action {
+      padding: 2px 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      border: 1px solid var(--border-card);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-sub-action:hover {
+      color: var(--text-main);
+      border-color: var(--border-card-hover);
+    }
+    .btn-sub-action.danger:hover {
+      color: #ef4444;
+      border-color: #fca5a5;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 3. 方案 B：极简单行悬浮胶囊 (Compact Floating Pill)           */
+    /* ------------------------------------------------------------- */
+    .after-card-b {
+      width: 100%;
+      max-width: 620px;
+      margin-bottom: 12px;
+      background: var(--bg-card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-full);
+      box-shadow: var(--shadow-flyout);
+      padding: 5px 6px 5px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .after-card-b:hover {
+      border-color: var(--border-card-hover);
+      box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.12);
+    }
+    .pill-state-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .pill-state-dot.replied { background: var(--success); }
+    .pill-state-dot.working {
+      background: var(--warning);
+      animation: pulse 1.5s infinite;
+    }
+    .pill-role-label {
+      font-size: 11px;
+      color: var(--text-sub);
+      flex-shrink: 0;
+    }
+    .pill-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-main);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .pill-state-tag {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: var(--radius-full);
+      flex-shrink: 0;
+      font-weight: 500;
+    }
+    .pill-state-tag.replied {
+      background: var(--success-bg);
+      color: var(--success);
+    }
+    .pill-state-tag.working {
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+    .btn-pill-action {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: var(--radius-full);
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    .btn-pill-action:hover { opacity: 0.9; }
+
+    /* ------------------------------------------------------------- */
+    /* 4. 多任务堆叠折叠态 (Multi-task Stack)                        */
+    /* ------------------------------------------------------------- */
+    .multi-stack-container {
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stack-counter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .stack-toggle-btn {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--accent);
+      background: none;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* 痛点对比标记框 */
+    .annotation-box {
+      border: 1px dashed #ef4444;
+      background: rgba(239, 68, 68, 0.05);
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-top: 10px;
+      font-size: 12px;
+      color: #b91c1c;
+      line-height: 1.5;
+    }
+    .dark .annotation-box {
+      border-color: #f87171;
+      background: rgba(239, 68, 68, 0.1);
+      color: #fca5a5;
+    }
+    .annotation-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部控制与切换栏 -->
+  <header>
+    <div class="header-title">
+      <h1>协作通知 UI 原型对比与方案演示</h1>
+      <span class="tag-badge">交互式设计评审</span>
+    </div>
+
+    <!-- 方案 Tab 切换 -->
+    <div class="tab-bar">
+      <button class="tab-btn" onclick="switchTab('before')">现状还原 (Before)</button>
+      <button class="tab-btn active" onclick="switchTab('planA')">方案 A: 双行悬浮微卡 (推荐)</button>
+      <button class="tab-btn" onclick="switchTab('planB')">方案 B: 极简单行胶囊</button>
+      <button class="tab-btn" onclick="switchTab('multi')">多任务聚合态</button>
+    </div>
+
+    <!-- 实时状态与参数微调 -->
+    <div class="controls-group">
+      <select class="ctrl-select" id="stateSelect" onchange="updateState(this.value)">
+        <option value="replied">状态: 已收到结论 (replied)</option>
+        <option value="working">状态: 对方处理中 (working)</option>
+        <option value="waiting_input">状态: 等待补充 (waiting_input)</option>
+      </select>
+      <button class="ctrl-btn" onclick="toggleDarkMode()">切换深色/浅色</button>
+    </div>
+  </header>
+
+  <!-- 主体工作区 -->
+  <main>
+    <!-- 说明面板 -->
+    <div class="meta-panel" id="metaPanel">
+      <h2 id="metaTitle">方案 A：双行优雅悬浮微卡 (Two-Line Floating Card)</h2>
+      <p id="metaDesc">
+        将原本拉长失控的平铺横条解构为结构紧凑的双层卡片：首行由醒目的「状态胶囊」领衔，清晰展示目标会话名并做渐变截断；次行提供轻量级的「结论摘要」与控制动作，彻底告别单行流水账与裸露的短哈希 ID。
+      </p>
+      <div class="meta-features" id="metaFeatures">
+        <div class="meta-feature-item"><span class="meta-feature-dot"></span>首置状态胶囊（翠绿/琥珀色带呼吸脉冲）</div>
+        <div class="meta-feature-item"><span class="meta-feature-dot"></span>长标题宽度约束与优雅渐变截断</div>
+        <div class="meta-feature-item"><span class="meta-feature-dot"></span>操作区模块化（详情跳转、撤销、收起清晰分层）</div>
+        <div class="meta-feature-item"><span class="meta-feature-dot"></span>毛玻璃背景与悬浮光影，与界面自然融合</div>
+      </div>
+    </div>
+
+    <!-- 模拟常规对话流 -->
+    <div class="chat-bubble chat-user">
+      请帮我向 synapse-player 查询一下欧乐影视的分集匹配情况。
+    </div>
+    <div class="chat-bubble chat-ai">
+      已向目标会话 <code>synapse-player</code> 发起协作请求。在对方返回结论前，您仍然可以继续在此会话中进行其他独立工作。
+    </div>
+  </main>
+
+  <!-- 底部悬浮停靠区 (协作通知 + Composer) -->
+  <div class="composer-dock">
+
+    <!-- 1. 现状还原 (Before) -->
+    <div class="before-container" id="viewBefore" style="display: none;">
+      <div class="before-strip">
+        <svg class="before-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm3.3 5.3l-4 4a.7.7 0 01-1 0l-2-2a.7.7 0 011-1L7 8.6l3.3-3.3a.7.7 0 011 1z"/>
+        </svg>
+        <span class="before-role">我请对方</span>
+        <span class="before-title" title="synapse-player · 现在搜索欧乐的搜索不能正确的区分电源和电视剧吗？我发现，搜索 蛮好的 这个关键字返回的是电影，实际上是一个电视剧，没有获取到分集信息，导致只能播放单集">
+          synapse-player · 现在搜索欧乐的搜索不能正确的区分电源和电视剧吗？我发现，搜索 蛮好的 这个关键字返回的是电影，实际上是一个电视剧，没有获取到分集信息，导致只能播放单集
+        </span>
+        <span class="before-hash">c6635bb88525</span>
+        <span class="before-state" id="beforeStateText">已收到结论</span>
+        <button class="before-btn">查看详情 &rarr;</button>
+        <button class="before-close">&times;</button>
+      </div>
+
+      <!-- 模拟多条时的重复堆叠 -->
+      <div class="before-strip">
+        <svg class="before-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm3.3 5.3l-4 4a.7.7 0 01-1 0l-2-2a.7.7 0 011-1L7 8.6l3.3-3.3a.7.7 0 011 1z"/>
+        </svg>
+        <span class="before-role">我请对方</span>
+        <span class="before-title">
+          synapse-player · 现在搜索欧乐的搜索不能正确的区分电源和电视剧吗？我发现，搜索 蛮好的 这个关键字返回的是电影...
+        </span>
+        <span class="before-hash">c6635bb88525</span>
+        <span class="before-state">已收到结论</span>
+        <button class="before-btn">查看详情 &rarr;</button>
+        <button class="before-close">&times;</button>
+      </div>
+
+      <div class="annotation-box">
+        <div class="annotation-title">现状痛点诊断：</div>
+        1. 元素单行线性强塞，标题长达60多字导致横向布局彻底失控；<br/>
+        2. 裸露的十六进制短哈希 <code>c6635bb88525</code> 毫无业务语义；<br/>
+        3. 状态信息「已收到结论」缩在末尾，视觉识别度极低；<br/>
+        4. 多条通知垂直机械堆叠，严重遮蔽输入框与对话区域。
+      </div>
+    </div>
+
+    <!-- 2. 方案 A：优雅双行悬浮微卡 -->
+    <div class="after-card-a" id="viewPlanA">
+      <!-- 第一行：状态胶囊 + 目标主体 + 操作按钮 -->
+      <div class="card-row-top">
+        <div class="state-pill replied" id="pillA">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm3.3 5.3l-4 4a.7.7 0 01-1 0l-2-2a.7.7 0 011-1L7 8.6l3.3-3.3a.7.7 0 011 1z"/>
+          </svg>
+          <span id="pillTextA">已收到结论</span>
+        </div>
+
+        <div class="peer-badge">
+          <span>我请对方</span>
+          <span style="opacity: 0.5;">&bull;</span>
+          <span style="font-weight: 500;">synapse-player</span>
+        </div>
+
+        <div class="target-title" title="现在搜索欧乐的搜索不能正确的区分电源和电视剧吗？我发现，搜索 蛮好的 这个关键字返回的是电影...">
+          搜索欧乐电视剧分集识别异常排查
+        </div>
+
+        <div class="card-actions">
+          <button class="btn-detail" onclick="alert('打开右侧协作抽屉面板')">
+            <span>查看详情</span>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M6.3 3.3a1 1 0 000 1.4L9.6 8l-3.3 3.3a1 1 0 001.4 1.4l4-4a1 1 0 000-1.4l-4-4a1 1 0 00-1.4 0z"/>
+            </svg>
+          </button>
+          <button class="btn-dismiss" title="收起此条提示" onclick="dismissDemo('viewPlanA')">&times;</button>
+        </div>
+      </div>
+
+      <!-- 第二行：结论/最新进展摘要 + 辅助控制 -->
+      <div class="card-row-bottom">
+        <div class="bottom-summary">
+          <span class="bottom-summary-prefix">最新结论:</span>
+          <span id="summaryTextA">已定位搜索接口类型映射缺陷，欧乐电视剧分集解析已修复并交付结论。</span>
+        </div>
+        <div class="bottom-controls" id="controlsA" style="display: none;">
+          <button class="btn-sub-action">仅接收结果</button>
+          <button class="btn-sub-action danger">撤销交办</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 方案 B：极简单行悬浮胶囊 -->
+    <div class="after-card-b" id="viewPlanB" style="display: none;">
+      <div class="pill-state-dot replied" id="pillDotB"></div>
+      <span class="pill-role-label">我请对方</span>
+      <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">synapse-player</span>
+      <span style="color: var(--text-sub);">&bull;</span>
+      <span class="pill-title" title="现在搜索欧乐的搜索不能正确的区分电源和电视剧吗？...">
+        搜索欧乐电视剧分集识别异常排查 (已交付结论)
+      </span>
+      <span class="pill-state-tag replied" id="pillTagB">已收到结论</span>
+      <button class="btn-pill-action" onclick="alert('打开右侧协作抽屉面板')">
+        <span>查看详情</span>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M6.3 3.3a1 1 0 000 1.4L9.6 8l-3.3 3.3a1 1 0 001.4 1.4l4-4a1 1 0 000-1.4l-4-4a1 1 0 00-1.4 0z"/>
+        </svg>
+      </button>
+      <button class="btn-dismiss" title="收起此条提示" onclick="dismissDemo('viewPlanB')">&times;</button>
+    </div>
+
+    <!-- 4. 多任务聚合态 -->
+    <div class="multi-stack-container" id="viewMulti" style="display: none;">
+      <!-- 计数器与收放栏 -->
+      <div class="stack-counter-bar">
+        <span>当前共有 2 项后台协作正在推进</span>
+        <button class="stack-toggle-btn" onclick="toggleMultiExpand()">
+          <span id="toggleText">展开全部任务 (2)</span>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.3 6.3a1 1 0 011.4 0L8 9.6l3.3-3.3a1 1 0 111.4 1.4l-4 4a1 1 0 01-1.4 0l-4-4a1 1 0 010-1.4z"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- 主任务卡片 -->
+      <div class="after-card-a" style="margin-bottom: 0;">
+        <div class="card-row-top">
+          <div class="state-pill replied">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm3.3 5.3l-4 4a.7.7 0 01-1 0l-2-2a.7.7 0 011-1L7 8.6l3.3-3.3a.7.7 0 011 1z"/>
+            </svg>
+            <span>已收到结论</span>
+          </div>
+          <div class="peer-badge">
+            <span>我请对方</span>
+            <span style="opacity: 0.5;">&bull;</span>
+            <span style="font-weight: 500;">synapse-player</span>
+          </div>
+          <div class="target-title">搜索欧乐电视剧分集识别异常排查</div>
+          <div class="card-actions">
+            <button class="btn-detail">查看详情 &rarr;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 次任务展开面板 (默认收起) -->
+      <div id="subTaskCard" style="display: none; margin-top: 4px;">
+        <div class="after-card-a" style="margin-bottom: 0; background: var(--bg-card-sub);">
+          <div class="card-row-top">
+            <div class="state-pill working">
+              <span class="pulse-dot"></span>
+              <span>对方处理中</span>
+            </div>
+            <div class="peer-badge">
+              <span>我请对方</span>
+              <span style="opacity: 0.5;">&bull;</span>
+              <span style="font-weight: 500;">code-analyzer</span>
+            </div>
+            <div class="target-title">前端组件重构依赖依赖树扫描</div>
+            <div class="card-actions">
+              <button class="btn-detail">查看详情 &rarr;</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模拟 Composer 输入框 -->
+    <div class="mock-composer">
+      <div class="mock-input">输入消息继续沟通，或按 / 调用斜杠命令...</div>
+      <div class="mock-actions">
+        <button class="mock-send-btn">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 1.5l13 6.5-13 6.5V9l8-1-8-1V1.5z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab 切换逻辑
+    function switchTab(tabKey) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      event.target.classList.add('active');
+
+      document.getElementById('viewBefore').style.display = 'none';
+      document.getElementById('viewPlanA').style.display = 'none';
+      document.getElementById('viewPlanB').style.display = 'none';
+      document.getElementById('viewMulti').style.display = 'none';
+
+      const metaTitle = document.getElementById('metaTitle');
+      const metaDesc = document.getElementById('metaDesc');
+      const metaFeatures = document.getElementById('metaFeatures');
+
+      if (tabKey === 'before') {
+        document.getElementById('viewBefore').style.display = 'flex';
+        metaTitle.textContent = '现状还原 (Before - 真实问题)';
+        metaDesc.textContent = '完全还原截图中存在的问题：大长句子单行拉通、短哈希干扰视线、结论状态弱化在句末、双任务垂直硬堆叠导致严重侵占屏幕。';
+        metaFeatures.innerHTML = `
+          <div class="meta-feature-item" style="color: #ef4444;"><span class="meta-feature-dot" style="background: #ef4444;"></span>无视觉重心，全行文本挤压</div>
+          <div class="meta-feature-item" style="color: #ef4444;"><span class="meta-feature-dot" style="background: #ef4444;"></span>短ID c6635bb88525 噪音过大</div>
+          <div class="meta-feature-item" style="color: #ef4444;"><span class="meta-feature-dot" style="background: #ef4444;"></span>缺乏卡片质感，边框粗糙</div>
+        `;
+      } else if (tabKey === 'planA') {
+        document.getElementById('viewPlanA').style.display = 'flex';
+        metaTitle.textContent = '方案 A：双行优雅悬浮微卡 (Two-Line Floating Card) [推荐]';
+        metaDesc.textContent = '将原本拉长失控的平铺横条解构为结构紧凑的双层卡片：首行由醒目的「状态胶囊」领衔，清晰展示目标会话名并做渐变截断；次行提供轻量级的「结论摘要」与控制动作。';
+        metaFeatures.innerHTML = `
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>首置状态胶囊（翠绿/琥珀色带呼吸脉冲）</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>长标题宽度约束与优雅渐变截断</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>操作区模块化（详情跳转、撤销、收起清晰分层）</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>毛玻璃背景与悬浮光影，与界面自然融合</div>
+        `;
+      } else if (tabKey === 'planB') {
+        document.getElementById('viewPlanB').style.display = 'flex';
+        metaTitle.textContent = '方案 B：极简单行悬浮胶囊 (Compact Floating Pill)';
+        metaDesc.textContent = '面向追求极致紧凑、沉浸式打字的用户。高度压缩至单行药丸（Pill）形态，仅突出核心状态点、目标主体和高频操作。';
+        metaFeatures.innerHTML = `
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>极低垂直高度侵占（仅 36px）</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>状态点动态呼吸灯</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>操作整合为单颗药丸微按钮</div>
+        `;
+      } else if (tabKey === 'multi') {
+        document.getElementById('viewMulti').style.display = 'flex';
+        metaTitle.textContent = '多任务聚合态设计 (Multi-task Stack)';
+        metaDesc.textContent = '解决截图中多条通知机械上下堆叠覆盖半屏的问题。默认仅展示当前最新活跃的任务，上方微型计数条允许一键展开/折叠更多后台任务。';
+        metaFeatures.innerHTML = `
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>默认主次分明，不霸屏遮挡</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>支持一键手风琴展开查看多任务</div>
+          <div class="meta-feature-item"><span class="meta-feature-dot"></span>多项目协作并行更井井有条</div>
+        `;
+      }
+    }
+
+    // 状态切换演示
+    function updateState(state) {
+      const pillA = document.getElementById('pillA');
+      const pillTextA = document.getElementById('pillTextA');
+      const summaryTextA = document.getElementById('summaryTextA');
+      const controlsA = document.getElementById('controlsA');
+
+      const pillDotB = document.getElementById('pillDotB');
+      const pillTagB = document.getElementById('pillTagB');
+
+      if (state === 'replied') {
+        pillA.className = 'state-pill replied';
+        pillA.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm3.3 5.3l-4 4a.7.7 0 01-1 0l-2-2a.7.7 0 011-1L7 8.6l3.3-3.3a.7.7 0 011 1z"/></svg><span>已收到结论</span>';
+        summaryTextA.textContent = '已定位搜索接口类型映射缺陷，欧乐电视剧分集解析已修复并交付结论。';
+        controlsA.style.display = 'none';
+
+        pillDotB.className = 'pill-state-dot replied';
+        pillTagB.className = 'pill-state-tag replied';
+        pillTagB.textContent = '已收到结论';
+      } else if (state === 'working') {
+        pillA.className = 'state-pill working';
+        pillA.innerHTML = '<span class="pulse-dot"></span><span>对方处理中</span>';
+        summaryTextA.textContent = '对方正在分析欧乐视频分类数据结构与分集元数据...';
+        controlsA.style.display = 'flex';
+
+        pillDotB.className = 'pill-state-dot working';
+        pillTagB.className = 'pill-state-tag working';
+        pillTagB.textContent = '处理中';
+      } else if (state === 'waiting_input') {
+        pillA.className = 'state-pill waiting_input';
+        pillA.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.8 3.5h1.6v4.5H7.2V4.5zm.8 7a.9.9 0 110-1.8.9.9 0 010 1.8z"/></svg><span>等待补充</span>';
+        summaryTextA.textContent = '对方提问：请问该电视剧在播放时是否需要支持剧集分页加载？';
+        controlsA.style.display = 'none';
+
+        pillDotB.className = 'pill-state-dot';
+        pillDotB.style.background = '#3b82f6';
+        pillTagB.className = 'pill-state-tag';
+        pillTagB.style.background = 'rgba(59, 130, 246, 0.15)';
+        pillTagB.style.color = '#3b82f6';
+        pillTagB.textContent = '等待补充';
+      }
+    }
+
+    // 多任务展开折叠
+    let multiExpanded = false;
+    function toggleMultiExpand() {
+      multiExpanded = !multiExpanded;
+      const subCard = document.getElementById('subTaskCard');
+      const toggleText = document.getElementById('toggleText');
+      if (multiExpanded) {
+        subCard.style.display = 'block';
+        toggleText.textContent = '收起其他任务';
+      } else {
+        subCard.style.display = 'none';
+        toggleText.textContent = '展开全部任务 (2)';
+      }
+    }
+
+    // 关闭动画演示
+    function dismissDemo(id) {
+      const el = document.getElementById(id);
+      el.style.opacity = '0';
+      el.style.transform = 'scale(0.95) translateY(10px)';
+      setTimeout(() => {
+        el.style.display = 'none';
+      }, 200);
+    }
+
+    // 切换深浅主题
+    function toggleDarkMode() {
+      document.body.classList.toggle('dark');
+    }
+  </script>
+</body>
+</html>

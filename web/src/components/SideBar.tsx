@@ -1,6 +1,7 @@
 import {
   Add20Regular, Search20Regular, Settings20Regular, Dismiss20Regular,
   ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
+  FolderLink20Regular,
   CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
   DataUsage20Regular,
   BranchFork16Regular,
@@ -16,6 +17,7 @@ import {
   filterSessions,
   groupSessionsByTime,
   matchesProject,
+  normalizeWorkspacePath,
   projectLabel,
 } from '../stores/sessionList.ts';
 import {
@@ -29,6 +31,24 @@ import { UsageDashboardDialog } from './UsageDashboardDialog.tsx';
 
 /** Sessions shown per expanded project before the "show all" row (TUI parity). */
 const VISIBLE_SESSIONS = 5;
+
+/**
+ * The project id of the repository a worktree directory belongs to, or `null`.
+ *
+ * The desktop shell creates worktrees as siblings named `<repo>@<branch>`, so the
+ * repository is everything before the last `@`.  A path with no `@`, or one whose
+ * parent directory is not a registered project, has no group to fold into.
+ */
+function worktreeParentId(
+  workspacePath: string,
+  projectIdByPath: Map<string, string>,
+): string | null {
+  const path = normalizeWorkspacePath(workspacePath);
+  const at = path.lastIndexOf('@');
+  if (at <= 0) return null;
+  const parentId = projectIdByPath.get(path.slice(0, at));
+  return parentId === undefined ? null : parentId;
+}
 
 /**
  * The live status of every session the console holds a view for, keyed by
@@ -243,6 +263,52 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
     );
   }, [projects, query, activeProjectId, searchItems, projectSessions]);
 
+  /**
+   * The tree's rows: each repository first, the worktrees made from it directly
+   * under it and one level in.
+   *
+   * A worktree is recognised from the desktop shell's fixed convention alone --
+   * its directory is `<main checkout>@<branch>` next to the main checkout -- so
+   * the grouping needs no extra IPC, no `ProjectListItem` field and no daemon
+   * contract.  A project whose parent directory is not itself registered stays at
+   * the top level, which is what a worktree opened on its own should look like;
+   * and a search never groups, because a hit has to be readable without a parent
+   * row the query filtered away.
+   */
+  const projectRows = useMemo(() => {
+    if (query !== '') return visibleProjects.map((project) => ({ project, depth: 0 }));
+    const projectIdByPath = new Map<string, string>();
+    for (const project of visibleProjects) {
+      projectIdByPath.set(normalizeWorkspacePath(project.workspace_path), project.project_id);
+    }
+    const children = new Map<string, typeof visibleProjects>();
+    const roots: typeof visibleProjects = [];
+    for (const project of visibleProjects) {
+      const parentId = worktreeParentId(project.workspace_path, projectIdByPath);
+      if (parentId === null) {
+        roots.push(project);
+      } else {
+        children.set(parentId, [...(children.get(parentId) ?? []), project]);
+      }
+    }
+    const rows: { project: (typeof visibleProjects)[number]; depth: number }[] = [];
+    for (const root of roots) {
+      rows.push({ project: root, depth: 0 });
+      for (const child of children.get(root.project_id) ?? []) {
+        rows.push({ project: child, depth: 1 });
+      }
+    }
+    // Safety net: two registered projects can resolve to the same folded path
+    // (the catalog's uniqueness is on its own spelling), and a child filed under
+    // a project that ended up not being a root would otherwise never be painted.
+    // A row that did not make it into the tree is drawn at the top level.
+    const painted = new Set(rows.map((row) => row.project.project_id));
+    for (const project of visibleProjects) {
+      if (!painted.has(project.project_id)) rows.push({ project, depth: 0 });
+    }
+    return rows;
+  }, [visibleProjects, query]);
+
   return (
     <nav
       ref={navRef}
@@ -391,7 +457,7 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
           </div>
         )}
 
-        {visibleProjects.map((project) => {
+        {projectRows.map(({ project, depth }) => {
           const isActive = project.project_id === activeProjectId;
           // A search hit must be visible even if the user collapsed the project
           // it belongs to, otherwise the sidebar would report a match with
@@ -427,7 +493,14 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
             : raw.length;
 
           return (
-            <div key={project.project_id} className="mt-1">
+            <div
+              key={project.project_id}
+              className="mt-1"
+              // A worktree is a project of its own (its own sessions, its own
+              // workspace), so it keeps the full row -- only its indent and its
+              // icon say that it belongs to the repository above it.
+              style={depth === 0 ? undefined : { paddingLeft: depth * 12 }}
+            >
               <div
                 className={`ui-nav-row group flex w-full items-center gap-0.5 px-1 py-1 ${
                   isActive ? 'text-gray-900' : 'text-gray-600'
@@ -445,7 +518,13 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                   {expanded
                     ? <ChevronDown20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
                     : <ChevronRight20Regular aria-hidden="true" className="shrink-0 text-gray-500" />}
-                  <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-600" />
+                  {depth === 0 ? (
+                    <Folder20Regular aria-hidden="true" className="shrink-0 text-gray-600" />
+                  ) : (
+                    // A worktree row: the same folder shape, marked as the linked
+                    // checkout it is, so it never reads as a second repository.
+                    <FolderLink20Regular aria-hidden="true" className="shrink-0 text-gray-500" />
+                  )}
                   <span className={`truncate ${isActive ? 'font-medium' : ''}`}>
                     {projectLabel(project)}
                   </span>

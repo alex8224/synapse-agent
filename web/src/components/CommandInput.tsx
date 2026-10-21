@@ -319,7 +319,7 @@ export const CommandInput: React.FC = () => {
     runtimeEngine === null || route !== 'browser'
       ? null
       : selectedProvider?.kind === 'cloud' && !desktopShell
-        ? `${activeEngineLabel}仅桌面端可用；当前使用浏览器内置识别`
+        ? `${selectedProvider?.label ?? '云端语音引擎'}仅桌面端可用；当前使用浏览器内置识别`
         : `${runtimeEngine.reason ?? '语音引擎不可用'}；当前使用浏览器内置识别`;
   const composerNotice = attachmentError ?? speech.error ?? speechNotice;
 

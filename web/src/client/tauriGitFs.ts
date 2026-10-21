@@ -18,11 +18,13 @@ import {
   parseGitLog,
   parseGitRefs,
   parseGitStatus,
+  parseGitWorktreeAdd,
   type GitCommitDetailView,
   type GitDiffView,
   type GitLogView,
   type GitRefsView,
   type GitStatusView,
+  type GitWorktreeAddView,
 } from '../runtime-client/git.ts';
 import { ARTIFACT_CHUNK_BYTES, ARTIFACT_LIST_LIMIT } from '../runtime-client/artifacts.ts';
 import type {
@@ -375,6 +377,64 @@ export async function fetchGitStashDiff(
     index,
   });
   return parseGitDiff(res);
+}
+
+/*
+ * The three calls below are the only ones that write git.  They stay native-only
+ * for the same reason the history reads are: the shell owns the repository and
+ * the daemon has no contract method for them.  Each is one named operation, so
+ * the console never composes an argv -- it names a branch or a worktree the refs
+ * read just reported, and git decides the rest.
+ */
+
+/** Switch the workspace to `branch`, optionally creating it first. */
+export async function switchGitBranch(
+  branch: string,
+  create: boolean,
+  workspacePath?: string,
+): Promise<void> {
+  const internals = requireGitHistory();
+  await internals.invoke<unknown>('tauri_git_switch_branch', {
+    workspace: workspacePath || undefined,
+    branch,
+    create,
+  });
+}
+
+/**
+ * Create the worktree for `branch` at the shell's fixed `<repo>@<branch>` path.
+ *
+ * `createBranch` makes the branch when it does not exist yet; without it git
+ * checks out the existing one and refuses when another worktree already holds
+ * it -- that refusal is reported verbatim.
+ */
+export async function addGitWorktree(
+  branch: string,
+  createBranch: boolean,
+  workspacePath?: string,
+): Promise<GitWorktreeAddView> {
+  const internals = requireGitHistory();
+  const res = await internals.invoke<unknown>('tauri_git_worktree_add', {
+    workspace: workspacePath || undefined,
+    branch,
+    // `rename_all = "snake_case"` on the shell's command: the key stays snake_case.
+    create_branch: createBranch,
+  });
+  return parseGitWorktreeAdd(res);
+}
+
+/** Remove one worktree of the workspace's repository (`force` discards its changes). */
+export async function removeGitWorktree(
+  path: string,
+  force: boolean,
+  workspacePath?: string,
+): Promise<void> {
+  const internals = requireGitHistory();
+  await internals.invoke<unknown>('tauri_git_worktree_remove', {
+    workspace: workspacePath || undefined,
+    path,
+    force,
+  });
 }
 
 /**

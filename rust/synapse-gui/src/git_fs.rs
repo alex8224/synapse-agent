@@ -245,6 +245,71 @@ mod tests {
     }
 
     #[test]
+    fn test_worktree_add_switch_and_remove() {
+        let dir = seeded_repo("worktree");
+        let main = main_worktree(&dir).expect("the main worktree must resolve");
+        assert!(same_path(&main.to_string_lossy(), &dir.to_string_lossy()));
+
+        // A new branch gets its own worktree at the fixed sibling path, and a
+        // nested branch name folds into one directory name.
+        let added = add_worktree(&dir, "feature/x", true).expect("worktree add must succeed");
+        assert!(added.created_branch);
+        let expected = worktree_path_for(&main, "feature/x").unwrap();
+        assert!(same_path(&added.path, &expected.to_string_lossy()));
+        assert!(
+            // `worktree_path_for` joins with the platform separator, so the name
+            // check folds them: the point is the fixed directory name, not how
+            // this platform spells a path.
+            added
+                .path
+                .replace('\\', "/")
+                .ends_with("worktree@feature-x"),
+            "nested branch names fold to one segment: {}",
+            added.path
+        );
+        assert!(Path::new(&added.path).is_dir());
+
+        // The new worktree is part of the repository's inventory, on its branch.
+        let refs = get_git_refs(&dir).unwrap();
+        assert_eq!(refs.worktrees.len(), 2);
+        let second = refs
+            .worktrees
+            .iter()
+            .find(|worktree| !worktree.is_main)
+            .expect("the created worktree must be listed");
+        assert_eq!(second.branch.as_deref(), Some("feature/x"));
+
+        // Switching is refused for a branch another worktree already holds, and
+        // accepted for one nobody holds.
+        assert!(switch_branch(&dir, "feature/x", false).is_err());
+        switch_branch(&dir, "topic", true).expect("switch -c must succeed");
+        assert_eq!(
+            get_git_status(&dir).unwrap().branch.as_deref(),
+            Some("topic")
+        );
+        // The fixed path is derived from the main worktree even when asked from
+        // inside another one.
+        assert!(same_path(
+            &main_worktree(Path::new(&added.path))
+                .unwrap()
+                .to_string_lossy(),
+            &dir.to_string_lossy()
+        ));
+
+        // Removal only ever reaches a worktree of this repository.
+        assert!(remove_worktree(&dir, &dir.to_string_lossy(), false).is_err());
+        assert!(remove_worktree(&dir, "definitely/not/a/worktree", false).is_err());
+        // A worktree cannot be removed from inside itself: the running session's
+        // own directory is the one thing this must never pull away.
+        assert!(remove_worktree(Path::new(&added.path), &added.path, true).is_err());
+        remove_worktree(&dir, &added.path, false).expect("worktree remove must succeed");
+        assert!(!Path::new(&added.path).exists());
+        assert_eq!(get_git_refs(&dir).unwrap().worktrees.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_log_pages_and_reports_more() {
         let dir = seeded_repo("log");
         let page = get_git_log(&dir, None, 2, 0, false, None).expect("log must read");
@@ -1499,6 +1564,160 @@ pub fn get_git_stash_diff(workspace: &Path, index: u32) -> Result<GitDiffView, S
         binary: false,
         truncated,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Branch switching and worktrees.
+//
+// This is the only part of the git surface that writes.  Everything above reads
+// through `run_git_cmd_ro`; these three go through `run_git_cmd`, and each is
+// one named operation (switch, add, remove) rather than a general "run this git
+// command" command, so the webview can never hand git an argv it composed
+// itself.  Each one validates the branch or the path it was given first.
+// ---------------------------------------------------------------------------
+
+/// The repository's main worktree: the one `git worktree list` reports first.
+///
+/// Worktree locations are derived from it rather than from the workspace being
+/// read, so a worktree created while the reader sits *inside* a worktree still
+/// lands next to the main checkout instead of nesting under it.
+pub fn main_worktree(workspace: &Path) -> Result<PathBuf, String> {
+    let worktrees = read_worktrees(workspace)?;
+    if let Some(main) = worktrees.iter().find(|worktree| worktree.is_main) {
+        return Ok(PathBuf::from(&main.path));
+    }
+    // No inventory (a bare repository, or a git too old to list worktrees): the
+    // repository root is the best answer left, and it is what `worktree add`
+    // resolves a relative path against anyway.
+    let root = run_git_cmd_ro(workspace, &["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(root.trim()))
+}
+
+/// The fixed worktree location for `branch`: a sibling of the main worktree
+/// named `<repo>@<branch>`.
+///
+/// Fixed rather than configurable on purpose -- the shell, the console and the
+/// reader all have to predict the same path, and a convention nobody has to
+/// configure is what makes "create it, then switch to it" one click.  A nested
+/// branch name folds its `/` to `-` (`feature/x` -> `feature-x`), so the
+/// worktree stays one directory and the mapping stays readable.
+pub fn worktree_path_for(main: &Path, branch: &str) -> Result<PathBuf, String> {
+    let name = main
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("无法从主工作树推断仓库名: {}", main.display()))?;
+    let parent = main
+        .parent()
+        .ok_or_else(|| format!("主工作树没有上级目录: {}", main.display()))?;
+    Ok(parent.join(format!("{name}@{}", branch.replace('/', "-"))))
+}
+
+/// Switch the workspace to `branch`, optionally creating it first.
+///
+/// A branch already checked out in another worktree is refused by git itself,
+/// and that refusal is reported verbatim: it names the worktree that holds it,
+/// which is the one thing the reader needs to know.
+pub fn switch_branch(workspace: &Path, branch: &str, create: bool) -> Result<(), String> {
+    validate_git_rev(branch)?;
+    if create {
+        run_git_cmd(workspace, &["switch", "-c", branch])?;
+    } else {
+        // `--no-guess`: without it `git switch <name>` invents a tracking branch
+        // for a name that only exists on a remote, which is a creation this
+        // surface did not ask for.
+        run_git_cmd(workspace, &["switch", "--no-guess", branch])?;
+    }
+    Ok(())
+}
+
+/// A worktree this surface just created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeAddView {
+    /// Absolute path, the one the console registers as a project.
+    pub path: String,
+    pub branch: String,
+    pub created_branch: bool,
+}
+
+/// Create the worktree for `branch` at its fixed location.
+///
+/// `create_branch` branches off the *main* checkout's HEAD, because the add runs
+/// in the main worktree whatever worktree the reader is currently in.
+pub fn add_worktree(
+    workspace: &Path,
+    branch: &str,
+    create_branch: bool,
+) -> Result<GitWorktreeAddView, String> {
+    validate_git_rev(branch)?;
+    let main = main_worktree(workspace)?;
+    let target = worktree_path_for(&main, branch)?;
+    if target.exists() {
+        return Err(format!("工作树目录已存在: {}", target.display()));
+    }
+    let target_text = target.to_string_lossy().to_string();
+    if create_branch {
+        run_git_cmd(
+            &main,
+            &["worktree", "add", "-b", branch, target_text.as_str()],
+        )?;
+    } else {
+        run_git_cmd(&main, &["worktree", "add", target_text.as_str(), branch])?;
+    }
+    Ok(GitWorktreeAddView {
+        path: target_text,
+        branch: branch.to_string(),
+        created_branch: create_branch,
+    })
+}
+
+/// Remove one worktree of this repository.
+///
+/// The path is matched against `git worktree list` first, so this can only ever
+/// delete a worktree of the repository being read -- never an arbitrary
+/// directory the webview named.  The main worktree is refused here rather than
+/// left to git, because the reader needs a sentence, not a usage error.
+pub fn remove_worktree(workspace: &Path, path: &str, force: bool) -> Result<(), String> {
+    let worktrees = read_worktrees(workspace)?;
+    let target = worktrees
+        .iter()
+        .find(|worktree| same_path(&worktree.path, path))
+        .ok_or_else(|| format!("不是本仓库的工作树: {path}"))?;
+    if target.is_main {
+        return Err("不能删除主工作树".to_string());
+    }
+    // The workspace itself: git fails on it with a bare "Permission denied"
+    // (Windows) or "device or resource busy", and neither says what went wrong.
+    // Refusing here also means a running session's directory is never pulled out
+    // from under it by its own click.
+    if same_path(path, &workspace.to_string_lossy()) {
+        return Err("不能删除当前工作区所在的工作树，请先切换到别的项目".to_string());
+    }
+    if force {
+        run_git_cmd(workspace, &["worktree", "remove", "--force", path])?;
+    } else {
+        run_git_cmd(workspace, &["worktree", "remove", path])?;
+    }
+    Ok(())
+}
+
+/// Two paths naming the same directory, tolerating a case-insensitive filesystem.
+fn same_path(left: &str, right: &str) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => {
+            let left = left.to_string_lossy().to_string();
+            let right = right.to_string_lossy().to_string();
+            // Windows and macOS both default to case-insensitive volumes; the
+            // `git worktree list` spelling and the webview's spelling can differ
+            // by case alone on either.
+            if cfg!(any(windows, target_os = "macos")) {
+                left.eq_ignore_ascii_case(&right)
+            } else {
+                left == right
+            }
+        }
+        _ => false,
+    }
 }
 
 /// List artifacts in workspace directory

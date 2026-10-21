@@ -31,7 +31,7 @@ test('collaboration input has the same summary and identity live and after reloa
     kind: 'user', text: summary.text, tool_calls: [], tool_results: [], turn_id: 't1',
     collaboration: summary,
   }], { startTurn: 1, pageTag: 'reload' });
-  assert.equal(restored[0].type, 'info');
+  assert.equal(restored[0].type, 'collaboration');
   assert.equal(restored[0].id, state.messages[0].id);
   assert.equal(restored[0].content, state.messages[0].content);
 });
