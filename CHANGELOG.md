@@ -6,6 +6,18 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.60
+
+### New Features
+
+- **Frosted Glass (Mica/Acrylic) UI Integration**: Overhaul transcript block elements for native frosted glass backdrops. Markdown tables now render as transparent typography on the glass canvas with subtle horizontal dividers and custom scrollbars rather than opaque solid cards.
+- **Translucent Code Blocks & Tool Outputs**: Code blocks, terminal output runs, and tool execution rows now feature semi-transparent tinted backdrops and refined low-contrast borders, preserving syntax clarity while allowing background vibrancy to shine through.
+- **Modernized Reasoning & Changes Cards**: Eliminate heavy card drop shadows; thought cards feature straight corners and crystal-like translucent inline code tags without harsh black patches; workspace file change summaries adopt translucent frosted surfaces.
+
+### Engineering
+
+- **Table & Theme Contract Guards**: Update `markdownTableGuard.test.ts` to enforce the transparent print-on-glass table specification, and maintain strict zero-backdrop-blur compliance for in-page cards under `themeContract.test.ts`.
+
 ## v0.1.59
 
 ### New Features
