@@ -6,6 +6,22 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.59
+
+### New Features
+
+- **Cross-Session Collaboration**: Introduce the `synapse.runtime.collaboration` domain for inter-session delegation and mailbox messaging with schema-2 migration support, scoped RPC services, assignment fences, and runtime agent tools (`contact_session`, `reply_to_collaboration`).
+- **Collaboration UI & Rich Cards**: Add composer session mentions, interactive collaboration notification bars, dedicated collaboration message cards, and peer session previews in the web console.
+- **Project Tasks Backlog**: Implement persistent project task management tools (`list_project_tasks`, `create_project_task`, `update_project_task`, `delete_project_task`) and align styling with the web console theme contract.
+
+### Bug Fixes
+
+- **Collaboration Interactions**: Refine flyout selection handling and prefetch session mention metadata to eliminate flicker and selection latency.
+
+### Engineering
+
+- **Collaboration Test Suites**: Add comprehensive test coverage across collaboration store, mailbox service, runtime contracts, agent tool invocations, and daemon event streams.
+
 ## v0.1.58
 
 ### New Features
