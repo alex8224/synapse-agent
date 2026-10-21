@@ -66,11 +66,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 
   return (
     <div
-      className={`my-2 overflow-hidden rounded-control border border-line bg-canvas ${
+      className={`code-block my-2 overflow-hidden rounded-control border border-line/60 bg-canvas transition-colors ${
         fill ? 'flex min-h-0 flex-1 flex-col' : ''
       }`}
     >
-      <div className="flex items-center justify-between border-b border-line bg-sunken px-2.5 py-1">
+      <div className="code-block-header flex items-center justify-between border-b border-line/60 bg-sunken px-2.5 py-1 transition-colors">
         <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
           {lang || 'text'}
           {streaming ? ' · streaming' : ''}

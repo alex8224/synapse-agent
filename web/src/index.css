@@ -1,3 +1,4 @@
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -850,39 +851,130 @@ html[data-tauri='true'][data-theme='fluent-light'] .wco-caption {
 /* Thought reasoning cards and pills in transcript: translucent frosted glass with soft sheen and blur */
 html[data-tauri='true'] .thought-card,
 html[data-tauri='true'] .fluent-accordion-content .material-card {
+  border-radius: 0 !important;
   background-color: rgba(255, 255, 255, 0.035) !important;
   -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
   backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.28), inset 0 1px 0 0 rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
 }
 
 html[data-tauri='true'][data-theme='fluent-light'] .thought-card,
 html[data-tauri='true'][data-theme='fluent-light'] .fluent-accordion-content .material-card {
+  border-radius: 0 !important;
   background-color: rgba(255, 255, 255, 0.45) !important;
   -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
   backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  border-color: rgba(0, 0, 0, 0.08) !important;
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06), inset 0 1px 0 0 rgba(255, 255, 255, 0.7) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  box-shadow: none !important;
 }
 
 html[data-tauri='true'] .thought-pill {
   background-color: rgba(255, 255, 255, 0.05) !important;
   -webkit-backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
   backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html[data-tauri='true'] .thought-pill:hover {
-  background-color: rgba(255, 255, 255, 0.09) !important;
-  border-color: rgba(255, 255, 255, 0.20) !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
 }
 
 html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
   background-color: rgba(255, 255, 255, 0.60) !important;
   -webkit-backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
   backdrop-filter: blur(calc(var(--tauri-blur-radius, 24px) * 0.65)) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Markdown content integration on frosted glass surface (Tauri desktop) */
+html[data-tauri='true'] .markdown-body table {
+  background-color: transparent !important;
+}
+
+html[data-tauri='true'] .markdown-body .table-wrapper {
+  background-color: transparent !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .markdown-body .table-wrapper {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+html[data-tauri='true'] .markdown-body tbody tr:nth-child(even) > td {
+  background-color: rgba(255, 255, 255, 0.02) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .markdown-body tbody tr:nth-child(even) > td {
+  background-color: rgba(0, 0, 0, 0.015) !important;
+}
+
+html[data-tauri='true'] .markdown-body tbody tr:hover > td {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .markdown-body tbody tr:hover > td {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+/* In-page code blocks: translucent tinted surface preserving syntax contrast over acrylic */
+html[data-tauri='true'] .code-block {
+  background-color: rgba(0, 0, 0, 0.22) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 2px 12px -2px rgba(0, 0, 0, 0.25) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .code-block {
+  background-color: rgba(255, 255, 255, 0.45) !important;
   border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.04) !important;
+}
+
+html[data-tauri='true'] .code-block-header {
+  background-color: rgba(255, 255, 255, 0.025) !important;
+  border-bottom-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .code-block-header {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Inline code: translucent crystal badge over frosted glass without opaque patches */
+html[data-tauri='true'] .inline-code {
+  background-color: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .inline-code {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Turn workspace changes card: seamless translucent glass surface */
+html[data-tauri='true'] .changes-card {
+  background-color: rgba(0, 0, 0, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.2) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .changes-card {
+  background-color: rgba(255, 255, 255, 0.40) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Subagent & run_code tool cards */
+html[data-tauri='true'] .tool-card {
+  background-color: rgba(0, 0, 0, 0.20) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+html[data-tauri='true'][data-theme='fluent-light'] .tool-card {
+  background-color: rgba(255, 255, 255, 0.40) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
 }
 
 @layer utilities {
@@ -1318,12 +1410,11 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
   column floor above lives out here.
 */
 .markdown-body table {
-  background-color: rgb(var(--surface));
-  border-style: hidden;
+  background-color: transparent;
 }
 
 .markdown-body tbody tr:nth-child(even) > td {
-  background-color: rgb(var(--gray-900) / 0.06);
+  background-color: rgb(var(--gray-900) / 0.03);
 }
 
 .markdown-body tbody tr:hover > td {
@@ -1340,6 +1431,12 @@ html[data-tauri='true'][data-theme='fluent-light'] .thought-pill {
 .markdown-body td code {
   border: 1px solid rgb(var(--line));
 }
+
+.inline-code {
+  background-color: rgb(var(--gray-900) / 0.05);
+  border: 1px solid rgb(var(--line) / 0.45);
+}
+
 
 /*
   Window Controls Overlay: the installed console owns the caption strip.

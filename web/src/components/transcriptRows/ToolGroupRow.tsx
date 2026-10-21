@@ -182,7 +182,7 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
           </span>
         </button>
         {toolExpanded && (
-          <div className="ml-4 border-l border-line pb-1.5 pl-2.5 pr-2 pt-1">
+          <div className="ml-4 border-l border-line/60 pb-1.5 pl-2.5 pr-2 pt-1">
             {/* Result bodies can be large or expensive to parse, so they are mounted
                 only for the individual call the reader opened. */}
             {detailParams.length > 0 && (
@@ -209,7 +209,7 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
               />
             ) : (
               t.preview && (
-                <div className="whitespace-pre-wrap break-all text-gray-600">
+                <div className="rounded-control border border-line/40 bg-sunken/40 px-2.5 py-1.5 whitespace-pre-wrap break-all text-gray-600">
                   {t.preview}
                 </div>
               )
@@ -242,7 +242,7 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     const hasOutput = Boolean(resultText) || Boolean(failureReason) || parentFailed || subRunning;
 
     return (
-      <div key={key} className="rounded-control border border-line bg-raised">
+      <div key={key} className="tool-card rounded-control border border-line/60 bg-raised transition-colors">
         {/* The raised fill equals the dark palette's hover step, so the header takes
             the pressed step to stay visible when it is hovered. */}
         <button
@@ -437,7 +437,7 @@ export const ToolGroupRow = React.memo(function ToolGroupRow({
     const output = expanded ? runCodeOutput(node.parent.preview) : '';
     const failureReason = resultFailure || toolFailureReason(node.parent.status, node.parent.error);
     return (
-      <div key={key} className="rounded-control border border-line bg-raised">
+      <div key={key} className="tool-card rounded-control border border-line/60 bg-raised transition-colors">
         <button
           type="button"
           onClick={() => actions.onToggleSubagent(message.id, key)}

@@ -55,7 +55,7 @@ function renderSpans(spans: Span[], keyPrefix: string, linkify = true): React.Re
       return (
         <code
           key={key}
-          className="rounded-control bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-gray-800"
+          className="inline-code rounded-control px-1.5 py-0.5 font-mono text-[0.85em] text-gray-800 transition-colors"
         >
           {span.text}
         </code>
@@ -145,7 +145,10 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ block, nodeKey: key }:
 
   if (block.type === 'quote') {
     return (
-      <blockquote key={key} className="my-2 border-l-2 border-gray-300 pl-3 text-gray-600">
+      <blockquote
+        key={key}
+        className="my-2.5 rounded-r-control border-l-2 border-line bg-gray-900/[0.03] pl-3.5 pr-3 py-1.5 text-gray-600"
+      >
         {renderBlocks(block.blocks, key)}
       </blockquote>
     );
@@ -182,13 +185,12 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ block, nodeKey: key }:
       // 16px chat prose instead of looking like a footnote; the header keeps the
       // same size and only differs by weight.  `overflow-x-auto` keeps a wide
       // table scrolling inside its own box rather than stretching the column.
-      // The wrapper carries the frame and the opaque surface: the cells stay on
-      // a solid `--surface` instead of the semi-transparent mica behind the
-      // chat, and `index.css` hides the table's own outer border so the frame
-      // is drawn once.
+      // The wrapper delivers a print-on-glass editorial layout: transparent
+      // background directly integrates with the frosted mica/acrylic canvas,
+      // with subtle dividing lines and a customized fluent scrollbar.
       <div
         key={key}
-        className="my-2 max-w-full overflow-x-auto rounded-control border border-line bg-surface"
+        className="table-wrapper my-2.5 max-w-full overflow-x-auto fluent-scrollbar rounded-control border border-line/40 bg-transparent"
       >
         <table className="w-full border-collapse text-sm">
           <thead>
@@ -196,7 +198,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ block, nodeKey: key }:
               {block.header.map((cell, cellIndex) => (
                 <th
                   key={`${key}.h${cellIndex}`}
-                  className="border border-line bg-transparent px-3 py-1.5 text-left font-semibold text-gray-900"
+                  className="border-b border-line bg-transparent px-3.5 py-2 text-left font-semibold text-gray-900"
                 >
                   {renderSpans(cell, `${key}.h${cellIndex}`)}
                 </th>
@@ -209,7 +211,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ block, nodeKey: key }:
                 {row.map((cell, cellIndex) => (
                   <td
                     key={`${key}.r${rowIndex}c${cellIndex}`}
-                    className="border border-line px-3 py-1.5 align-top text-gray-700"
+                    className="border-b border-line/40 px-3.5 py-2 align-top text-gray-700"
                   >
                     {renderSpans(cell, `${key}.r${rowIndex}c${cellIndex}`)}
                   </td>

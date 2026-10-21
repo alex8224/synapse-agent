@@ -25,7 +25,7 @@ export const TerminalOutput: React.FC<{ text: string; command?: string }> = ({ t
   );
   const prompt = (command ?? '').trim();
   return (
-    <div className="mt-1 overflow-hidden rounded-control border border-line bg-canvas">
+    <div className="code-block mt-1 overflow-hidden rounded-control border border-line/60 bg-canvas transition-colors">
       <pre className="fluent-scrollbar max-h-[28rem] overflow-auto whitespace-pre px-2.5 py-1.5 font-mono text-[12px] leading-5">
         {prompt !== '' && (
           <span className="block text-gray-500">

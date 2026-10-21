@@ -43,7 +43,7 @@ test('the header keeps the cell size and only differs by weight', () => {
   // code blocks use.
   assert.ok(
     table.includes(
-      'border border-line bg-transparent px-3 py-1.5 text-left font-semibold text-gray-900',
+      'border-b border-line bg-transparent px-3.5 py-2 text-left font-semibold text-gray-900',
     ),
     'the header must share the cell padding and size, marked only by font-semibold',
   );
@@ -51,7 +51,7 @@ test('the header keeps the cell size and only differs by weight', () => {
 
 test('the body cells get roomier padding', () => {
   assert.ok(
-    table.includes('border border-line px-3 py-1.5 align-top text-gray-700'),
+    table.includes('border-b border-line/40 px-3.5 py-2 align-top text-gray-700'),
     'the cells must use the roomier padding',
   );
 });
@@ -101,22 +101,22 @@ test('body rows alternate so a wide row can be followed across the grid', () => 
   // stripe is derived from the *foreground* role, so it is a dark band on light
   // and a light band on dark; at 6% it lands on a clear ~#F0F2F5 band on light,
   // strong enough to track a wrapped row across the grid.
-  const rule = /\.markdown-body tbody tr:nth-child\(even\) > td \{\s*background-color:\s*rgb\(var\(--gray-900\) \/ 0\.06\);/;
+  const rule = /\.markdown-body tbody tr:nth-child\(even\) > td \{\s*background-color:\s*rgb\(var\(--gray-900\) \/ 0\.03\);/;
   assert.ok(rule.test(stylesheet), 'even body rows must carry the stripe');
   assert.ok(
-    stylesheet.indexOf('.markdown-body tbody tr:nth-child(even)') > utilitiesLayerEnd(),
+    stylesheet.lastIndexOf('.markdown-body tbody tr:nth-child(even)') > utilitiesLayerEnd(),
     'the stripe must outrank the cell utilities',
   );
 });
 
-test('the table paints an opaque surface of its own', () => {
-  // The transcript sits on a semi-transparent mica backdrop; without an opaque
-  // surface role the cells would show it through and the grid would smear.
-  const rule = /\.markdown-body table \{\s*background-color:\s*rgb\(var\(--surface\)\);/;
-  assert.ok(rule.test(stylesheet), 'the table must paint the surface role');
+test('the table renders transparently on the glass backdrop', () => {
+  // The table renders transparently to integrate with the frosted mica/acrylic
+  // surface directly instead of painting an opaque blocking card.
+  const rule = /\.markdown-body table \{\s*background-color:\s*transparent;/;
+  assert.ok(rule.test(stylesheet), 'the table must render transparently');
   assert.ok(
-    stylesheet.indexOf('.markdown-body table') > utilitiesLayerEnd(),
-    'the table surface must outrank the cell utilities',
+    stylesheet.lastIndexOf('.markdown-body table') > utilitiesLayerEnd(),
+    'the table surface rule must outrank the cell utilities',
   );
 });
 
@@ -124,15 +124,17 @@ test('body rows highlight on hover', () => {
   const rule = /\.markdown-body tbody tr:hover > td \{\s*background-color:\s*rgb\(var\(--surface-hover\)\);/;
   assert.ok(rule.test(stylesheet), 'hovering a body row must highlight its cells');
   assert.ok(
-    stylesheet.indexOf('.markdown-body tbody tr:hover') > utilitiesLayerEnd(),
+    stylesheet.lastIndexOf('.markdown-body tbody tr:hover') > utilitiesLayerEnd(),
     'the hover fill must outrank the cell utilities',
   );
 });
 
-test('the frame is drawn once, by the scroll wrapper', () => {
+test('the scroll wrapper owns the layout geometry and scrollbar', () => {
   assert.ok(
-    table.includes('rounded-control border border-line bg-surface'),
-    'the wrapper must own the frame and the opaque surface',
+    table.includes(
+      'table-wrapper my-2.5 max-w-full overflow-x-auto fluent-scrollbar rounded-control border border-line/40 bg-transparent',
+    ),
+    'the wrapper must own the frame, transparent background, and fluent scrollbar',
   );
   assert.ok(
     table.includes('w-full border-collapse text-sm'),

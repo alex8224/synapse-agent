@@ -21,8 +21,8 @@ export const FileRefButton: React.FC<{ text: string; code?: boolean }> = ({
       title={`打开文件：${text}`}
       className={
         code
-          ? 'inline break-all rounded-control bg-sunken px-1 py-0.5 font-mono text-[0.85em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-500'
-          : 'inline break-all font-mono text-[0.92em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-500'
+          ? 'inline-code inline break-all rounded-control px-1.5 py-0.5 font-mono text-[0.85em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-400 transition-colors'
+          : 'inline break-all font-mono text-[0.92em] text-blue-500 underline decoration-dotted underline-offset-2 hover:text-blue-400 transition-colors'
       }
     >
       {text}

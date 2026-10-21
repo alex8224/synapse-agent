@@ -21,7 +21,7 @@ export const ChangesRow = React.memo(function ChangesRow({ message, actions }: R
   const total = message.changesTotal ?? changes.length;
   return (
     <div className="max-w-[85%] py-1">
-      <div className="rounded-card border border-line bg-surface p-2.5">
+      <div className="changes-card rounded-card border border-line/60 bg-surface/50 p-2.5 transition-colors">
         <div className="mb-2 flex items-center gap-2 text-xs text-gray-500">
           <DocumentEdit20Regular aria-hidden="true" className="shrink-0" style={{ fontSize: '14px' }} />
           <span className="font-medium text-gray-700">本轮工作区改动</span>
@@ -74,10 +74,10 @@ function ChangeCard({
       >
         <span
           className={"flex h-4 w-4 shrink-0 items-center justify-center rounded-control text-[10px] font-medium " + (failed
-            ? 'bg-red-50 text-red-600'
+            ? 'bg-red-500/15 text-red-600'
             : change.status === 'added'
-              ? 'bg-green-50 text-green-700'
-              : 'bg-sunken text-gray-600')}
+              ? 'bg-green-500/15 text-green-700'
+              : 'bg-sunken/60 text-gray-600')}
         >
           {change.status === 'added' ? (
             <DocumentAdd20Regular aria-hidden="true" style={{ fontSize: '11px' }} />
@@ -130,7 +130,7 @@ function ChangeCard({
               title="撤销本轮对该文件的改动（恢复到本轮开始前）"
               aria-label={`撤销 ${change.path} 的本轮改动`}
               aria-expanded={armed}
-              className="cursor-pointer select-none rounded-control border border-line px-1.5 py-0.5 text-[10px] text-gray-600 transition-colors hover:bg-surface-hover active:bg-surface-pressed"
+              className="cursor-pointer select-none rounded-control border border-line/60 px-1.5 py-0.5 text-[10px] text-gray-600 transition-colors hover:bg-surface-hover active:bg-surface-pressed"
             >
               {armed ? '取消' : '撤销'}
             </button>
