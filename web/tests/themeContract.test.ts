@@ -318,15 +318,16 @@ test('a card in the page is painted, not blurred', () => {
     if (source.includes('backdrop-blur')) offenders.push(name);
   }
   assert.deepEqual(offenders, [], 'an in-page card must not blur the page behind it');
-  // The expanded thought panel is the one deliberate exception, and it takes the
-  // material *by name*: the fill, the blur radius and the grain stay the theme's
-  // decision, so a component can never pick its own frosted look.
+  // The expanded thought panel used to be the one deliberate exception: an
+  // acrylic card in the page.  It is text now -- the reasoning behind an answer,
+  // read in the same column as the answer -- because the frame it drew competed
+  // with the markdown table inside it.  No row may take the card material back.
   const transcript = readFileSync(join(webRoot, 'src', 'components', 'Transcript.tsx'), 'utf8');
   const rows = rowModules().map((row) => row.text).join('\n');
   assert.equal(
     ((transcript + rows).match(/material-card/g) ?? []).length,
-    1,
-    'the acrylic card must be the thought panel, through the card material',
+    0,
+    'the reading column is text: no transcript row may take the card material',
   );
 });
 

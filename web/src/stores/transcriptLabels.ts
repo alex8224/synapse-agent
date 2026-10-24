@@ -147,12 +147,15 @@ export function toolDetailParams(tool: ToolItemView): Array<{ key: string; value
  * Reasoning row label.
  *
  * `duration` is `undefined` for a projected history row, `streaming` while the
- * live chain is still open, and a formatted duration once it completes.
+ * live chain is still open, `done` when the block had no measurable duration,
+ * and a formatted duration ("4.9 秒") once it completes.  The label is Chinese
+ * like the rest of the console -- the row sits next to "已工作 32 秒", and an
+ * English "Thought for 4.9s" beside it read as a different application's text.
  */
 export function thoughtLabel(duration?: string): string {
-  if (duration === 'streaming') return 'Thinking...';
-  if (duration === undefined || duration === '' || duration === 'done') return 'Thought';
-  return `Thought for ${duration}`;
+  if (duration === 'streaming') return '思考中…';
+  if (duration === undefined || duration === '' || duration === 'done') return '思考';
+  return `思考 ${duration}`;
 }
 
 /** Expand/collapse affordance shown next to a collapsible row label. */

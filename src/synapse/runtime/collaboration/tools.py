@@ -80,6 +80,8 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
         只发送本次请求需要的背景与交付要求，不会发送整个对话历史。
         调用后立即返回：不要等待、不要轮询对方，继续完成不依赖它的部分；
         对方完成后结论会自动回到本会话继续。
+        注意：若收到对方提出的澄清提问（clarification），请使用
+        `reply_to_collaboration(kind='supplement')` 补充上下文，严禁重复调用 contact_session。
 
         Args:
             target: 目标会话，格式 `<project_id>:<thread_id>`。
@@ -90,7 +92,8 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
         source = _source(runtime)
         if source is None:
             return 'failed: this turn has no session identity'
-        if _delivery_metadata(runtime).get('role') == 'target':
+        metadata = _delivery_metadata(runtime)
+        if metadata.get('role') == 'target':
             return 'failed: 被交办方不能隐式转派，请向指挥者回复或请求澄清'
         # The console inserts a `@session:<project_id>:<thread_id>` pill; the
         # same target may also arrive as a bare ref, so both are accepted.
@@ -103,6 +106,19 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
             return 'failed: target must be `<project_id>:<thread_id>`'
         if parsed == source:
             return 'failed: the target is the current session'
+        sender_proj = metadata.get('sender_project')
+        sender_th = metadata.get('sender_thread')
+        if (
+            metadata.get('kind') == MessageKind.CLARIFICATION.value
+            and sender_proj
+            and sender_th
+            and parsed == SessionRef(str(sender_proj), str(sender_th))
+        ):
+            return (
+                'failed: 当前轮次正在处理目标会话提出的澄清提问，请使用 '
+                "reply_to_collaboration(kind='supplement', message='...') "
+                '补充上下文以继续原交办，严禁重复调用 contact_session 新建交办。'
+            )
         body = request.strip()
         if not body:
             return 'failed: request must not be empty'

@@ -120,7 +120,29 @@ test('reasoning deltas accumulate into one thought and complete with a duration'
 
   s = apply(s, event('reasoning_completed', { text: 'ab' }));
   assert.equal(s.messages[0].content, 'ab');
-  assert.equal(s.messages[0].duration, '0.0s');
+  // The fixture clock never advances, so this block has no measurable duration:
+  // the row prints the bare label instead of "0.0 秒".
+  assert.equal(s.messages[0].duration, 'done');
+});
+
+test('a thought that streamed for a while prints its own duration', () => {
+  // The console times a block from the first delta it received, so a completion
+  // that lands 1.2 s later must print 1.2 秒 -- and a sub-100 ms gap must print
+  // nothing, because a one-batch replay cannot be timed.
+  let clock = 0;
+  const tick = () => new Date(clock);
+  let s: LiveReducibleState = baseState();
+  s = { ...s, ...reduceRuntimeEvent(s, event('reasoning_delta', { text: 'a' }), tick) };
+  clock = 1200;
+  s = { ...s, ...reduceRuntimeEvent(s, event('reasoning_completed', { text: 'a' }), tick) };
+  assert.equal(s.messages[0].duration, '1.2 秒');
+
+  clock = 1200 + 40;
+  let fast: LiveReducibleState = baseState();
+  fast = { ...fast, ...reduceRuntimeEvent(fast, event('reasoning_delta', { text: 'b' }, 't2'), tick) };
+  clock = 1240 + 40;
+  fast = { ...fast, ...reduceRuntimeEvent(fast, event('reasoning_completed', { text: 'b' }, 't2'), tick) };
+  assert.equal(fast.messages[0].duration, 'done', 'a 40 ms gap is not a duration');
 });
 
 test('each reasoning step of a turn gets its own thought fold', () => {
@@ -139,7 +161,7 @@ test('each reasoning step of a turn gets its own thought fold', () => {
   const thoughts = s.messages.filter((m) => m.type === 'thought');
   // Neither completion may overwrite the other segment's text.
   assert.deepEqual(thoughts.map((m) => m.content), ['step one', 'step two']);
-  assert.deepEqual(thoughts.map((m) => m.duration), ['0.0s', '0.0s']);
+  assert.deepEqual(thoughts.map((m) => m.duration), ['done', 'done']);
 });
 
 test('a step boundary does not require a completion event', () => {

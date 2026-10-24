@@ -126,9 +126,19 @@ function countWithPrefix(messages: readonly TranscriptMessage[], prefix: string)
   return count;
 }
 
+/**
+ * How long a reasoning block took, as the row prints it.
+ *
+ * The clock runs from the first delta the console *received* to the completion,
+ * so it measures what the reader waited through.  A block that arrives in one
+ * batch -- a replay, or a model that answers in a single chunk -- has no
+ * measurable duration at all: it reports `done` (the row then prints "思考")
+ * instead of a "0.0 秒" that reads like a broken clock.
+ */
 function elapsedLabel(startedAt: number, at: number): string {
   const seconds = Math.max(0, (at - startedAt) / 1000);
-  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  if (seconds < 0.1) return 'done';
+  return seconds < 10 ? `${seconds.toFixed(1)} 秒` : `${Math.round(seconds)} 秒`;
 }
 
 /** Normalize one `ToolItemPayload` (tool_started / tool_updated) into the view model. */

@@ -39,12 +39,13 @@ test('toolStatusLabel is case-insensitive and never hides an unknown status', ()
 });
 
 test('thoughtLabel distinguishes streaming, completed and projected rows', () => {
-  assert.equal(thoughtLabel('streaming'), 'Thinking...');
-  assert.equal(thoughtLabel('0.1s'), 'Thought for 0.1s');
-  assert.equal(thoughtLabel('2.9s'), 'Thought for 2.9s');
-  assert.equal(thoughtLabel('done'), 'Thought');
-  assert.equal(thoughtLabel(undefined), 'Thought');
-  assert.equal(thoughtLabel(''), 'Thought');
+  assert.equal(thoughtLabel('streaming'), '思考中…');
+  assert.equal(thoughtLabel('0.1 秒'), '思考 0.1 秒');
+  assert.equal(thoughtLabel('2.9 秒'), '思考 2.9 秒');
+  // `done` is "the block had no measurable duration", not a zero.
+  assert.equal(thoughtLabel('done'), '思考');
+  assert.equal(thoughtLabel(undefined), '思考');
+  assert.equal(thoughtLabel(''), '思考');
 });
 
 test('expandHint reflects the collapsed state', () => {

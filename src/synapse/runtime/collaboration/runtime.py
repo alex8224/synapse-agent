@@ -419,7 +419,12 @@ class CollaborationRuntime:
         role = 'target' if delivery.recipient == request.target else 'source'
         if role == 'target':
             expectation = (
-                '请处理这条协作请求；需要澄清时提出问题，完成后给出结论。'
+                '请处理这条协作请求；若缺少关键参数、上下文不足或无法继续，'
+                '必须调用 reply_to_collaboration(kind=\'clarification\', message=\'...\') '
+                '提出澄清，严禁直接无动作退出；'
+                '若本请求为补充上下文，请结合之前中断或未完成的步骤继续推进；'
+                '完成后调用 reply_to_collaboration(kind=\'reply\', message=\'...\') '
+                '交付最终结论。'
             )
         else:
             expectation = (

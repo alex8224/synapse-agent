@@ -74,7 +74,12 @@ export const ThoughtRow = React.memo(function ThoughtRow({
           </div>
           <div className="fluent-accordion" data-expanded={expanded}>
             <div className="fluent-accordion-content pt-1.5">
-              <div className="thought-card material-card rounded-none border border-line/60 p-3 text-sm text-gray-700 leading-relaxed">
+              {/* The reasoning is quoted, not carded: one hairline at the column's
+                  own left edge -- the same weight the markdown table draws with --
+                  and no fill, corner, shadow or blur.  The 10px gap after the rule
+                  is what keeps a 1px line from touching the glyphs; the block
+                  itself starts where the pill above it starts. */}
+              <div className="thought-card border-l border-line/40 py-1.5 pl-2.5 text-sm text-gray-700 leading-relaxed">
                 <Markdown text={message.content ?? ''} />
               </div>
             </div>

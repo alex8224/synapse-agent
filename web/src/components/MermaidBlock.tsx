@@ -317,8 +317,8 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = ({ code, streaming }) =
   return (
     <>
       {host}
-      <div className="my-2 w-full max-w-full min-w-0 overflow-hidden rounded-control border border-line bg-surface">
-        <div className="flex items-center justify-between gap-2 border-b border-line bg-sunken px-2.5 py-1">
+      <div className="my-2 w-full max-w-full min-w-0 overflow-hidden rounded-control border border-line/40 bg-transparent">
+        <div className="code-block-header flex items-center justify-between gap-2 border-b border-line/60 bg-sunken px-2.5 py-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-wide text-gray-500">
               mermaid

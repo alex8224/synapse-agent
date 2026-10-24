@@ -266,3 +266,42 @@ def test_reply_tool_fails_closed_on_incomplete_metadata(tmp_path, field):
         assert reply.func(runtime, message='结论', kind='reply').startswith('failed')
     finally:
         store.close()
+
+
+def test_contact_session_blocks_during_clarification_turn_to_same_target(tmp_path):
+    store, _coordinator, contact, _reply = _harness(tmp_path)
+    try:
+        metadata = {
+            'role': 'source',
+            'kind': 'clarification',
+            'sender_project': 'p1',
+            'sender_thread': 'b',
+            'request_id': 'req-1',
+            'delivery_id': 'del-1',
+        }
+        runtime = _turn('a', 'call-1', metadata)
+        res = contact.func(runtime, target='p1:b', request='补充上下文参数')
+        assert res.startswith('failed: 当前轮次正在处理目标会话提出的澄清提问')
+        assert "reply_to_collaboration(kind='supplement'" in res
+        assert store.deliveries(B, limit=10) == ()
+    finally:
+        store.close()
+
+
+def test_contact_session_allows_different_target_during_clarification_turn(tmp_path):
+    store, _coordinator, contact, _reply = _harness(tmp_path)
+    try:
+        metadata = {
+            'role': 'source',
+            'kind': 'clarification',
+            'sender_project': 'p1',
+            'sender_thread': 'b',
+            'request_id': 'req-1',
+            'delivery_id': 'del-1',
+        }
+        runtime = _turn('a', 'call-1', metadata)
+        res = contact.func(runtime, target='p2:c', request='请第三方协查')
+        assert res.startswith('accepted')
+        assert len(store.deliveries(OTHER, limit=10)) == 1
+    finally:
+        store.close()

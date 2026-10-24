@@ -848,26 +848,19 @@ html[data-tauri='true'][data-theme='fluent-light'] .wco-caption {
   border-bottom-color: rgba(0, 0, 0, 0.06) !important;
 }
 
-/* Thought reasoning cards and pills in transcript: translucent frosted glass with soft sheen and blur */
-html[data-tauri='true'] .thought-card,
-html[data-tauri='true'] .fluent-accordion-content .material-card {
-  border-radius: 0 !important;
-  background-color: rgba(255, 255, 255, 0.035) !important;
-  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
-  box-shadow: none !important;
-}
+/*
+  The expanded thought panel is quoted text, not a card.
 
-html[data-tauri='true'][data-theme='fluent-light'] .thought-card,
-html[data-tauri='true'][data-theme='fluent-light'] .fluent-accordion-content .material-card {
-  border-radius: 0 !important;
-  background-color: rgba(255, 255, 255, 0.45) !important;
-  -webkit-backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  backdrop-filter: blur(var(--tauri-blur-radius, 24px)) saturate(180%) !important;
-  border-color: rgba(0, 0, 0, 0.06) !important;
-  box-shadow: none !important;
-}
+  It is the reasoning behind an answer, read in the same column as the answer, so
+  it carries one hairline and nothing else: no fill, no corner, no top light, no
+  blur layer.  Every decoration it used to carry had to be argued for separately,
+  and each one made the block compete with the markdown table it usually
+  contains -- the table is the frame, the reasoning is what surrounds it.
+
+  The hairline is drawn by the component (`border-l border-line/40`, the weight
+  the table wrapper uses), so it follows the theme's line role in both palettes
+  and no Tauri override is needed.  This comment is the whole style contract.
+*/
 
 html[data-tauri='true'] .thought-pill {
   background-color: rgba(255, 255, 255, 0.05) !important;
@@ -1137,14 +1130,13 @@ html[data-tauri='true'][data-theme='fluent-light'] .tool-card {
     box-shadow: var(--shadow-flyout), var(--material-edge);
   }
   /*
-    The one acrylic surface *in* the page: the expanded thought panel.
+    The card material, one acrylic step below the flyouts.
 
-    Fluent's rule is that acrylic belongs to the transient surfaces, and the rest
-    of the reading column follows it (see the guard in `themeContract.test.ts`).
-    This card is the exception the reader asked for, and it takes the material by
-    role: the theme decides the fill, the blur and the texture, so the shipped
-    palette -- where `--material-blur` is `none` -- pays nothing for it, and no
-    component has to pick a blur radius or an opacity mix of its own.
+    Nothing in the reading column takes it any more (see the guard in
+    `themeContract.test.ts`: a card in the page is painted, not blurred, and the
+    thought panel is text).  The role stays because a theme still declares
+    `--material-card`, and a surface that wants a card *with* the theme's texture
+    takes it by name rather than picking its own blur radius or opacity mix.
   */
   .material-card {
     background-color: var(--material-card);
