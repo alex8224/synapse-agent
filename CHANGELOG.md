@@ -6,6 +6,17 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.61
+
+### New Features
+
+- **Collaboration Clarification Workflow**: Enforce `reply_to_collaboration` supplement action during clarification turns and clarify peer delegation instructions for targets.
+- **Thought Panel Styling & Localization**: Reframe thinking row into a subtle hairline quote layout to preserve markdown table prominence, localize thinking status labels into Chinese, and mark instant/replay thoughts as completed.
+
+### Engineering
+
+- **Diagram & Theme Contract Tests**: Adjust Mermaid container borders and update test suites for live event reducer, transcript labels, and theme contracts.
+
 ## v0.1.60
 
 ### New Features
