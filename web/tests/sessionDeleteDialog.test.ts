@@ -26,6 +26,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const read = (relative: string) => readFileSync(join(here, '..', 'src', relative), 'utf8');
 
 const sidebar = read('components/SideBar.tsx');
+const rowMenu = read('components/SessionRowMenu.tsx');
 const dialog = read('components/SessionDeleteDialog.tsx');
 
 test('the delete confirmation is a dialog of its own, not a strip in the sidebar foot', () => {
@@ -36,14 +37,16 @@ test('the delete confirmation is a dialog of its own, not a strip in the sidebar
     'the sidebar must not keep a second, inline confirmation',
   );
   // The row hands over the whole target: the dialog is what names the session,
-  // because the row itself can be behind the scrim by the time it is read.
+  // because the row itself can be behind the scrim by the time it is read.  The
+  // trash moved into the row's overflow menu, so the sidebar builds that target and
+  // the menu row is what announces the dialog it opens.
   assert.ok(
     /openDelete\(\{\s*threadId: sess\.thread_id, title: sess\.title\s*\}\)/.test(sidebar),
     'the row must pass the title as well as the thread id',
   );
   assert.ok(
-    sidebar.includes('aria-haspopup="dialog"'),
-    'the trash icon must announce that it opens a dialog',
+    rowMenu.includes('aria-haspopup="dialog"'),
+    'the trash row must announce that it opens a dialog',
   );
 });
 

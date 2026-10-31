@@ -361,7 +361,7 @@ test('the sidebar popovers are windows of their own, not boxes in the rail', () 
   // sliding in from the side instead of the designed flyout), and the CSS build
   // transpiles a `translate` back into `transform`.
   assert.ok(
-    floating.includes('rect.left + rect.width / 2 - CENTRED_PANEL_WIDTH / 2'),
+    floating.includes('rect.left + rect.width / 2 - alignWidth / 2'),
     'a centred panel must offset its own start edge from the anchor centre',
   );
   assert.equal(
@@ -370,10 +370,16 @@ test('the sidebar popovers are windows of their own, not boxes in the rail', () 
     'alignment must not ride on transform or translate',
   );
   // The offset is a constant because the panel does not exist yet when the anchor is
-  // measured, so it has to match the width those panels paint.
+  // measured, so it has to match the width the panel paints.  The console's panels
+  // share `w-96`, which is what the default is; a narrower panel (the sidebar's row
+  // menu) passes its own width instead of being placed as if it were 384px wide.
   assert.ok(
     floating.includes('const CENTRED_PANEL_WIDTH = 384'),
     'the centred width constant must stay the width the panels paint',
+  );
+  assert.ok(
+    floating.includes('alignWidth = CENTRED_PANEL_WIDTH'),
+    'the shared panels must keep that width as the default',
   );
   assert.ok(
     read('components/SessionInfoPanel.tsx').includes('w-96')

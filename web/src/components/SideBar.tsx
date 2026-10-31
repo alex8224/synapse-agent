@@ -2,12 +2,14 @@ import {
   Add20Regular, Search20Regular, Settings20Regular, Dismiss20Regular,
   ChevronDown20Regular, ChevronRight20Regular, Folder20Regular,
   FolderLink20Regular,
-  CheckmarkCircle20Regular, Edit20Regular, Delete20Regular, SpinnerIos20Regular,
+  CheckmarkCircle20Regular, SpinnerIos20Regular,
   DataUsage20Regular,
+  Copy20Regular, Checkmark20Regular,
+  MoreHorizontal20Regular,
   BranchFork16Regular,
   BranchFork20Regular,
 } from '@fluentui/react-icons';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ConsoleActions } from './ConsoleActions.tsx';
 import { RunningSessionHolders } from './RunningSessionHolders.tsx';
@@ -27,10 +29,19 @@ import {
 } from '../stores/sessionViews.ts';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { SessionDeleteDialog } from './SessionDeleteDialog.tsx';
+import { SessionRowMenu } from './SessionRowMenu.tsx';
 import { UsageDashboardDialog } from './UsageDashboardDialog.tsx';
 
 /** Sessions shown per expanded project before the "show all" row (TUI parity). */
 const VISIBLE_SESSIONS = 5;
+
+/**
+ * How long a row keeps its "copied" checkmark, in milliseconds.
+ *
+ * Same window the transcript's copy buttons use (`transcriptRows/useCopyFlag`), so
+ * one gesture means one thing across the console.
+ */
+const COPIED_FLAG_MS = 1200;
 
 /**
  * The project id of the repository a worktree directory belongs to, or `null`.
@@ -178,6 +189,53 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
   // The row whose fork is on the wire: its button turns into the console's shared
   // in-flight spinner and stops accepting a second click.
   const [forkingThreadId, setForkingThreadId] = useState<string | null>(null);
+  // The row whose thread id was just copied.  Keyed by id rather than a boolean
+  // because the rows are rendered inline (no per-row component), so one shared
+  // flag would put the checkmark on whichever row was rendered last.
+  const [copiedThreadId, setCopiedThreadId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The row whose overflow menu is open, with the trigger it hangs from.
+   *
+   * Only one row menu can exist at a time, so the state names the row instead of
+   * every row holding its own flag; the trigger is kept because the menu is placed
+   * from its box and hands the focus back to it on close.
+   */
+  const [rowMenu, setRowMenu] = useState<{ threadId: string; anchor: HTMLButtonElement } | null>(
+    null,
+  );
+  const closeRowMenu = useCallback(() => {
+    // The reader opened the menu from the row's trigger, so closing it returns the
+    // focus there instead of dropping a keyboard reader at the top of the document.
+    const anchor = rowMenu?.anchor ?? null;
+    setRowMenu(null);
+    anchor?.focus();
+  }, [rowMenu]);
+  useEffect(() => () => {
+    if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+  }, []);
+  /**
+   * Copy one session's thread id -- the console's own handle on a session, which a
+   * reader needs for the CLI, an issue or another session.  It was reachable only by
+   * opening the header's session info, so the row that names the session carries it.
+   */
+  const copyThreadId = (threadId: string) => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+    if (!clipboard || threadId === '') return;
+    void clipboard
+      .writeText(threadId)
+      .then(() => {
+        setCopiedThreadId(threadId);
+        if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+        copiedTimer.current = setTimeout(() => {
+          copiedTimer.current = null;
+          setCopiedThreadId(null);
+        }, COPIED_FLAG_MS);
+      })
+      // A refused clipboard (an insecure origin, a denied permission) is not worth a
+      // banner: the row simply keeps its copy mark.
+      .catch(() => undefined);
+  };
 
   // Ctrl+K bumps a token instead of reaching into the DOM from the App shell,
   // so a collapsed sidebar is expanded by the same store update.
@@ -665,8 +723,27 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                                 )}
                                 <span className="min-w-0 flex-1 truncate">{sess.title}</span>
                               </button>
-                              {/* Write actions stay in the layout but only surface on
-                                  hover/focus: they are not status readouts. */}
+                              {/* Two actions stay on the row and one opens the menu that
+                                  holds the rest.  Copy and fork are what a reader uses
+                                  while reading the list, and neither rewrites the
+                                  session; rename and delete live in `SessionRowMenu`,
+                                  because four hover controls cost the title a third of
+                                  the rail's width for actions reached for rarely.  They
+                                  stay in the layout but only surface on hover/focus:
+                                  they are not status readouts. */}
+                              <button
+                                type="button"
+                                onClick={() => copyThreadId(sess.thread_id)}
+                                title={copiedThreadId === sess.thread_id ? '已复制' : '复制 thread_id'}
+                                aria-label={`复制会话 ID：${sess.thread_id}`}
+                                className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                              >
+                                {copiedThreadId === sess.thread_id ? (
+                                  <Checkmark20Regular aria-hidden="true" className="text-green-600" />
+                                ) : (
+                                  <Copy20Regular aria-hidden="true" />
+                                )}
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => {
@@ -686,29 +763,45 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                                   <BranchFork20Regular aria-hidden="true" />
                                 )}
                               </button>
+                              {/* The trigger is its own menu's anchor, so the element is
+                                  taken from the click that opened it -- it is the same
+                                  node for as long as the row exists. */}
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setRenaming({ threadId: sess.thread_id, draft: sess.title })
-                                }
-                                title="重命名会话"
-                                aria-label="重命名会话"
-                                className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                                onClick={(event) => {
+                                  const anchor = event.currentTarget;
+                                  setRowMenu((open) =>
+                                    open?.threadId === sess.thread_id
+                                      ? null
+                                      : { threadId: sess.thread_id, anchor },
+                                  );
+                                }}
+                                aria-haspopup="menu"
+                                aria-expanded={rowMenu?.threadId === sess.thread_id}
+                                title="更多操作：重命名、删除记录"
+                                aria-label={`更多操作：${sess.title}`}
+                                // Open is a state of the row, not of the pointer: the
+                                // trigger stays visible while its menu is up, even
+                                // though the reader's pointer has left the row.
+                                className={`ui-icon-button ui-compact group-hover:opacity-100 group-focus-within:opacity-100 ${
+                                  rowMenu?.threadId === sess.thread_id ? 'opacity-100' : 'opacity-0'
+                                }`}
                               >
-                                <Edit20Regular aria-hidden="true" />
+                                <MoreHorizontal20Regular aria-hidden="true" />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  openDelete({ threadId: sess.thread_id, title: sess.title })
-                                }
-                                title="删除会话记录"
-                                aria-label={`删除会话记录：${sess.title}`}
-                                aria-haspopup="dialog"
-                                className="ui-icon-button ui-compact opacity-0 hover:text-red-600 group-hover:opacity-100 group-focus-within:opacity-100"
-                              >
-                                <Delete20Regular aria-hidden="true" />
-                              </button>
+                              {rowMenu?.threadId === sess.thread_id && (
+                                <SessionRowMenu
+                                  anchor={rowMenu.anchor}
+                                  title={sess.title}
+                                  onRename={() =>
+                                    setRenaming({ threadId: sess.thread_id, draft: sess.title })
+                                  }
+                                  onDelete={() =>
+                                    openDelete({ threadId: sess.thread_id, title: sess.title })
+                                  }
+                                  onClose={closeRowMenu}
+                                />
+                              )}
                             </li>
                           );
                         })}

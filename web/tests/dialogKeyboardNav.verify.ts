@@ -286,9 +286,16 @@ try {
   const deleteDialog = `document.querySelector('[role="dialog"][aria-labelledby="session-delete-title"]')`;
   const confirmButton =
     `[...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === '删除')`;
+  // The trash moved into the row's overflow menu (the row keeps copy and fork), so
+  // the path a reader takes is: open the row's menu, then pick 删除记录.
   const trash =
-    `[...document.querySelectorAll('[aria-label^="删除会话记录"]')].find((el) => !el.closest('[inert]') && el.getAttribute('aria-label').includes('待删除的会话'))`;
-  await run(`${trash}.focus()`); await settle();
+    `[...document.querySelectorAll('[role="menuitem"]')].find((el) => el.textContent.trim() === '删除记录')`;
+  const rowMenuTrigger =
+    `[...document.querySelectorAll('[aria-label^="更多操作："]')].find((el) => !el.closest('[inert]') && el.getAttribute('aria-label').includes('待删除的会话'))`;
+  await run(`${rowMenuTrigger}.focus()`); await settle();
+  await run(`${rowMenuTrigger}.click()`); await settle();
+  await wait(`!!${trash}`);
+  await check('the row menu opens from its own trigger and offers the delete', `!!${trash}`);
   await run(`${trash}.click()`); await settle();
   await wait(`!!${deleteDialog}`);
   await check('the trash icon opens a confirmation of its own', `!!${deleteDialog}`);
@@ -314,12 +321,16 @@ try {
   await press('Enter', 'Enter', 13, '\r');
   await check('Enter on a freshly opened confirmation dismisses it instead of deleting',
     `!${deleteDialog} && window.fixtureStore.getState().sessions.length === 2`);
-  await check('the focus goes back to the trash icon that opened it', `document.activeElement === ${trash}`);
+  await check('the focus goes back to the row trigger that opened it',
+    `document.activeElement === ${rowMenuTrigger}`);
 
   // The refusal path: the server rejects a running session (`conflict`) and the
   // console never cancels the turn for it.  The dialog stays open with the reason
-  // inline, and the row it names is still there.
+  // inline, and the row it names is still there.  The menu closed when it handed the
+  // click to the dialog, so it is opened again first.
   await run(`window.__deleteRefuse = true`);
+  await run(`${rowMenuTrigger}.click()`); await settle();
+  await wait(`!!${trash}`);
   await run(`${trash}.click()`); await settle();
   await wait(`!!${deleteDialog}`);
   await run(`${confirmButton}.click()`); await settle();

@@ -32,6 +32,13 @@ export interface FloatingPanelProps {
   align?: 'start' | 'end' | 'center';
   /** Gap between the anchor and the panel, in px. */
   offset?: number;
+  /**
+   * The width the panel paints, used to line its end edge or centre up with the
+   * anchor.  Defaults to the `w-96` every `ConsolePanel` paints; a caller whose panel
+   * is narrower (the sidebar's row menu) passes its own, because the offset has to be
+   * known before the panel exists.
+   */
+  alignWidth?: number;
   /** The panel's own classes: fill, width, padding. */
   className: string;
   /** Accessible name: makes the panel itself the dialog, not a box inside one. */
@@ -62,6 +69,7 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
   side = 'top',
   align = 'start',
   offset = 8,
+  alignWidth = CENTRED_PANEL_WIDTH,
   className,
   label,
   children,
@@ -82,9 +90,9 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
         left: Math.max(
           EDGE,
           align === 'end'
-            ? rect.right - CENTRED_PANEL_WIDTH
+            ? rect.right - alignWidth
             : align === 'center'
-              ? rect.left + rect.width / 2 - CENTRED_PANEL_WIDTH / 2
+              ? rect.left + rect.width / 2 - alignWidth / 2
               : rect.left,
         ),
         // `top` for a panel that hangs below its anchor, `bottom` (measured from
@@ -96,7 +104,7 @@ export const FloatingPanel: React.FC<FloatingPanelProps> = ({
     measure();
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-  }, [anchor, side, align, offset]);
+  }, [anchor, side, align, offset, alignWidth]);
 
   if (box === null) return null;
   return (
