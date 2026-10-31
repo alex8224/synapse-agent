@@ -6,10 +6,12 @@ import { ConsolePanel, ConsolePanelRow } from './consolePanel.tsx';
 /**
  * What the console knows about the session it is attached to.
  *
- * It opens from the session title in the header -- the title *is* the session's
- * identity, so it is also where its details belong -- and is anchored to that title.
- * The sidebar's settings row used to carry an info icon of its own; two triggers for
- * one panel only meant the reader had to learn which one to use.
+ * It opens from the sidebar's actions row, next to the other context panels, and is
+ * anchored to that row.  It used to open from the session title in the header, which
+ * is the window's caption drag handle in an installed window: a reader aiming to
+ * move the window got a panel instead.  The trigger is at the bottom of the window,
+ * so the panel opens *above* it (the `ConsolePanel` default) and lines up with the
+ * row's start edge, like the diagnostics panel beside it.
  */
 export const SessionInfoPanel: React.FC<{
   anchor: HTMLElement | null;
@@ -39,7 +41,7 @@ export const SessionInfoPanel: React.FC<{
   );
 
   return (
-    <ConsolePanel title="会话信息" anchor={anchor} onClose={onClose} side="bottom" align="center">
+    <ConsolePanel title="会话信息" anchor={anchor} onClose={onClose} side="top" align="start">
       <ConsolePanelRow label="工作区" value={workspacePath || '-'} />
       <ConsolePanelRow label="项目" value={currentSession.project_id || '-'} />
       <ConsolePanelRow label="分支" value={gitBranch || '-'} />

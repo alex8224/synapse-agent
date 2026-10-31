@@ -143,7 +143,7 @@ test('the toggle is the first control of the workspace column', () => {
   );
 });
 
-test('the sidebar keeps its actions and the header owns the session info', () => {
+test('the sidebar keeps its actions and the header keeps only identity', () => {
   assert.ok(sideBar.includes('<ConsoleActions'), 'the sidebar must host the context actions');
   // The header keeps identity plus the session's own details: no file browser, no
   // diagnostics, no logout.
@@ -154,25 +154,34 @@ test('the sidebar keeps its actions and the header owns the session info', () =>
       `the header must not keep ${trigger}`,
     );
   }
-  // The session info hangs off the title, which is the session's identity, and the
-  // sidebar's footer no longer carries an info icon of its own: two triggers for one
-  // panel only left the reader guessing which one to use.
-  assert.ok(source.includes('<SessionInfoPanel'), 'the title must open the session info');
-  // It hangs from the title: below it (the default opens upwards, which is where a
-  // footer trigger lives) and centred on it, because the title is itself centred and
-  // a panel aligned to one of its edges reads as belonging to that half.
+  // The session info moved to the sidebar's actions row: it used to open from the
+  // title, which is the caption's drag handle in an installed window, so a reader
+  // aiming to move the window got a panel instead.  The header must not host the
+  // panel (or a trigger for it) any more.
+  assert.equal(
+    source.includes('<SessionInfoPanel'),
+    false,
+    'the title must not open the session info: it is the window\'s drag handle',
+  );
+  const actions = readFileSync(join(here, '..', 'src', 'components', 'ConsoleActions.tsx'), 'utf8');
   assert.ok(
-    sessionInfo.includes('side="bottom"'),
-    'the panel must open below the title, not above it',
+    actions.includes('<SessionInfoPanel') && actions.includes('aria-label="会话信息"'),
+    'the session info must open from the sidebar\'s actions row',
+  );
+  // The trigger sits at the bottom of the window, so the panel opens *above* it (the
+  // `ConsolePanel` default) and lines up with the row's start edge.
+  assert.ok(
+    sessionInfo.includes('side="top"'),
+    'the panel must open above its footer trigger, not below it',
   );
   assert.ok(
-    sessionInfo.includes('align="center"'),
-    'the panel must be centred under the title',
+    sessionInfo.includes('align="start"'),
+    'the panel must line up with the actions row it hangs from',
   );
   assert.equal(
-    sideBar.includes('会话信息'),
+    source.includes('会话信息'),
     false,
-    'the sidebar must not keep a session-info trigger',
+    'the header must not keep a session-info trigger',
   );
   // The version is shown inside the settings panel, not next to its label.
   assert.equal(

@@ -87,11 +87,18 @@ test('the chips and the session title stay clickable inside the caption', () => 
   const titleAt = topBar.indexOf('ui-session-title');
   assert.ok(titleAt > 0, 'the centre track still carries the session title');
   const titleTag = topBar.slice(titleAt, topBar.indexOf('>', titleAt));
-  // The title opens the session info, so it is a control like the chips: without the
-  // opt-out the caption would swallow the click in an installed window.  The rest of
-  // the strip stays draggable.
-  assert.ok(
+  // The title is a label now, not a control: it used to open the session info, which
+  // cost the reader the one piece of empty chrome they could drag the window by.  It
+  // must therefore stay *inside* the caption's drag region -- no opt-out class and no
+  // `data-tauri-drag-region="false"` -- while the chips beside it keep theirs.
+  assert.equal(
     titleTag.includes('wco-caption-controls'),
-    'the title opens a panel, so the caption must not swallow its click',
+    false,
+    'the title must not opt out of the drag region: clicking it should move the window',
+  );
+  assert.equal(
+    titleTag.includes('data-tauri-drag-region'),
+    false,
+    'the title must inherit the header\'s drag region instead of declaring its own',
   );
 });

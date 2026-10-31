@@ -1,11 +1,10 @@
 import { PanelLeft20Regular, PanelRight20Regular, Folder20Regular, Branch20Regular, Chat20Regular, ChevronRight16Regular, TaskListSquareLtr16Regular } from '@fluentui/react-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { projectLabel } from '../stores/sessionList.ts';
 import { BranchMenu } from './BranchMenu.tsx';
 import { GitExplorer } from './GitExplorer.tsx';
-import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 import { TauriWindowControls } from './TauriWindowControls.tsx';
 import { useRightDockStore } from '../stores/useRightDockStore.ts';
 
@@ -25,10 +24,11 @@ import { useRightDockStore } from '../stores/useRightDockStore.ts';
  * so the explorer stays reachable even before `runtime.git.status` has been
  * read, and the console's only git writes sit next to the branch they act on.
  * The workspace path moved to the sidebar's
- * identity row, the workspace files, runtime diagnostics and logout live with the
- * settings entry there, and the telemetry lives in the status strip under the
- * composer.  The session info opens from the title itself: the title is the
- * session's identity, so it is also where what the console knows about it belongs.
+ * identity row, the workspace files, runtime diagnostics, the session info and
+ * logout live with the settings entry there, and the telemetry lives in the status
+ * strip under the composer.  The title is a label: it used to open the session info,
+ * which meant the one piece of empty chrome in the caption opened a panel instead of
+ * dragging the window.
  *
  * In an installed window this bar *is* the caption: the manifest asks for
  * `window-controls-overlay`, so the browser stops drawing the app name and the
@@ -64,24 +64,12 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
   );
   const gitExplorer = useConsoleStore((state) => state.gitExplorer);
   const closeGitExplorer = useConsoleStore((state) => state.closeGitExplorer);
-  const [infoOpen, setInfoOpen] = useState(false);
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const rightDockOpen = useRightDockStore((s) => s.open);
   const toggleRightDock = useRightDockStore((s) => s.toggleOpen);
-  // The panel anchors to the title.  The element is held in state rather than read
-  // off a ref while rendering, so the anchor belongs to the render that uses it.
-  const [titleAnchor, setTitleAnchor] = useState<HTMLButtonElement | null>(null);
-  // Same rule for the branch chip: the menu hangs from the element that opened it.
+  // The branch chip's menu hangs from the element that opened it, so the anchor
+  // belongs to the render that uses it.
   const [branchAnchor, setBranchAnchor] = useState<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    if (!infoOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setInfoOpen(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [infoOpen]);
 
   // The project label comes from the project list the sidebar already holds, and
   // is simply omitted until that list has loaded: no placeholder name.
@@ -188,22 +176,20 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
           a session name instead of a fragment of it -- and `min-w-0` lets a
           narrow window shrink the chip rather than push the side tracks.
 
-          The title opens the session info, so it is a control and has to opt out
-          of the caption's drag region (`wco-caption-controls`), or an installed
-          window would swallow the click. */}
-      <button
-        type="button"
-        data-tauri-drag-region="false"
-        ref={setTitleAnchor}
-        onClick={() => setInfoOpen((open) => !open)}
-        aria-expanded={infoOpen}
-        aria-label={sessionTitle === '' ? '会话信息' : `会话信息：${sessionTitle}`}
+          The title is a label, not a control.  It used to open the session info,
+          which cost the reader the one piece of empty chrome they had for moving
+          the window: in an installed window this bar *is* the caption, and a
+          click on the title opened a panel instead of dragging.  The details moved
+          to the sidebar's actions row (`ConsoleActions`), next to the other
+          context panels, and the title stays inside the caption's drag region --
+          no `data-tauri-drag-region="false"`, no `wco-caption-controls`. */}
+      <div
         title={sessionTitle}
-        className="ui-session-title wco-caption-controls flex min-w-0 max-w-[14rem] sm:max-w-[20rem] md:max-w-[24rem] lg:max-w-[32rem] cursor-pointer items-center gap-2 rounded-control px-2.5 py-1 text-gray-800 transition-colors hover:bg-surface-hover/50"
+        className="ui-session-title flex min-w-0 max-w-[14rem] sm:max-w-[20rem] md:max-w-[24rem] lg:max-w-[32rem] items-center gap-2 px-2.5 py-1 text-gray-800"
       >
         <Chat20Regular aria-hidden="true" className="shrink-0 text-accent-fg" />
         <span className="truncate font-medium">{sessionTitle}</span>
-      </button>
+      </div>
 
       {/* Right track: deliberately empty.  The change statistics used to sit here
           on the right edge; they now hang off the branch chip, so the numbers are
@@ -259,7 +245,6 @@ export const TopBar: React.FC<{ onToggleNavigation?: () => void; navigationExpan
     {branchMenuOpen && (
       <BranchMenu anchor={branchAnchor} onClose={() => setBranchMenuOpen(false)} />
     )}
-    {infoOpen && <SessionInfoPanel anchor={titleAnchor} onClose={() => setInfoOpen(false)} />}
     </>
   );
 };

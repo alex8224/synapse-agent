@@ -1,25 +1,29 @@
 import {
-  WeatherMoon20Regular, WeatherSunny20Regular,
+  Info20Regular,
+  WeatherMoon20Regular,
+  WeatherSunny20Regular,
 } from '@fluentui/react-icons';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { DARK_THEME, prefersDark, themeFor, useAppearanceStore } from '../stores/appearance.ts';
 import { ArtifactsPanel } from './ArtifactsPanel.tsx';
 import { ConsolePanel, ConsolePanelRow } from './consolePanel.tsx';
+import { SessionInfoPanel } from './SessionInfoPanel.tsx';
 import { THEME_SHORTCUT_CHORD } from './consoleShortcuts.ts';
 
 /**
  * The console's context actions: the read-only workspace file browser, runtime
- * diagnostics, the one-click theme toggle and logout.
+ * diagnostics, the session info, the one-click theme toggle and logout.
  *
  * They live at the sidebar's settings row rather than in the header, so the
  * header keeps only identity (workspace, branch, session) and the actions sit
- * with the other app-level entry point.  The session info is not one of them: it
- * opens from the session title in the header (see `SessionInfoPanel`), which is
- * where a reader looks for what the console knows about the session.  `orientation`
- * picks the layout: a row for the expanded sidebar's footer, a column for the
- * collapsed 44px rail.
+ * with the other app-level entry point.  The session info moved here for a second
+ * reason: it used to open from the header's title, which in an installed window is
+ * the caption's drag handle -- the one place a reader expects to be able to move
+ * the window, and a click there opened a panel instead.  `orientation` picks the
+ * layout: a row for the expanded sidebar's footer, a column for the collapsed
+ * 44px rail.
  *
  * Each panel opens *above* its trigger because the triggers are at the bottom of the
  * window; Escape closes the open one.  They share the `ConsolePanel` shell, which
@@ -43,8 +47,10 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
     })),
   );
 
-  const [openPanel, setOpenPanel] = useState<'diagnostics' | 'artifacts' | null>(null);
-  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [openPanel, setOpenPanel] = useState<'session' | 'diagnostics' | 'artifacts' | null>(null);
+  // The row the panels hang from, held in state rather than read off a ref while
+  // rendering: the anchor then belongs to the render that uses it.
+  const [row, setRow] = useState<HTMLDivElement | null>(null);
   const appearance = useAppearanceStore((state) => state.appearance);
   const toggleAppearance = useAppearanceStore((state) => state.toggleAppearance);
 
@@ -66,7 +72,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
   const trigger = 'ui-icon-button';
 
   return (
-    <div className="shrink-0" ref={rowRef}>
+    <div className="shrink-0" ref={setRow}>
       <div className={orientation === 'row' ? 'flex items-center gap-1' : 'flex flex-col items-center gap-1'}>
         {/* The icon is the theme the click switches *to*, so the button never reads
             as a status badge of the current one.  It lands next to the settings entry
@@ -81,10 +87,27 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
             ? <WeatherSunny20Regular aria-hidden="true" />
             : <WeatherMoon20Regular aria-hidden="true" />}
         </button>
+        {/* What the console knows about the open session: workspace, branch, model,
+            connection and usage.  It used to hang off the header's title, which is
+            the caption's drag handle in an installed window. */}
+        <button
+          onClick={() => setOpenPanel((open) => (open === 'session' ? null : 'session'))}
+          title="会话信息"
+          aria-label="会话信息"
+          aria-haspopup="dialog"
+          aria-expanded={openPanel === 'session'}
+          className={trigger}
+        >
+          <Info20Regular aria-hidden="true" />
+        </button>
       </div>
 
+      {openPanel === 'session' && (
+        <SessionInfoPanel anchor={row} onClose={() => setOpenPanel(null)} />
+      )}
+
       {openPanel === 'diagnostics' && (
-        <ConsolePanel title="运行时诊断" anchor={rowRef.current} onClose={() => setOpenPanel(null)}>
+        <ConsolePanel title="运行时诊断" anchor={row} onClose={() => setOpenPanel(null)}>
           <ConsolePanelRow label="状态" value={diagnostics.status} />
           <ConsolePanelRow
             label="daemon"
@@ -106,7 +129,7 @@ export const ConsoleActions: React.FC<{ orientation?: 'row' | 'column' }> = ({
       )}
 
       {openPanel === 'artifacts' && (
-        <ArtifactsPanel anchor={rowRef.current} onClose={() => setOpenPanel(null)} />
+        <ArtifactsPanel anchor={row} onClose={() => setOpenPanel(null)} />
       )}
     </div>
   );
