@@ -16,6 +16,7 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import mimetypes
 import os
 import threading
 from collections.abc import AsyncIterator, Iterator
@@ -247,8 +248,61 @@ def _image_detail(block: dict[str, Any]) -> str | None:
     return None
 
 
-def _openai_content(content: Any) -> Any:
-    """Convert framework-native image blocks to Chat Completions blocks."""
+def _file_payload(block: dict[str, Any], *, filename: str | None = None) -> dict[str, Any] | None:
+    """Return an OpenAI ``file`` payload for a LangChain file block.
+
+    ``read_file`` emits the standard block shape
+    ``{"type": "file", "base64": ..., "mime_type": ...}`` for PDFs and office
+    documents. OpenAI expects ``file_data`` (a base64 data URL) or ``file_id``
+    inside a nested ``file`` object, so pass those through untouched and
+    normalize the rest. ``filename`` is required next to ``file_data``, so it
+    falls back to the mime type's extension. Returns ``None`` when no usable
+    payload exists.
+    """
+    payload: dict[str, Any] = {}
+    inner = block.get("file")
+    if isinstance(inner, dict):
+        if isinstance(inner.get("file_data"), str) and inner["file_data"]:
+            payload["file_data"] = inner["file_data"]
+        if isinstance(inner.get("file_id"), str) and inner["file_id"]:
+            payload["file_id"] = inner["file_id"]
+        if isinstance(inner.get("filename"), str) and inner["filename"]:
+            payload["filename"] = inner["filename"]
+
+    if "file_data" not in payload:
+        file_data = block.get("file_data")
+        data = block.get("base64")
+        if isinstance(file_data, str) and file_data:
+            payload["file_data"] = file_data
+        elif isinstance(data, str) and data:
+            mime = str(
+                block.get("mime_type") or block.get("media_type") or "application/octet-stream"
+            )
+            payload["file_data"] = (
+                data if data.startswith("data:") else f"data:{mime};base64,{data}"
+            )
+        elif isinstance(block.get("file_id"), str) and block["file_id"]:
+            payload["file_id"] = block["file_id"]
+
+    if "filename" not in payload:
+        name = block.get("filename") or block.get("name") or filename
+        if isinstance(name, str) and name:
+            payload["filename"] = name
+    if "filename" not in payload and payload.get("file_data"):
+        # OpenAI requires a filename alongside ``file_data``; derive one from
+        # the mime type so an unnamed attachment still produces a valid part.
+        mime = str(block.get("mime_type") or block.get("media_type") or "")
+        mime = mime.split(";", 1)[0].strip()
+        extension = mimetypes.guess_extension(mime) if mime else None
+        payload["filename"] = f"file{extension}" if extension else "file"
+
+    if not (payload.get("file_data") or payload.get("file_id")):
+        return None
+    return payload
+
+
+def _openai_content(content: Any, *, filename: str | None = None) -> Any:
+    """Convert framework-native multimodal blocks to Chat Completions blocks."""
     if not isinstance(content, list):
         return content
     normalized: list[Any] = []
@@ -265,11 +319,29 @@ def _openai_content(content: Any) -> Any:
                     image_url["detail"] = detail
                 normalized.append({"type": "image_url", "image_url": image_url})
                 continue
+        if block_type == "file":
+            payload = _file_payload(block, filename=filename)
+            if payload is not None:
+                normalized.append({"type": "file", "file": payload})
+                continue
+            # Forwarding the raw block would make the provider reject the whole
+            # request ("file must have a file_id or file_data"), so degrade to
+            # a text note and keep the turn alive.
+            label = block.get("filename") or filename or "file"
+            normalized.append(
+                {"type": "text", "text": f"[{label} content omitted: unreadable file block]"}
+            )
+            continue
         normalized.append(block)
     return normalized
 
 
-def _responses_content(content: Any, *, role: str) -> list[dict[str, Any]]:
+def _responses_content(
+    content: Any,
+    *,
+    role: str,
+    filename: str | None = None,
+) -> list[dict[str, Any]]:
     """Convert LangChain content blocks to Responses input/output content."""
     text_type = "input_text" if role == "user" else "output_text"
     if isinstance(content, str):
@@ -299,13 +371,30 @@ def _responses_content(content: Any, *, role: str) -> list[dict[str, Any]]:
                     image_block["detail"] = detail
                 result.append(image_block)
             continue
+        if role == "user" and block_type in {"file", "input_file"}:
+            payload = _file_payload(block, filename=filename)
+            if payload is not None:
+                result.append({"type": "input_file", **payload})
+            else:
+                label = block.get("filename") or filename or "file"
+                result.append(
+                    {
+                        "type": "input_text",
+                        "text": f"[{label} content omitted: unreadable file block]",
+                    }
+                )
+            continue
         # Preserve already-normalized Responses blocks and unknown provider
         # extensions instead of silently dropping multimodal input.
         result.append(dict(block))
     return result
 
 
-def _responses_tool_output(content: Any) -> str | list[dict[str, Any]]:
+def _responses_tool_output(
+    content: Any,
+    *,
+    filename: str | None = None,
+) -> str | list[dict[str, Any]]:
     """Convert a multimodal tool result to valid Responses output content."""
     if not isinstance(content, list):
         return _content_text(content)
@@ -336,6 +425,18 @@ def _responses_tool_output(content: Any) -> str | list[dict[str, Any]]:
                     image_block["detail"] = detail
                 blocks.append(image_block)
                 has_media = True
+            continue
+        if block_type in {"file", "input_file"}:
+            payload = _file_payload(block, filename=filename)
+            if payload is not None:
+                blocks.append({"type": "input_file", **payload})
+                has_media = True
+                continue
+            label = block.get("filename") or filename or "file"
+            blocks.append(
+                {"type": "input_text", "text": f"[{label} content omitted: unreadable file block]"}
+            )
+            has_media = True
 
     if has_media:
         return blocks
@@ -367,7 +468,10 @@ def responses_input_from_messages(
                 {
                     "type": "function_call_output",
                     "call_id": message.tool_call_id or "",
-                    "output": _responses_tool_output(message.content),
+                    "output": _responses_tool_output(
+                        message.content,
+                        filename=_read_file_filename(message),
+                    ),
                 }
             )
             continue
@@ -623,6 +727,15 @@ def aimessage_chunk_from_responses_event(
     return None
 
 
+def _read_file_filename(message: BaseMessage) -> str | None:
+    """Return the basename recorded by ``read_file`` for a multimodal tool result."""
+    path = (message.additional_kwargs or {}).get("read_file_path")
+    if not isinstance(path, str) or not path.strip():
+        return None
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return name or None
+
+
 def _message_to_openai_dict(msg: BaseMessage) -> dict[str, Any]:
     """Convert one langchain message to an OpenAI chat message dict."""
     role = _OPENAI_ROLE_MAP.get(msg.type, "user")
@@ -633,7 +746,10 @@ def _message_to_openai_dict(msg: BaseMessage) -> dict[str, Any]:
         return out
 
     if isinstance(msg, ToolMessage):
-        out["content"] = _openai_content(msg.content if msg.content is not None else "")
+        out["content"] = _openai_content(
+            msg.content if msg.content is not None else "",
+            filename=_read_file_filename(msg),
+        )
         if msg.tool_call_id:
             out["tool_call_id"] = msg.tool_call_id
         return out

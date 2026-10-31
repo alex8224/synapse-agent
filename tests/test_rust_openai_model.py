@@ -165,6 +165,113 @@ def test_responses_tool_output_keeps_read_file_image() -> None:
     ]
 
 
+def test_tool_message_pdf_is_converted_to_chat_file_part() -> None:
+    tm = ToolMessage(
+        content_blocks=[
+            {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}
+        ],
+        tool_call_id="read-1",
+        name="read_file",
+        additional_kwargs={"read_file_path": "/tmp/reports/q3.pdf"},
+    )
+
+    out = messages_to_openai_dicts([tm])
+
+    assert out == [
+        {
+            "role": "tool",
+            "content": [
+                {
+                    "type": "file",
+                    "file": {
+                        "file_data": "data:application/pdf;base64,JVBERi0=",
+                        "filename": "q3.pdf",
+                    },
+                }
+            ],
+            "tool_call_id": "read-1",
+        }
+    ]
+
+
+def test_responses_tool_output_keeps_read_file_pdf() -> None:
+    _, items = responses_input_from_messages(
+        [
+            ToolMessage(
+                content_blocks=[
+                    {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}
+                ],
+                tool_call_id="read-1",
+                additional_kwargs={"read_file_path": "/tmp/reports/q3.pdf"},
+            )
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "function_call_output",
+            "call_id": "read-1",
+            "output": [
+                {
+                    "type": "input_file",
+                    "file_data": "data:application/pdf;base64,JVBERi0=",
+                    "filename": "q3.pdf",
+                }
+            ],
+        }
+    ]
+
+
+def test_responses_user_file_block_becomes_input_file() -> None:
+    _, items = responses_input_from_messages(
+        [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "总结这份文档"},
+                    {
+                        "type": "file",
+                        "base64": "JVBERi0=",
+                        "mime_type": "application/pdf",
+                        "filename": "spec.pdf",
+                    },
+                ]
+            )
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "总结这份文档"},
+                {
+                    "type": "input_file",
+                    "file_data": "data:application/pdf;base64,JVBERi0=",
+                    "filename": "spec.pdf",
+                },
+            ],
+        }
+    ]
+
+
+def test_responses_user_file_block_derives_filename_from_mime() -> None:
+    _, items = responses_input_from_messages(
+        [
+            HumanMessage(
+                content=[{"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}]
+            )
+        ]
+    )
+
+    assert items[0]["content"] == [
+        {
+            "type": "input_file",
+            "file_data": "data:application/pdf;base64,JVBERi0=",
+            "filename": "file.pdf",
+        }
+    ]
+
+
 def test_tools_to_openai_dict_and_object() -> None:
     assert tools_to_openai([{"type": "function", "function": {"name": "f"}}]) == [
         {"type": "function", "function": {"name": "f"}}
