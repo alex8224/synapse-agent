@@ -55,7 +55,8 @@ function walk(messages: TranscriptMessage[], visit: (m: TranscriptMessage, key: 
 }
 
 export function restoreTranscriptViews(messages: TranscriptMessage[], views: Views): TranscriptMessage[] {
-  return walk(messages, (m, key, fold) => {
+  let changed = false;
+  const restored = walk(messages, (m, key, fold) => {
     const view = views[key];
     if (!view) return m;
     const toolFolds = m.tools?.map((t) => t.callId ? view.folds[`call:${t.callId}`] : undefined)
@@ -67,8 +68,14 @@ export function restoreTranscriptViews(messages: TranscriptMessage[], views: Vie
     const work = m.work && m.work.startedAt === undefined && view.work?.startedAt !== undefined
       ? { ...view.work, ...m.work, startedAt: view.work.startedAt } : m.work;
     if (expanded === m.expanded && workExpanded === m.workExpanded && work === m.work) return m;
+    changed = true;
     return { ...m, expanded, workExpanded, ...(work ? { work } : {}) };
   });
+  // Identity is part of the contract: the store puts this array in `messages` on
+  // every live event, and the transcript's follow effect keys off that array.  A
+  // rebuild that restores nothing must therefore hand back the same array, or an
+  // activity tick would look like new content.
+  return changed ? restored : messages;
 }
 
 export function saveTranscriptViews(session: { project_id: string; thread_id: string }, messages: TranscriptMessage[]): void {

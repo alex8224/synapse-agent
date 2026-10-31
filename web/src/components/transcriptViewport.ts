@@ -57,3 +57,42 @@ export interface TranscriptViewport {
   /** Scroll so the given message sits at the top of the reading area. */
   scrollToMessage(id: string): void;
 }
+
+/**
+ * The submitted prompt the transcript has already been followed to.
+ *
+ * Submitting a prompt is the reader's explicit "show me the newest content", but
+ * the store rebuilds the `messages` array on every live event (it re-applies the
+ * cached fold views), so "the newest row is a user row" is true for the whole
+ * window between the submit and the model's first row.  Keying the follow off the
+ * row *type* re-armed it on every activity tick of that window: a wheel-up right
+ * after the submit was undone by the next tick, and the transcript could not be
+ * scrolled at all until the answer started.  The prompt's own id is the one-shot
+ * signal; the session key keeps two sessions' ids from colliding.
+ */
+export interface FollowedPrompt {
+  session: string;
+  promptId: string | null;
+}
+
+/** The two fields of a transcript row the follow rule reads. */
+export interface NewestRow {
+  id: string;
+  type: string;
+}
+
+/**
+ * Whether this list carries a prompt the reader has not been followed to yet.
+ *
+ * True only for the first message list that carries the prompt, so a reader who
+ * scrolled away from a submitted prompt keeps their position through the pending
+ * window (activity ticks, subagent events, usage updates) until the model starts.
+ */
+export function followsFreshPrompt(
+  followed: FollowedPrompt,
+  session: string,
+  newest: NewestRow | undefined,
+): boolean {
+  if (newest === undefined || newest.type !== 'user') return false;
+  return followed.session !== session || followed.promptId !== newest.id;
+}

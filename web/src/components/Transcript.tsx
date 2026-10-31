@@ -3,6 +3,7 @@ import { ArrowSort20Regular, ChevronDown16Regular, ChevronRight16Regular, Shield
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
+import { sessionKey as sessionIdOf } from '../stores/sessionViews.ts';
 import { TurnRail } from './TurnRail.tsx';
 import { FoldStatusPill } from './transcriptRows/FoldStatusPill.tsx';
 import { ROW_RENDERERS } from './transcriptRows/registry.tsx';
@@ -11,7 +12,9 @@ import {
   ESTIMATED_ROW_PX,
   OVERSCAN_ROWS,
   anchoredScrollTop,
+  followsFreshPrompt,
 } from './transcriptViewport.ts';
+import type { FollowedPrompt } from './transcriptViewport.ts';
 import type { ActivityView } from '../stores/liveEventReducer.ts';
 import {
   formatWorkDuration,
@@ -633,6 +636,15 @@ export const Transcript: React.FC = () => {
     };
   }, [handleLoadEarlier]);
 
+  /**
+   * The submitted prompt this transcript has already followed.
+   *
+   * A submit always follows, but the store hands this component a *new* `messages`
+   * array on every live event, so the follow cannot be armed by "the newest row is
+   * a user row" -- that is true for the whole pending window and would undo the
+   * reader's scroll until the model's first row lands (see `followsFreshPrompt`).
+   */
+  const followedPrompt = useRef<FollowedPrompt>({ session: '', promptId: null });
   useEffect(() => {
     if (skipAutoScroll.current) {
       // Prepending an earlier history page must not yank the view back to bottom.
@@ -640,7 +652,15 @@ export const Transcript: React.FC = () => {
       return;
     }
     const newest = messages[messages.length - 1];
-    if (!pinnedToBottom.current && newest?.type !== 'user') return;
+    // The session key is read from the store rather than closed over: this effect
+    // must stay keyed on `messages` alone, because that is how a submit reaches it.
+    const followedBy = sessionIdOf(useConsoleStore.getState().currentSession);
+    const freshPrompt = followsFreshPrompt(followedPrompt.current, followedBy, newest);
+    followedPrompt.current = {
+      session: followedBy,
+      promptId: newest?.type === 'user' ? newest.id : null,
+    };
+    if (!pinnedToBottom.current && !freshPrompt) return;
     // Instant rather than smooth: while a turn streams, the target moves every
     // few milliseconds, so a smooth animation is restarted (and never finishes)
     // hundreds of times over a single thought.

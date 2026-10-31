@@ -145,6 +145,21 @@ test('refresh restores start/folds without caching text or overwriting terminal 
   assert.deepEqual(readTranscriptViews({...session,project_id:'other'}),{});
   assert.deepEqual(readTranscriptViews({...session,thread_id:'other'}),{});
 });
+test('a view restore that changes nothing keeps the message array identity', () => {
+  // The store re-applies the cached views on every live event, and the transcript's
+  // follow effect keys off this array: rebuilding it for nothing made an activity
+  // tick look like new content, which yanked a reader who had scrolled up away from
+  // a submitted prompt back to the bottom until the model started answering.
+  const messages = [user(), row('x','tool_group',{turnId:'A',tools:[{...historyToolItem('i','execute'),callId:'c1'}]})];
+  assert.equal(restoreTranscriptViews(messages,{}),messages,'no cached view is not a change');
+  saveTranscriptViews(session,[{...messages[0],workExpanded:true}]);
+  const views = readTranscriptViews(session);
+  const restored = restoreTranscriptViews(messages,views);
+  assert.notEqual(restored,messages,'a restored fold is still applied');
+  assert.equal(restored[0].workExpanded,true);
+  assert.equal(restored[1],messages[1],'an untouched row keeps its identity');
+  assert.equal(restoreTranscriptViews(restored,views),restored,'re-applying an applied view is not a change');
+});
 test('merged historical tool batches retain any opened call detail', () => {
   saveTranscriptViews(session,[user(),row('x','tool_group',{turnId:'A',expanded:false,tools:[{...historyToolItem('i','execute'),callId:'c1'}]}),row('y','tool_group',{turnId:'A',expanded:true,tools:[{...historyToolItem('j','execute'),callId:'c2'}]})]);
   const messages=history(); messages[1].tools!.push({...historyToolItem('j','execute'),callId:'c2'});

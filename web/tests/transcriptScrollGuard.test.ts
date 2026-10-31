@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { allRowSources } from './helpers/transcriptSource.ts';
+import { followsFreshPrompt } from '../src/components/transcriptViewport.ts';
 
 /** The dispatcher and every registered row module, as one blob. */
 const allRows = allRowSources();
@@ -137,4 +138,59 @@ test('reaching the top loads the earlier page without a click', () => {
   );
   // The button stays as the manual path (and as the "there is more" hint).
   assert.ok(transcript.includes('onClick={handleLoadEarlier}'), 'the button must keep working');
+});
+
+/**
+ * The store rebuilds `messages` on every live event (it re-applies the cached fold
+ * views), so "the newest row is a user row" holds for the whole window between the
+ * submit and the model's first row.  Reading the follow from that row type re-armed
+ * it on every activity tick: scrolling up right after a submit was undone a few
+ * milliseconds later, and the transcript could not be scrolled at all until the
+ * answer started.  The submitted prompt's own id is the one-shot signal.
+ */
+const prompt = { id: 'usr-1', type: 'user' };
+const answer = { id: 'ans-1', type: 'assistant' };
+
+test('a submitted prompt is followed once, not on every live event after it', () => {
+  assert.equal(
+    followsFreshPrompt({ session: 'p:s', promptId: null }, 'p:s', prompt),
+    true,
+    'the submit itself must follow',
+  );
+  assert.equal(
+    followsFreshPrompt({ session: 'p:s', promptId: 'usr-1' }, 'p:s', prompt),
+    false,
+    'the same prompt row must not re-arm the follow: a reader may scroll up while it waits',
+  );
+  assert.equal(
+    followsFreshPrompt({ session: 'p:s', promptId: 'usr-1' }, 'p:s', answer),
+    false,
+    'an answer is never a submit',
+  );
+  assert.equal(
+    followsFreshPrompt({ session: 'p:s', promptId: 'usr-1' }, 'p:s', undefined),
+    false,
+    'an empty transcript has nothing to follow',
+  );
+  assert.equal(
+    followsFreshPrompt({ session: 'p:s', promptId: 'usr-1' }, 'p:other', prompt),
+    true,
+    'another session reuses ids, so the session key must arm the follow again',
+  );
+});
+
+test('the follow is armed by a submitted prompt, not by the newest row type', () => {
+  assert.equal(
+    transcript.includes("newest?.type !== 'user'"),
+    false,
+    'the row type is true through the whole pending window, which froze the scroll',
+  );
+  assert.ok(
+    transcript.includes('followsFreshPrompt'),
+    'the follow must key off the submitted prompt id',
+  );
+  assert.ok(
+    /}, \[messages\]\)/.test(transcript),
+    'the effect still keys off the messages array, which is how a submit reaches it',
+  );
 });
