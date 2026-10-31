@@ -6,6 +6,23 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.62
+
+### New Features
+
+- **Session Row Copy & Overflow Menu**: Every sidebar session row now copies its `thread_id` in one click (with a checkmark that clears itself), and the row keeps only copy, fork and a "more" trigger on hover; rename and delete moved into a portalled overflow menu that closes on Escape or a click outside, returns the focus to its trigger, and announces the confirmation the delete opens.
+- **Session Info In The Sidebar**: The session info panel opens from the sidebar's actions row (info icon) and expands upwards from the trigger, instead of hanging off the header title.
+- **Native OpenAI File Attachments**: The Rust OpenAI client normalizes LangChain `file` blocks into OpenAI `file_data` (data URL) or `file_id` payloads, with the filename derived from the mime type, so PDFs and office documents reach the model instead of being dropped.
+
+### Bug Fixes
+
+- **Transcript Scroll While A Prompt Waits**: Scrolling up right after submitting was undone by the next live event. The store rebuilt the `messages` array on every event and the follow treated "the newest row is a user row" as a fresh submit, so the pending window between the submit and the model's first row could not be scrolled at all; the follow is now armed once per submitted prompt id, and a view restore that changes nothing keeps the array identity.
+
+### Engineering
+
+- **Floating Panel Alignment Width**: `FloatingPanel` takes the width it paints for end/centre alignment, so a 176px row menu is no longer placed as if it were the console panels' 384px.
+- **Header And Actions Guards**: New `sessionCopyId` and `sessionRowMenu` source guards, and updated `shellLayout`, `topBarLayout`, `windowControlsOverlay`, `sessionDeleteDialog` and the `dialogKeyboardNav` acceptance script for the moved session info and the row menu.
+
 ## v0.1.61
 
 ### New Features
