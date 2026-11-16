@@ -307,6 +307,12 @@ def session_tool_prompt() -> str:
         "history, and never pass a `<project_id>:<thread_id>` reference to it. If\n"
         "`contact_session` is not in the tool list, say that this session cannot reach the\n"
         "other one instead of substituting `read_session`.\n"
+        "To delegate work to a project without naming one of its sessions, pass the bare\n"
+        "project -- `contact_session(target='<project>')` -- where `<project>` is a project\n"
+        "id, id prefix, name or workspace path; that creates a session there and its title\n"
+        "comes from the delegation text. Delegating again in the same work generation\n"
+        "reaches the session already created, so never invent a thread id and never try to\n"
+        "spawn a second session for the same project and work.\n"
     )
 
 

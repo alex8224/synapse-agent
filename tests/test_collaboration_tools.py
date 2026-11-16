@@ -22,10 +22,16 @@ B = SessionRef('p1', 'b')
 OTHER = SessionRef('p2', 'c')
 
 
-def _harness(tmp_path, *, allows=None):
+def _harness(tmp_path, *, allows=None, resolve_project=None, spawn=None):
     store = CollaborationStore(tmp_path / 'collab')
-    coordinator = CollaborationCoordinator(store, allows=allows or (lambda _s, _t: True))
-    contact, reply = build_collaboration_tools(coordinator, source_project='p1')
+    coordinator = CollaborationCoordinator(
+        store,
+        allows=allows or (lambda _s, _t: True),
+        spawn=spawn,
+    )
+    contact, reply = build_collaboration_tools(
+        coordinator, source_project='p1', resolve_project=resolve_project,
+    )
     return store, coordinator, contact, reply
 
 
@@ -303,5 +309,120 @@ def test_contact_session_allows_different_target_during_clarification_turn(tmp_p
         res = contact.func(runtime, target='p2:c', request='请第三方协查')
         assert res.startswith('accepted')
         assert len(store.deliveries(OTHER, limit=10)) == 1
+    finally:
+        store.close()
+
+
+def _projects(mapping):
+    return lambda reference: mapping.get(reference)
+
+
+def test_bare_project_creates_a_session_and_reuses_it_in_one_work(tmp_path):
+    spawned: list[str] = []
+
+    def spawn(project_id):
+        spawned.append(project_id)
+        return f'new{len(spawned)}'
+
+    store, _coordinator, contact, _reply = _harness(
+        tmp_path, resolve_project=_projects({'p2': 'p2'}), spawn=spawn,
+    )
+    try:
+        first = contact.func(_turn('a', 'call-1'), target='p2', request='起个会话')
+        assert first.startswith('accepted')
+        assert 'p2:new1' in first
+        # The tail may be left empty, and the second delegation of the same work
+        # generation must reach the session the first one created.
+        second = contact.func(_turn('a', 'call-2'), target='p2:', request='继续同一件事')
+        assert second.startswith('accepted')
+        assert 'p2:new1' in second
+        assert spawned == ['p2']
+        created = SessionRef('p2', 'new1')
+        assert len(store.deliveries(created, limit=10)) == 2
+    finally:
+        store.close()
+
+
+def test_a_new_work_generation_spawns_its_own_session(tmp_path):
+    spawned: list[str] = []
+
+    def spawn(project_id):
+        spawned.append(project_id)
+        return f'new{len(spawned)}'
+
+    store, coordinator, contact, _reply = _harness(
+        tmp_path, resolve_project=_projects({'p2': 'p2'}), spawn=spawn,
+    )
+    try:
+        work_one = coordinator.begin_work(A, 'work-1')
+        work_two = coordinator.begin_work(A, 'work-2')
+        first = contact.func(
+            _turn('a', 'call-1'), target='p2', request='第一件', collaboration_id=work_one.id,
+        )
+        second = contact.func(
+            _turn('a', 'call-2'), target='p2', request='第二件', collaboration_id=work_two.id,
+        )
+        assert 'p2:new1' in first
+        assert 'p2:new2' in second
+        assert spawned == ['p2', 'p2']
+    finally:
+        store.close()
+
+
+def test_workspace_path_is_resolved_before_the_colon_split(tmp_path):
+    store, _coordinator, contact, _reply = _harness(
+        tmp_path,
+        resolve_project=_projects({r'F:\work\p2': 'p2'}),
+        spawn=lambda _project_id: 'new1',
+    )
+    try:
+        # A Windows path contains a colon; splitting first would address "F".
+        result = contact.func(_turn(), target=r'F:\work\p2', request='派活')
+        assert result.startswith('accepted')
+        assert 'p2:new1' in result
+    finally:
+        store.close()
+
+
+def test_explicit_thread_targets_that_session_without_spawning(tmp_path):
+    spawned: list[str] = []
+    store, _coordinator, contact, _reply = _harness(
+        tmp_path,
+        resolve_project=_projects({'p2': 'p2'}),
+        spawn=lambda project_id: spawned.append(project_id) or 'new1',
+    )
+    try:
+        result = contact.func(_turn(), target='@session:p2:abc', request='找已有的')
+        assert result.startswith('accepted')
+        assert 'p2:abc' in result
+        assert spawned == []
+        assert len(store.deliveries(SessionRef('p2', 'abc'), limit=10)) == 1
+    finally:
+        store.close()
+
+
+def test_spawn_failure_is_reported_without_writing_a_request(tmp_path):
+    def spawn(_project_id):
+        raise RuntimeError('boom')
+
+    store, _coordinator, contact, _reply = _harness(
+        tmp_path, resolve_project=_projects({'p2': 'p2'}), spawn=spawn,
+    )
+    try:
+        result = contact.func(_turn(), target='p2', request='派活')
+        assert result.startswith('failed: 无法在目标项目新建会话')
+        assert 'RuntimeError' in result
+        assert store.deliveries(SessionRef('p2', 'new1'), limit=10) == ()
+    finally:
+        store.close()
+
+
+def test_unknown_project_reference_is_rejected(tmp_path):
+    store, _coordinator, contact, _reply = _harness(
+        tmp_path, resolve_project=_projects({'p2': 'p2'}), spawn=lambda _p: 'new1',
+    )
+    try:
+        assert contact.func(_turn(), target='nope', request='x').startswith('failed')
+        assert contact.func(_turn(), target='nope:abc', request='x').startswith('failed')
     finally:
         store.close()

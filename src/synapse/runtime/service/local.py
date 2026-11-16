@@ -19,11 +19,12 @@ import threading
 import time
 import traceback
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, Self
 
 import synapse.runtime.service.attachment_store as attachment_store
+from synapse.content.multimodal import AttachmentError
 from synapse.runtime.service.artifact_filesystem import (
     list_artifacts_filesystem,
     read_artifact_filesystem,
@@ -795,21 +796,8 @@ class LocalAgentRuntimeService:
         attachments = tuple(command.attachments)
         attachment_refs: tuple[Any, ...] = ()
         if command.attachment_refs:
-            workspace = self._attachment_workspace(manager)
-            refs = tuple(
-                AttachmentRef(session=command.session, attachment_id=attachment_id)
-                for attachment_id in command.attachment_refs
-            )
-            # ``resolve_attachments`` renumbers ids 1..N in reference order so the
-            # ``[image#N]`` placeholders of one turn stay stable; the durable id is
-            # attached to each resolved image and never enters the LangGraph
-            # payload.
-            resolved = await asyncio.to_thread(
-                attachment_store.resolve_attachments, workspace, refs
-            )
-            attachments = tuple(
-                dataclasses.replace(image, durable_id=ref.attachment_id)
-                for image, ref in zip(resolved, refs, strict=True)
+            attachments = await self._resolve_attachment_refs(
+                manager, command.session, command.attachment_refs
             )
             attachment_refs = tuple(
                 {
@@ -1097,16 +1085,33 @@ class LocalAgentRuntimeService:
         )
 
     async def steer_turn(self, command: SteerTurnCommand) -> SteerTurnResult:
-        """Deliver mid-run guidance only to the turn matching ``expected_turn_id``."""
+        """Deliver mid-run guidance only to the turn matching ``expected_turn_id``.
+
+        A note may carry images: ``attachment_refs`` is resolved from the trusted
+        session workspace exactly like a submitted turn, and the session injects
+        the resulting content blocks next to the note text.  ``text`` may be
+        empty only when ``attachment_refs`` is present.
+        """
         self._validate_ref(command.session)
         self._validate_expected_turn_id(command.expected_turn_id)
-        self._validate_text(command.text)
+        if not isinstance(command.text, str):
+            raise InvalidRequestError(
+                f"text must be a string, got type {type(command.text).__name__!r}"
+            )
+        if not command.text.strip() and not command.attachment_refs:
+            raise InvalidRequestError("steer requires text or attachment_refs")
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
         self._resolve_session(manager, command.session)
+        attachments = await self._resolve_attachment_refs(
+            manager, command.session, command.attachment_refs
+        )
         try:
             turn_id, _accepted, pending_count = manager.steer_turn_ref(
-                command.session, command.expected_turn_id, command.text
+                command.session,
+                command.expected_turn_id,
+                command.text,
+                attachments=attachments,
             )
         except SessionNoActiveTurnError as exc:
             raise NoActiveTurnError(str(exc)) from exc
@@ -1118,6 +1123,8 @@ class LocalAgentRuntimeService:
             raise ConflictError(str(exc)) from exc
         except RuntimeClosedError as exc:
             raise ClosedError(str(exc)) from exc
+        except AttachmentError as exc:
+            raise InvalidRequestError(str(exc)) from exc
         return SteerTurnResult(
             command_id=command.command_id,
             session=command.session,
@@ -2333,6 +2340,36 @@ class LocalAgentRuntimeService:
         reported as a typed ``attachment_unavailable`` error there.
         """
         return getattr(manager.settings, "workspace", None)
+
+    async def _resolve_attachment_refs(
+        self,
+        manager: RuntimeManager,
+        session: SessionRef,
+        attachment_ids: Sequence[str],
+    ) -> tuple[Any, ...]:
+        """Resolve opaque ids into durable composer attachments for one command.
+
+        ``resolve_attachments`` renumbers ids 1..N in reference order so the
+        ``[image#N]`` placeholders of one turn stay stable; the durable id is
+        attached to each resolved image and never enters the LangGraph payload.
+        Shared by ``submit`` and ``steer`` so both channels resolve an id in
+        exactly the same way.
+        """
+        ids = tuple(attachment_ids)
+        if not ids:
+            return ()
+        workspace = self._attachment_workspace(manager)
+        refs = tuple(
+            AttachmentRef(session=session, attachment_id=attachment_id)
+            for attachment_id in ids
+        )
+        resolved = await asyncio.to_thread(
+            attachment_store.resolve_attachments, workspace, refs
+        )
+        return tuple(
+            dataclasses.replace(image, durable_id=ref.attachment_id)
+            for image, ref in zip(resolved, refs, strict=True)
+        )
 
     async def begin_attachment(
         self, command: BeginAttachmentCommand

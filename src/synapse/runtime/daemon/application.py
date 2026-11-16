@@ -38,11 +38,13 @@ from synapse.runtime.service import (
     SttService,
     bind_access,
 )
+from synapse.runtime.service.session_metadata import open_session_metadata_store
 from synapse.runtime.sessions import RuntimeManager, SessionRef
 from synapse.runtime.transport import ConnectionAuthenticator, RuntimeWebSocketServer
 from synapse.sessions.session_binding import resolve_session_axes
 from synapse.sessions.store import (
     SessionStore,
+    allocate_thread_id,
     apply_binding_to_settings,
     binding_from_settings,
 )
@@ -792,6 +794,7 @@ class RuntimeDaemon:
                 cancel_turn=self._cancel_collaboration_turn,
                 allows=self._collaboration_allowed,
                 reachable=self._collaboration_reachable,
+                spawn=self._collaboration_spawn,
             )
         except Exception as exc:  # noqa: BLE001 - optional capability
             _LOGGER.warning(
@@ -891,6 +894,50 @@ class RuntimeDaemon:
             return 'project-not-registered'
         return None
 
+    def _resolve_collaboration_project(self, reference: str) -> str | None:
+        """Resolve a project token: id, id prefix, name or workspace path.
+
+        ``contact_session`` accepts a bare project because the delegating session
+        normally does not know the target's stable id, and enumerating another
+        project's sessions is not something a model should need.  This is a
+        catalog read only: it never builds another project's runtime.
+        """
+        catalog = self.catalog
+        if catalog is None:
+            return None
+        try:
+            row = catalog.resolve_project(reference)
+        except Exception as exc:  # noqa: BLE001 - an unusable token is not a crash
+            _LOGGER.warning(
+                "collaboration project reference could not be resolved: %s",
+                type(exc).__name__,
+            )
+            return None
+        return None if row is None else str(row.project_id)
+
+    def _collaboration_spawn(self, project_id: str) -> str:
+        """Persist one new session row in ``project_id``; return its thread id.
+
+        The id is allocated here, never by the caller: a model that could choose
+        a thread id could address -- or collide with -- a session it does not
+        own.  The title is deliberately left empty, because the delegation's
+        first turn binds it from the message text exactly like a user-started
+        session does.
+
+        Creating the row before the request is durable is the intended order: a
+        request must never name a session that does not exist yet, and a row left
+        behind by a failed request is an ordinary empty session, not corruption.
+        """
+        manager = self._collaboration_manager_for(project_id)
+        if manager is None:
+            raise RuntimeError('project is not available')
+        store = open_session_metadata_store(manager.settings)
+        if store is None:
+            raise RuntimeError('session metadata store is unavailable')
+        thread_id = allocate_thread_id()
+        store.ensure(thread_id)
+        return thread_id
+
     def _collaboration_turn_started(
         self, ref: SessionRef, turn_id: str, is_collaboration: bool
     ) -> None:
@@ -919,7 +966,11 @@ class RuntimeDaemon:
         try:
             from synapse.runtime.collaboration.tools import build_collaboration_tools
 
-            return build_collaboration_tools(coordinator, source_project=project_id)
+            return build_collaboration_tools(
+                coordinator,
+                source_project=project_id,
+                resolve_project=self._resolve_collaboration_project,
+            )
         except Exception as exc:  # noqa: BLE001 - a tool import must not block the agent
             # Degradation boundary: the agent still runs, but this session
             # cannot reach another session, so the reason must be recorded.

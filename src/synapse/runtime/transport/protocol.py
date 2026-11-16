@@ -818,11 +818,23 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             ),
         )
     if method == "runtime.turn.steer":
-        _optional_fields(params, {"session", "expected_turn_id", "text"}, {"command_id"})
+        _optional_fields(
+            params,
+            {"session", "expected_turn_id"},
+            {"text", "attachment_refs", "command_id"},
+        )
+        text = _text(params["text"], nonempty=False) if "text" in params else ""
+        # ``attachment_refs`` is the transport-safe image source, exactly like
+        # ``runtime.turn.submit``: a bounded list of opaque ids already finalized
+        # for this session.  A note may be image-only.
+        attachment_refs = _attachment_ids(params.get("attachment_refs", []))
+        if not text.strip() and not attachment_refs:
+            raise ProtocolError(-32602, "invalid_params")
         return SteerTurnCommand(
             _session(params["session"]),
             _turn_id(params["expected_turn_id"]),
-            _text(params["text"]),
+            text,
+            attachment_refs=attachment_refs,
             command_id=(
                 _command_id(params["command_id"])
                 if "command_id" in params

@@ -8,9 +8,12 @@ from typing import Any
 from pydantic import Field
 
 from synapse.runtime.steer import (
+    STEER_IMAGE_ONLY_TEXT,
     STEER_PREFIX,
+    SteerNote,
     SteerQueue,
     build_steer_middleware,
+    format_steer_content,
     format_steer_message,
     format_steer_panel,
     is_steer_message,
@@ -178,3 +181,118 @@ def test_steer_reaches_next_model_call_in_real_async_agent_graph():
     assert len(injected) == 1
     assert "focus on the queued fix" in str(injected[0].content)
     assert queue.peek_count() == 0
+
+# --- multimodal steer (images in mid-run guidance) --------------------------
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+
+
+def test_steer_queue_keeps_image_blocks_but_text_view_is_unchanged():
+    q = SteerQueue()
+    note = SteerNote(
+        text="look at this",
+        blocks=(
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ),
+        refs=(
+            {
+                "image_id": 1,
+                "attachment_id": "a" * 32,
+                "name": "shot.png",
+                "mime": "image/png",
+                "size": 16,
+            },
+        ),
+    )
+    assert q.push(note) == 1
+    # Every legacy read path still sees plain text.
+    assert q.peek_items() == ["look at this"]
+    notes = q.drain_notes()
+    assert len(notes) == 1
+    assert notes[0].blocks[-1]["type"] == "image_url"
+    assert q.drain() == []
+    assert q.push(SteerNote(text="", blocks=())) == 0
+
+
+def test_format_steer_content_keeps_plain_text_path():
+    text_only = [SteerNote(text="a"), SteerNote(text="b")]
+    assert format_steer_content(text_only) == format_steer_message(["a", "b"])
+
+
+def test_format_steer_content_puts_header_first_for_images():
+    blocks = format_steer_content(
+        [
+            SteerNote(
+                text="see shot",
+                blocks=(
+                    {"type": "text", "text": "see shot"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+                ),
+            )
+        ]
+    )
+    assert isinstance(blocks, list)
+    assert STEER_PREFIX in blocks[0]["text"]
+    assert blocks[1] == {"type": "text", "text": "see shot"}
+    assert blocks[2]["type"] == "image_url"
+
+
+def test_steer_middleware_injects_multimodal_content_with_refs():
+    q = SteerQueue()
+    mw = build_steer_middleware(q)
+    q.push(
+        SteerNote(
+            text="see shot",
+            blocks=(
+                {"type": "text", "text": "see shot"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ),
+            refs=(
+                {
+                    "image_id": 1,
+                    "attachment_id": "a" * 32,
+                    "name": "shot.png",
+                    "mime": "image/png",
+                    "size": 16,
+                },
+            ),
+        )
+    )
+    out = mw.before_model({"messages": []}, runtime=None)
+    assert out is not None
+    msg = out["messages"][0]
+    assert isinstance(msg.content, list)
+    assert STEER_PREFIX in msg.content[0]["text"]
+    assert any(block.get("type") == "image_url" for block in msg.content)
+    assert msg.additional_kwargs["coding_steer"] is True
+    refs = msg.additional_kwargs["synapse_attachment_refs"]
+    assert refs[0]["attachment_id"] == "a" * 32
+    # The transcript filter still recognizes the injected message.
+    assert is_steer_message(msg)
+
+
+def test_steer_note_shapes_blocks_for_the_session_provider():
+    from types import SimpleNamespace
+
+    from synapse.content.multimodal import Attachment
+    from synapse.runtime.sessions.runtime import SessionRuntime
+
+    image = Attachment(
+        id=1, name="shot.png", mime="image/png", data=PNG_BYTES, durable_id="a" * 32
+    )
+    openai_note = SessionRuntime._steer_note(
+        SimpleNamespace(settings=SimpleNamespace(model="openai:gpt-4o")), "look", [image]
+    )
+    assert openai_note.text == "look"
+    assert openai_note.blocks[0] == {"type": "text", "text": "look"}
+    assert openai_note.blocks[1]["type"] == "image_url"
+    assert openai_note.refs[0]["attachment_id"] == "a" * 32
+
+    # Image-only notes keep a readable text view for the TUI panel.
+    anthropic_note = SessionRuntime._steer_note(
+        SimpleNamespace(settings=SimpleNamespace(model="anthropic:claude-3")), "", [image]
+    )
+    assert anthropic_note.text == STEER_IMAGE_ONLY_TEXT
+    assert anthropic_note.blocks[-1]["type"] == "image"
+    assert anthropic_note.blocks[-1]["source"]["type"] == "base64"

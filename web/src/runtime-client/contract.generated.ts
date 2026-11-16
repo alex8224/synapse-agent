@@ -2301,10 +2301,19 @@ export interface StatAttachmentQuery {
   ref: AttachmentRef;
 }
 
+/**
+ * ``text`` may be empty only when ``attachment_refs`` is present; at least
+ * one of ``text`` / ``attachment_refs`` must be supplied.
+ */
 export interface SteerTurnCommand {
   session: SessionRef;
   expected_turn_id: string;
   text: string;
+  /**
+   * python_default_kind=value python_default=[]
+   * Opaque, server-generated attachment ids already finalized for this session; bounded to 8 ids.  The service resolves them from the trusted session workspace and the note is injected as image content blocks next to its text.
+   */
+  attachment_refs?: string[];
   /**
    * python_default_kind=factory python_default="<lambda>"
    */

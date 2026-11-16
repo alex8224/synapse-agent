@@ -696,7 +696,29 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
     _dto(SetThinkingLevelCommand, role="request"),
     _dto(SetProjectThinkingLevelCommand, role="request"),
     _dto(CancelTurnCommand, role="request"),
-    _dto(SteerTurnCommand, role="request"),
+    _dto(
+        SteerTurnCommand,
+        role="request",
+        field_metadata=(
+            (
+                "attachment_refs",
+                FieldMetadata(
+                    ts_type="string[]",
+                    note=(
+                        "Opaque, server-generated attachment ids already finalized for "
+                        f"this session; bounded to {MAX_ATTACHMENTS_PER_SESSION} ids.  "
+                        "The service resolves them from the trusted session workspace "
+                        "and the note is injected as image content blocks next to its "
+                        "text."
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "``text`` may be empty only when ``attachment_refs`` is present; at least",
+            "one of ``text`` / ``attachment_refs`` must be supplied.",
+        ),
+    ),
     _dto(CloseSessionCommand, role="request"),
     _dto(GetSessionQuery, role="request"),
     _dto(GetSessionGoalQuery, role="request"),
@@ -2734,6 +2756,11 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         scope_location="params.session",
         service_method="steer_turn",
         params_alias="SteerTurnParams",
+        notes=(
+            "``attachment_refs`` is the transport-safe image source: the note is",
+            "injected as image content blocks next to its text, so a steer can carry",
+            "pictures exactly like a submitted turn.",
+        ),
     ),
     WireMethod(
         method="runtime.turn.submit",

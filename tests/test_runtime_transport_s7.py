@@ -349,3 +349,39 @@ def test_protocol_dispatch_and_service_error_mapping() -> None:
         assert "secret" not in encode_error(1, -32000, "safe_code")
 
     asyncio.run(run())
+
+def test_steer_accepts_attachment_refs_and_image_only_notes() -> None:
+    session = {"project_id": "p", "thread_id": "t"}
+    attachment_id = "a" * 32
+    command = decode_params(
+        "runtime.turn.steer",
+        {
+            "session": session,
+            "expected_turn_id": "turn",
+            "text": "",
+            "attachment_refs": [attachment_id],
+        },
+    )
+    assert command.attachment_refs == (attachment_id,)
+    assert command.text == ""
+    # A text-only steer stays legal and simply has no refs.
+    text_only = decode_params(
+        "runtime.turn.steer",
+        {"session": session, "expected_turn_id": "turn", "text": "hi"},
+    )
+    assert text_only.attachment_refs == ()
+    with pytest.raises(ProtocolError):
+        decode_params(
+            "runtime.turn.steer",
+            {"session": session, "expected_turn_id": "turn", "text": ""},
+        )
+    with pytest.raises(ProtocolError):
+        decode_params(
+            "runtime.turn.steer",
+            {
+                "session": session,
+                "expected_turn_id": "turn",
+                "text": "",
+                "attachment_refs": ["../../etc/passwd"],
+            },
+        )

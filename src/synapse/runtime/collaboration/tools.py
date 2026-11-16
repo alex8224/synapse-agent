@@ -11,7 +11,7 @@ a sender, a request id or a work generation.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from langchain.tools import ToolRuntime
@@ -21,9 +21,10 @@ from synapse.runtime.collaboration.model import (
     CollaborationError,
     MessageKind,
     NotPermittedError,
+    SpawnError,
     TargetUnavailableError,
 )
-from synapse.runtime.sessions.ref import SessionRef, SessionResolutionError, parse_global_id
+from synapse.runtime.sessions.ref import SessionRef
 
 __all__ = ['build_collaboration_tools']
 
@@ -52,12 +53,54 @@ def _call_key(runtime: Any) -> str:
     return str(value) if value else uuid.uuid4().hex
 
 
-def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[Any]:
+def _resolve_target(
+    reference: str,
+    *,
+    resolve_project: Callable[[str], str | None] | None,
+    coordinator: Any,
+    scope_id: str,
+) -> SessionRef | None:
+    """Turn one target reference into the exact session it names.
+
+    ``None`` means the reference is malformed.  A reference that names a project
+    without a thread asks for a *new* session there; the coordinator resolves
+    that stickily, so one work generation never spawns a session per delegation.
+
+    The whole reference is tried as a project first: a Windows workspace path
+    contains a colon, so splitting before that lookup would cut ``C:\\...`` in
+    two and address a project named ``C``.
+    """
+    if resolve_project is not None:
+        whole = resolve_project(reference)
+        if whole:
+            return coordinator.spawn_target(scope_id, whole)
+    project_token, separator, thread_token = reference.partition(':')
+    project_token = project_token.strip()
+    if not separator or not project_token:
+        return None
+    project_id = (
+        resolve_project(project_token) if resolve_project is not None else project_token
+    )
+    if not project_id:
+        return None
+    thread_token = thread_token.strip()
+    if not thread_token:
+        return coordinator.spawn_target(scope_id, project_id)
+    return SessionRef(project_id, thread_token)
+
+
+def build_collaboration_tools(
+    coordinator: Any,
+    *,
+    source_project: str,
+    resolve_project: Callable[[str], str | None] | None = None,
+) -> list[Any]:
     """Build the two collaboration tools for one project's agent.
 
     ``coordinator`` is the daemon's single coordinator; ``source_project`` is the
     project this agent was built for, so a turn can never claim to be another
-    project's session.
+    project's session.  ``resolve_project`` maps a project token (id, id prefix,
+    name or workspace path) to a project id; without it only exact ids work.
     """
 
     def _source(runtime: Any) -> SessionRef | None:
@@ -76,7 +119,11 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
     ) -> str:
         """请另一个会话协作处理一件事，并把结论带回当前会话。
 
-        用 `@会话` 选择器插入目标会话，或按 `<project_id>:<thread_id>` 填写。
+        用 `@会话` 选择器插入目标会话，或按下面的格式填写 target：
+        - `<project>`：在该项目新建一个会话承接本次交办（最常用）；
+        - `<project>:<thread_id>`：联系该项目里已有的会话。
+        `<project>` 可以是项目 ID、ID 前缀、项目名或工作区路径。
+        同一协作内对同一项目重复交办会复用已建的会话，不会每次新建。
         只发送本次请求需要的背景与交付要求，不会发送整个对话历史。
         调用后立即返回：不要等待、不要轮询对方，继续完成不依赖它的部分；
         对方完成后结论会自动回到本会话继续。
@@ -84,7 +131,7 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
         `reply_to_collaboration(kind='supplement')` 补充上下文，严禁重复调用 contact_session。
 
         Args:
-            target: 目标会话，格式 `<project_id>:<thread_id>`。
+            target: 目标，`<project>`（新建会话）或 `<project>:<thread_id>`（已有会话）。
             request: 请对方做什么，以及必要的背景与约束。
             expect: 希望对方返回什么结论，可留空。
             collaboration_id: 已有协作 ID；向多个会话交办同一工作时复用，留空则新建。
@@ -95,15 +142,35 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
         metadata = _delivery_metadata(runtime)
         if metadata.get('role') == 'target':
             return 'failed: 被交办方不能隐式转派，请向指挥者回复或请求澄清'
-        # The console inserts a `@session:<project_id>:<thread_id>` pill; the
-        # same target may also arrive as a bare ref, so both are accepted.
+        # The console inserts a `@session:<project>:<thread_id>` pill; the same
+        # target may also arrive as a bare ref, so both are accepted.
         reference = target.strip()
         if reference.startswith('@session:'):
             reference = reference[len('@session:'):]
+        if not reference:
+            return 'failed: target must name a project'
+        body = request.strip()
+        if not body:
+            return 'failed: request must not be empty'
+        if expect.strip():
+            body = f'{body}\n\n期望交付：{expect.strip()}'
         try:
-            parsed = parse_global_id(reference)
-        except SessionResolutionError:
-            return 'failed: target must be `<project_id>:<thread_id>`'
+            group_id = collaboration_id or str(metadata.get('scope_id', ''))
+            scope = (coordinator.work(group_id, source) if group_id
+                     else coordinator.current_work(source))
+            parsed = _resolve_target(
+                reference,
+                resolve_project=resolve_project,
+                coordinator=coordinator,
+                scope_id=scope.id,
+            )
+        except CollaborationError as exc:
+            return _failure(exc)
+        if parsed is None:
+            return (
+                'failed: target 需写成 `<project>`（在该项目新建会话）或 '
+                '`<project>:<thread_id>`（联系已有会话）'
+            )
         if parsed == source:
             return 'failed: the target is the current session'
         sender_proj = metadata.get('sender_project')
@@ -119,15 +186,7 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
                 "reply_to_collaboration(kind='supplement', message='...') "
                 '补充上下文以继续原交办，严禁重复调用 contact_session 新建交办。'
             )
-        body = request.strip()
-        if not body:
-            return 'failed: request must not be empty'
-        if expect.strip():
-            body = f'{body}\n\n期望交付：{expect.strip()}'
         try:
-            group_id = collaboration_id or str(_delivery_metadata(runtime).get('scope_id', ''))
-            scope = (coordinator.work(group_id, source) if group_id
-                     else coordinator.current_work(source))
             created = coordinator.request(
                 scope.id,
                 source,
@@ -140,6 +199,7 @@ def build_collaboration_tools(coordinator: Any, *, source_project: str) -> list[
             return _failure(exc)
         return (
             f'accepted: 已请 {parsed.global_id} 协作（协作 {scope.id}，交办 {created.id}）。'
+            f'后续要再找这个会话，target 直接用 `{parsed.global_id}`，不要重复新建。'
             '对方处理完成后结论会回到本会话；现在继续做不依赖它的部分，不要轮询等待。'
         )
 
@@ -202,6 +262,9 @@ def _failure(exc: CollaborationError) -> str:
     """
     if isinstance(exc, NotPermittedError):
         return 'failed: 当前部署不允许跨项目协作，请改在同一项目内选择目标会话。'
+    if isinstance(exc, SpawnError):
+        reason = str(exc).strip() or 'unknown'
+        return f'failed: 无法在目标项目新建会话（{reason}），请确认该项目可用后重试。'
     if isinstance(exc, TargetUnavailableError):
         reason = str(exc).strip() or 'unknown'
         return f'failed: 目标会话现在无法访问（{reason}），请确认后再试。'

@@ -361,12 +361,23 @@ class CancelTurnResult:
 
 @dataclass(frozen=True, slots=True)
 class SteerTurnCommand:
-    """Deliver mid-run guidance only to the turn matching ``expected_turn_id``."""
+    """Deliver mid-run guidance only to the turn matching ``expected_turn_id``.
+
+    ``attachment_refs`` mirrors :class:`SubmitTurnCommand`: a bounded list of
+    opaque ids already finalized for this session.  The service resolves them
+    from the trusted session workspace and the note is injected as image
+    content blocks next to its text, so ``text`` may be empty only when
+    ``attachment_refs`` is present.
+    """
 
     session: SessionRef
     expected_turn_id: str
     text: str
+    attachment_refs: tuple[str, ...] = ()
     command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attachment_refs", tuple(self.attachment_refs))
 
 
 @dataclass(frozen=True, slots=True)

@@ -31,6 +31,7 @@ from synapse.runtime.sessions import (
 )
 from synapse.runtime.sessions.ref import SessionRef
 from synapse.runtime.steer import (
+    STEER_IMAGE_ONLY_TEXT,
     SteerQueue,
     format_steer_message,
     get_agent_steer_queue,
@@ -1188,6 +1189,14 @@ class TurnController:
                     pass
         if self.busy:
             # Mid-run guidance: queue only (panel + prompt mode). No transcript/status.
+            if attachments:
+                # The TUI steer channel is text-only: keep the prompt and the image
+                # bank intact instead of silently dropping the pictures.
+                app.append_event(
+                    "running turn: images cannot be steered, wait for it to finish",
+                    "yellow",
+                )
+                return
             if self.steer(text):
                 return
             app.append_event("still running previous turn…", "yellow")
@@ -1872,12 +1881,19 @@ class TurnController:
             app._busy = False
             app._sync_prompt_placeholder()
             return
-        items = q.drain()
-        content = format_steer_message(items)
+        notes = q.drain_notes()
+        # An image-only note still needs a text line, otherwise the follow-up
+        # turn would drop it from the rendered guidance.
+        content = format_steer_message(
+            [note.text or STEER_IMAGE_ONLY_TEXT for note in notes]
+        )
         if not content:
             app._busy = False
             app._sync_prompt_placeholder()
             return
+        # Images resolved for the note ride into the follow-up turn instead of
+        # being silently discarded; the turn composer appends them after the text.
+        images = [image for note in notes for image in note.attachments]
         # Silent follow-up: model gets content; no transcript/status steer copy.
         self.capture_turn_context()
         app._skip_steer_followup = False
@@ -1885,4 +1901,4 @@ class TurnController:
         app.clear_stream()
         app.set_activity("thinking", "", True)
         app._sync_prompt_placeholder()
-        app.run_turn(content, None)
+        app.run_turn(content, images or None)

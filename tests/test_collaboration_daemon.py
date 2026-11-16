@@ -43,25 +43,32 @@ def test_tool_degradation_reaches_the_daemon_error_log(tmp_path: Path) -> None:
 class _Router:
     """Minimal stand-in: resolves the registered projects and shuts down cleanly."""
 
-    def __init__(self, known: tuple[str, ...] = ()) -> None:
+    def __init__(self, known: tuple[str, ...] = (), *, settings=None) -> None:
         self.closed = False
         self._known = known
+        self._settings = settings
 
     def __call__(self, project_id: str):
-        return object() if project_id in self._known else None
+        if project_id not in self._known:
+            return None
+        return SimpleNamespace(settings=self._settings)
 
     async def shutdown(self) -> None:
         self.closed = True
 
 
 class _Catalog:
-    """Minimal stand-in for the project catalog: only the exact-id lookup."""
+    """Minimal stand-in for the project catalog: exact-id lookups only."""
 
     def __init__(self, known: tuple[str, ...] = ()) -> None:
         self._known = known
 
     def get_project(self, *, project_id: str):
         return SimpleNamespace(project_id=project_id) if project_id in self._known else None
+
+    def resolve_project(self, reference: str):
+        """Mirror the real catalog's token resolution for the tests that need it."""
+        return self.get_project(project_id=reference)
 
 
 def test_collaboration_starts_and_closes_with_the_daemon(tmp_path):
@@ -151,6 +158,45 @@ def test_cross_project_policy_defaults_on_and_can_be_disabled(tmp_path):
 
     unready = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'c', port=0))
     assert unready._collaboration_reachable(A) == 'runtime-not-ready'
+
+
+def test_project_reference_resolves_through_the_catalog(tmp_path):
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path, port=0))
+    daemon.catalog = _Catalog(('p1', 'p2'))
+    assert daemon._resolve_collaboration_project('p2') == 'p2'
+    assert daemon._resolve_collaboration_project('p9') is None
+
+    # Without a catalog there is nothing to resolve against, and the answer is a
+    # refusal rather than an exception.
+    unready = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'b', port=0))
+    assert unready._resolve_collaboration_project('p2') is None
+
+
+def test_spawn_persists_one_session_row_in_the_target_project(tmp_path):
+    from synapse.sessions.store import SessionStore
+
+    sessions = tmp_path / 'sessions.sqlite'
+    settings = SimpleNamespace(sessions_path=sessions, workspace=tmp_path)
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path / 'd', port=0))
+    daemon.router = _Router(('p2',), settings=settings)
+
+    thread_id = daemon._collaboration_spawn('p2')
+
+    assert len(thread_id) == 12
+    store = SessionStore(sessions)
+    try:
+        # The row exists before any request names it, and its title stays empty
+        # so the delegation's first turn binds it from the message text.
+        assert store.get(thread_id) is not None
+    finally:
+        store.close()
+
+
+def test_spawn_refuses_a_project_that_cannot_be_built(tmp_path):
+    daemon = RuntimeDaemon(DaemonConfig(state_dir=tmp_path, port=0))
+    daemon.router = _Router(())
+    with pytest.raises(RuntimeError):
+        daemon._collaboration_spawn('p2')
 
 
 def test_collaboration_tools_exist_only_after_the_mailbox_starts(tmp_path):

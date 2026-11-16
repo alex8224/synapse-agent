@@ -559,6 +559,10 @@ session 会排在前面，并显示 `[running] / [starting] / [queued] / [cancel
 
 - 前台会话运行中提交输入会被引导为 steer（不开启新 turn）；要并发启动另一个 loop，
   先从项目/session 侧栏切到目标 session 再提交。
+- 运行中的插话同样可以携带图片：`runtime.turn.steer` 接受与 `runtime.turn.submit`
+  相同的 `attachment_refs`，服务端从受信的 session workspace 解析后，把图片内容块
+  与该条提示一起注入下一模型步（只有文本时保持原有纯文本注入）。图片-only 插话合法，
+  但 `text` 与 `attachment_refs` 至少要有一个非空；插话被拒绝时控制台保留草稿与附件。
 - 切走再切回仍处于运行中的会话是安全的：渲染重新挂接，运行中的 turn 不会被打断，
   新模型绑定会在该 turn 结束后自动生效。
 

@@ -37,6 +37,10 @@ class TargetUnavailableError(CollaborationError):
     """The target session cannot be reached right now (unknown or unbuildable)."""
 
 
+class SpawnError(CollaborationError):
+    """A new target session could not be created for this delegation."""
+
+
 class SchemaVersionError(CollaborationError):
     """The database belongs to an unsupported schema."""
 

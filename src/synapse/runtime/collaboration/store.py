@@ -853,6 +853,28 @@ class CollaborationStore:
 
     # -- read surface for the console ---------------------------------------
 
+    def first_target_in_scope(self, scope_id: str, project_id: str) -> SessionRef | None:
+        """The session this generation already delegated to in ``project_id``.
+
+        Sticky addressing: a second "new session in this project" request inside
+        one work generation must reach the session the first one created instead
+        of leaving a trail of one session per delegation.  Newest first, so a
+        generation that legitimately addressed two sessions of the same project
+        keeps resolving to the most recent choice.
+
+        This reads collaboration facts only; whether that session still exists is
+        the delivery runtime's question, not this one's.
+        """
+        bounded_text(scope_id)
+        bounded_text(project_id)
+        with self._transaction(write=False) as db:
+            row = db.execute(
+                'SELECT target_thread FROM requests WHERE scope_id=? AND target_project=? '
+                'ORDER BY created_at_ms DESC, id DESC LIMIT 1',
+                (scope_id, project_id),
+            ).fetchone()
+        return None if row is None else SessionRef(project_id, str(row['target_thread']))
+
     def requests_for_session(
         self, session: SessionRef, *, limit: int = 20,
     ) -> tuple[Request, ...]:

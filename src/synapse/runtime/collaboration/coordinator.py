@@ -17,7 +17,9 @@ from synapse.runtime.collaboration.model import (
     NotPermittedError,
     Request,
     ScopeState,
+    SpawnError,
     TargetUnavailableError,
+    bounded_text,
 )
 from synapse.runtime.collaboration.store import CollaborationStore
 from synapse.runtime.sessions.ref import SessionRef
@@ -34,6 +36,10 @@ Allows = Callable[[SessionRef, SessionRef], bool]
 #: A reason and not a bool on purpose: "not registered" and "registered but
 #: unusable" need different answers, and the reader deserves to see which.
 Reachable = Callable[[SessionRef], str | None]
+#: Allocate one fresh session in a project and return its thread id. The daemon
+#: supplies this because the id is a durable session-store write, not a
+#: collaboration fact, and the id must never come from the model.
+Spawn = Callable[[str], str]
 
 
 class CollaborationCoordinator:
@@ -52,12 +58,14 @@ class CollaborationCoordinator:
         cancel_turn: CancelTurn | None = None,
         allows: Allows | None = None,
         reachable: Reachable | None = None,
+        spawn: Spawn | None = None,
     ) -> None:
         self._store = store
         self._wake = wake
         self._cancel_turn = cancel_turn
         self._allows = allows
         self._reachable = reachable
+        self._spawn = spawn
 
     def _notify(self, recipient: SessionRef) -> None:
         if self._wake is not None:
@@ -83,6 +91,26 @@ class CollaborationCoordinator:
         if scope is not None:
             return scope
         return self._store.begin_scope(source, f'adhoc-{uuid.uuid4().hex}')
+
+    def spawn_target(self, scope_id: str, project_id: str) -> SessionRef:
+        """Resolve the session this generation delegates to in ``project_id``.
+
+        Sticky on purpose: the first delegation creates the session, and every
+        later delegation of the same work generation reaches that same session
+        instead of leaving a trail of one session per request.  The id itself is
+        allocated by the injected ``spawn`` -- never by the caller and never by
+        the model, which could otherwise address a session it does not own.
+        """
+        existing = self._store.first_target_in_scope(scope_id, project_id)
+        if existing is not None:
+            return existing
+        if self._spawn is None:
+            raise SpawnError('spawning is not available')
+        try:
+            thread_id = self._spawn(project_id)
+        except Exception as exc:  # noqa: BLE001 - a named refusal, not a crash
+            raise SpawnError(f'spawn-failed:{type(exc).__name__}') from exc
+        return SessionRef(project_id, bounded_text(thread_id))
 
     def request(
         self,

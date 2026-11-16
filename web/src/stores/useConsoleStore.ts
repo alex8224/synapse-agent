@@ -4848,20 +4848,15 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const epoch = sessionEpoch;
 
     if (runtimeStatus === 'running' && activeTurnId) {
-      if (refs.length > 0) {
-        // `runtime.turn.steer` has no attachment_refs field: silently dropping
-        // the images would be worse than refusing, so the composer keeps them.
-        set({ attachmentError: '运行中无法携带附件插话：请等待当前轮次结束后再发送图片。' });
-        return false;
-      }
       set({ attachmentError: null });
-      get().addUserMessage(body);
+      get().addUserMessage(body, attachmentDisplaysOf(pending));
       set((s) => ({ steerQueueCount: s.steerQueueCount + 1 }));
       try {
         await client.steerTurn({
           session: currentSession,
           expected_turn_id: activeTurnId,
           text: body,
+          ...(refs.length > 0 ? { attachment_refs: refs } : {}),
         });
       } catch (err) {
         if (err instanceof ConnectionLostError && err.unknownOutcome) {
@@ -4877,6 +4872,9 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
         }
         return true;
       }
+      // Accepted: the images now belong to the running turn, so the composer
+      // drops them exactly like an accepted submit does.
+      set({ attachments: [] });
       return true;
     }
 

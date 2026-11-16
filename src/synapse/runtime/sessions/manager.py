@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -493,7 +493,11 @@ class RuntimeManager:
         return session.cancel_turn(expected_turn_id, reason)
 
     def steer_turn_ref(
-        self, ref: SessionRef, expected_turn_id: str, text: str
+        self,
+        ref: SessionRef,
+        expected_turn_id: str,
+        text: str,
+        attachments: Sequence[Any] | None = None,
     ) -> tuple[str, bool, int]:
         """Steer the live turn for ``ref`` only when its id matches.
 
@@ -505,7 +509,7 @@ class RuntimeManager:
         session = self.get_session_ref(ref)
         if session is None:
             raise NoActiveTurnError("no active turn to steer (session not found)")
-        return session.steer_turn(expected_turn_id, text)
+        return session.steer_turn(expected_turn_id, text, attachments=attachments)
 
     async def close_session_ref(
         self, ref: SessionRef, *, cancel_active: bool = False

@@ -1777,6 +1777,8 @@ class RuntimeWebSocketClient(GoalClientMixin):
 
     @_fence_on_protocol_failure
     async def steer_turn(self, command: SteerTurnCommand) -> SteerTurnResult:
+        if not command.text.strip() and not command.attachment_refs:
+            raise ValueError("steer requires text or attachment_refs")
         result = await self._command(
             "runtime.turn.steer",
             {
@@ -1784,6 +1786,9 @@ class RuntimeWebSocketClient(GoalClientMixin):
                 "expected_turn_id": command.expected_turn_id,
                 "text": command.text,
                 "command_id": command.command_id,
+                "attachment_refs": [
+                    _text(ref, "attachment_ref", 64) for ref in command.attachment_refs
+                ],
             },
             command.command_id,
         )

@@ -845,6 +845,7 @@ daemon 支持跨多个工作区同时运行多个会话（每个项目一个 `Ru
 | 粘贴 / 拖放 / 点选 | — | 三条入口都走同一条 `handleFiles`：粘贴到输入卡片、直接拖放到卡片上、或用控制行的 `+` 点选文件；只接受图片，每次最多 8 张、每张 ≤ 4 MB，被拒的文件名与原因会显示在输入区 |
 | 上传 | `runtime.attachments.begin/append/finish` | 每个附件独立串流并显示进度；「取消/移除」会在块间中止（best-effort `runtime.attachments.abort`）。失败只显示原因，不会把文件名当成 prompt 发送 |
 | 发送 | `runtime.turn.submit` 的 `attachment_refs` | 有附件仍在上传时禁止发送；仅附件（文本为空）可以提交；已 finalize 的 ref 不会被前端删除 |
+| 运行中插话 | `runtime.turn.steer` 的 `attachment_refs` | 会话运行中提交同样携带附件：图片随该条提示注入下一模型步（纯文本插话保持原路径）。只有附件（文本为空）的插话合法；被拒绝时草稿与附件都留在输入区，接受后才清空 |
 | 历史 | `runtime.attachments.read` | 历史里的用户消息只带 metadata，缩略图按需分块读取并生成 blob URL；卸载或切换会话时 revoke，超过 4 MB 或非图片类型不加载 |
 
 切换会话/项目或退出配对会取消当前输入区的上传并 best-effort abort 未完成的附件；

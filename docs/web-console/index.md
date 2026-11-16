@@ -363,7 +363,7 @@ Git Explorer 与文件查看器的标题栏各有一个 split button（`web/src/
 | `runtime.session.goal` | Request -> Response | 读取会话 goal（无目标返回 null） |
 | `runtime.session.goal.set` / `.edit` / `.clear` / `.pause` / `.resume` | Request -> Response | goal 写操作（独立 `session.goal` 能力位，`expected_goal_id` 乐观并发） |
 | `runtime.turn.submit` | Request -> Response | 提交对话轮次，获取 CommandReceipt（可带 `attachment_refs`） |
-| `runtime.turn.steer` | Request -> Response | 运行时插话，排队注入指令 |
+| `runtime.turn.steer` | Request -> Response | 运行时插话，排队注入指令（可带 `attachment_refs`，图片与文本一起注入下一模型步） |
 | `runtime.turn.cancel` | Request -> Response | 中断正在执行的任务 |
 | `runtime.turn.approval.get` | Request -> Response | 读取待审批项 |
 | `runtime.turn.approval.resume` | Request -> Response | 提交 HITL 审批决策 |

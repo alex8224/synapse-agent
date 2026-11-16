@@ -1591,6 +1591,11 @@
       "capability": "turn.steer",
       "class": "service",
       "method": "runtime.turn.steer",
+      "notes": [
+        "``attachment_refs`` is the transport-safe image source: the note is",
+        "injected as image content blocks next to its text, so a steer can carry",
+        "pictures exactly like a submitted turn."
+      ],
       "params_alias": "SteerTurnParams",
       "request": "SteerTurnCommand",
       "result": "SteerTurnResult",
@@ -9275,6 +9280,18 @@
           "wire": "json"
         },
         {
+          "default": [],
+          "default_kind": "value",
+          "name": "attachment_refs",
+          "note": "Opaque, server-generated attachment ids already finalized for this session; bounded to 8 ids.  The service resolves them from the trusted session workspace and the note is injected as image content blocks next to its text.",
+          "nullable": false,
+          "optional": true,
+          "python_type": "tuple[str, ...]",
+          "required": false,
+          "ts_type": "string[]",
+          "wire": "json"
+        },
+        {
           "default": "<lambda>",
           "default_kind": "factory",
           "name": "command_id",
@@ -9285,6 +9302,10 @@
           "ts_type": "string",
           "wire": "json"
         }
+      ],
+      "notes": [
+        "``text`` may be empty only when ``attachment_refs`` is present; at least",
+        "one of ``text`` / ``attachment_refs`` must be supplied."
       ],
       "origin": "python",
       "role": "request"

@@ -438,6 +438,12 @@ middleware.append(build_steer_middleware(steer_queue))
 
 在每次模型调用前，检查队列是否有用户发出的引导指令。如果有，注入为 `HumanMessage("[Mid-run user guidance] ...")`。
 
+队列里存的是 `SteerNote`（文本 + 可选图片内容块 + 可选的 durable attachment refs）。
+只有文本时注入的 `content` 仍是纯字符串；一旦某条 note 带图片，注入的 `content` 变成
+内容块列表（steer 头部文本块在前，随后是各条 note 的文本/图片块），并把 refs 写进
+`additional_kwargs` 的 `synapse_attachment_refs`。`drain()`/`peek_items()` 等既有接口
+仍然只返回文本，供 TUI 面板与状态栏使用。
+
 **使用场景**：TUI 中用户在 Agent 执行期间输入 "/model thinking high" 或纠正方向。
 
 #### (5) `compact_tool` —— 上下文压缩

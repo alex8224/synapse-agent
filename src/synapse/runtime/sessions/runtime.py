@@ -36,7 +36,11 @@ from synapse.runtime.sessions.events import (
     SessionEventWindow,
     SessionSubscription,
 )
-from synapse.runtime.steer import get_agent_steer_queue
+from synapse.runtime.steer import (
+    STEER_IMAGE_ONLY_TEXT,
+    SteerNote,
+    get_agent_steer_queue,
+)
 from synapse.runtime.streaming import (
     EVENT_VERSION,
     TurnChangesPayload,
@@ -814,7 +818,12 @@ class SessionRuntime:
             self._notify_status()
         return handle.turn_id, cancellation_requested
 
-    def steer_turn(self, expected_turn_id: str, text: str) -> tuple[str, bool, int]:
+    def steer_turn(
+        self,
+        expected_turn_id: str,
+        text: str,
+        attachments: Sequence[Any] | None = None,
+    ) -> tuple[str, bool, int]:
         """Deliver mid-run guidance only to the turn matching ``expected_turn_id``.
 
         Like :meth:`cancel_turn`, the active handle is read inside
@@ -826,8 +835,16 @@ class SessionRuntime:
         settlement can never clear a push that lands after the fencing claim,
         but listener callbacks are only dispatched *after* the lock is
         released.  Returns ``(turn_id, accepted, pending_count)``.
+
+        ``attachments`` optionally carries the composer images the service layer
+        resolved from durable refs.  Their provider-shaped content blocks are
+        built here (this session owns the settings that pick the block family)
+        *before* the lock is taken, so the fenced section stays allocation-light
+        and the middleware can inject one multimodal ``HumanMessage``.
         """
         body = (text or "").strip()
+        atts = tuple(attachments or ())
+        note = self._steer_note(body, atts) if atts else SteerNote(text=body)
         with self._lock:
             if self._closed:
                 raise RuntimeClosedError("session runtime is closed")
@@ -851,12 +868,44 @@ class SessionRuntime:
                 raise SteeringUnavailableError(
                     "agent has no steer queue for mid-run guidance"
                 )
-            if not body:
+            if not note.text and not note.blocks:
                 return handle.turn_id, False, queue.peek_count()
-            pending = queue.push_silent(body)
+            pending = queue.push_silent(note)
             turn_id = handle.turn_id
         queue.dispatch_pending()
         return turn_id, True, pending
+
+    def _steer_note(self, body: str, attachments: Sequence[Any]) -> SteerNote:
+        """Build one multimodal steer note from resolved composer attachments.
+
+        The blocks come from the same composer the ordinary turn path uses, so a
+        steer image reaches the provider in exactly the shape a submitted image
+        does (``image_url`` data URL or Anthropic ``image`` source block).  A
+        malformed attachment surfaces as :class:`AttachmentError`; the service
+        layer maps it to a request error instead of silently dropping the image.
+        """
+        from synapse.content.multimodal import (
+            attachment_refs_from_images,
+            compose_user_content,
+            provider_from_settings,
+        )
+
+        content = compose_user_content(
+            body,
+            attachments=list(attachments),
+            provider=provider_from_settings(self.settings),
+        )
+        blocks = (
+            tuple(dict(block) for block in content if isinstance(block, dict))
+            if isinstance(content, list)
+            else ()
+        )
+        return SteerNote(
+            text=body or (STEER_IMAGE_ONLY_TEXT if blocks else ""),
+            blocks=blocks,
+            attachments=tuple(attachments),
+            refs=tuple(attachment_refs_from_images(attachments)),
+        )
 
     @property
     def goal_service(self) -> Any | None:

@@ -40,6 +40,7 @@ from synapse.runtime.service import (
     ReadAttachmentQuery,
     ReadSessionHistoryQuery,
     StatAttachmentQuery,
+    SteerTurnCommand,
     SubmitTurnCommand,
     bind_access,
 )
@@ -466,3 +467,61 @@ def test_legacy_history_rows_without_attachments_default_to_empty(tmp_path: Any)
         assert _attachment_tuple(None) == ()
     finally:
         projection.close()
+
+# --- mid-run guidance with images ------------------------------------------
+
+
+def test_steer_resolves_attachment_refs_into_durable_images(tmp_path: Any) -> None:
+    async def run() -> None:
+        manager = RuntimeManager(
+            settings=_workspace_settings(tmp_path),
+            agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+            project_id=REF.project_id,
+        )
+        service = LocalAgentRuntimeService(
+            lambda project: manager if project == REF.project_id else None
+        )
+        await manager.open_session_ref(REF)
+        writer = bind_access(service, PRINCIPAL, _authorizer(ATTACHMENTS_WRITE))
+        begin = await writer.begin_attachment(
+            BeginAttachmentCommand(REF, len(PNG_RED), "image/png", "shot.png")
+        )
+        ref = begin.ref
+        await writer.append_attachment_chunk(
+            AppendAttachmentChunkCommand(ref, 0, base64.b64encode(PNG_RED).decode("ascii"))
+        )
+        await writer.finish_attachment(
+            FinishAttachmentCommand(ref, len(PNG_RED), "image/png")
+        )
+
+        captured: dict[str, Any] = {}
+
+        def fake_steer_ref(
+            session: SessionRef,
+            expected_turn_id: str,
+            text: str,
+            attachments: Any = None,
+        ) -> tuple[str, bool, int]:
+            captured["session"] = session
+            captured["text"] = text
+            captured["attachments"] = attachments
+            return expected_turn_id, True, 1
+
+        manager.steer_turn_ref = fake_steer_ref  # type: ignore[method-assign]
+        steerer = bind_access(service, PRINCIPAL, _authorizer("turn.steer"))
+        # An image-only note is legal: the durable id resolves through the same
+        # trusted workspace the submit path uses.
+        result = await steerer.steer_turn(
+            SteerTurnCommand(REF, "turn-1", "", attachment_refs=(ref.attachment_id,))
+        )
+        assert result.accepted is True
+        assert result.turn_id == "turn-1"
+        image = captured["attachments"][0]
+        assert image.durable_id == ref.attachment_id
+        assert image.id == 1
+        assert captured["text"] == ""
+
+        with pytest.raises(InvalidRequestError):
+            await steerer.steer_turn(SteerTurnCommand(REF, "turn-1", ""))
+
+    asyncio.run(run())
