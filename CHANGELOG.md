@@ -6,6 +6,22 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.63
+
+### New Features
+
+- **Images In Mid-Run Steer**: `runtime.turn.steer` now accepts the same `attachment_refs` as `runtime.turn.submit`. The service resolves the ids from the trusted session workspace, and the queued note injects its images as content blocks next to its text, so a running turn can be steered with pictures exactly like a submitted turn. An image-only steer is legal, but `text` and `attachment_refs` must not both be empty; a text-only queue still renders a plain string, so the TUI panel, status bar and transcript filters are unchanged, and the TUI keeps the prompt and the image bank instead of silently dropping pictures it cannot steer. The console keeps the draft and its attachments when a steer is rejected and clears them only once it is accepted.
+- **Delegate To A Project Without Naming A Session**: `contact_session` accepts a bare `<project>` — id, id prefix, name or workspace path — and creates a session there whose title comes from the delegation text. Addressing is sticky per work generation, so delegating again to the same project reaches the session the first delegation created instead of leaving one session per request, and the thread id is allocated by the daemon, never by the caller or the model. The whole reference is tried as a project first, so a Windows workspace path (`C:\...`) is no longer split at its colon into a project named `C`.
+
+### Bug Fixes
+
+- **Console Preferences Surviving A Restart**: The desktop shell now persists the loopback port it bound (`%LOCALAPPDATA%\Synapse\gui-console-port.json`) and reuses it on the next launch, retrying the remembered port twice with a short delay before falling back to an ephemeral one. Spawning with `--port 0` on every start silently reset the webview's `localStorage` — theme, the frosted-glass blur/opacity sliders, the "open with" memory — because it is scoped to `scheme://host:port`.
+
+### Engineering
+
+- **One Attachment Resolution Path**: `submit` and `steer` now resolve durable attachment ids through the same helper, and the transport plus the protocol decoder reject a steer that carries neither text nor refs (`invalid_params`) before it reaches the runtime.
+- **Collaboration Spawn Surface**: The coordinator takes an injected `spawn` callback and raises a named `SpawnError`, the store gains `first_target_in_scope` for sticky addressing, and the session tool prompt documents the bare-project form.
+
 ## v0.1.62
 
 ### New Features
