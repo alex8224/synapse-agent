@@ -104,6 +104,11 @@ from synapse.runtime.service.external_apps import (
     ListExternalAppsQuery,
     OpenExternalCommand,
 )
+from synapse.runtime.service.external_commands import (
+    InitializeExternalSessionCommand,
+    ListExternalAgentsQuery,
+    SetExternalConfigCommand,
+)
 from synapse.runtime.service.fs_browse import (
     DIRECTORY_LIST_LIMIT_DEFAULT,
     DIRECTORY_LIST_LIMIT_MAX,
@@ -668,6 +673,41 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
                 else uuid.uuid4().hex
             ),
         )
+    if method == "runtime.external.agents.list":
+        _optional_fields(params, {"project_id"}, {"command_id"})
+        return ListExternalAgentsQuery(
+            project_id=_session_text(params["project_id"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.external.session.initialize":
+        _optional_fields(params, {"session"}, {"command_id"})
+        return InitializeExternalSessionCommand(
+            _session(params["session"]),
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.external.session.config":
+        _optional_fields(params, {"session", "config_id", "value"}, {"command_id"})
+        value = params["value"]
+        if type(value) is not bool and type(value) is not str:
+            raise ProtocolError(-32602, "invalid_params: value must be a string or boolean")
+        return SetExternalConfigCommand(
+            session=_session(params["session"]),
+            config_id=_session_text(params["config_id"]),
+            value=value,
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
     if method == "runtime.session.mcp.reload":
         # ``server`` / ``enabled`` / ``include_tools`` are all optional: omitting
         # ``server`` means "attach every enabled server" (the TUI's `/mcp
@@ -1145,13 +1185,19 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
         # ``thread_id`` is optional: when omitted the server allocates the real
         # id (a client never invents one).  ``title`` is optional too; the store
         # derives the default title from the allocated id.
-        _optional_fields(params, {"project_id"}, {"title", "thread_id", "command_id"})
+        _optional_fields(
+            params,
+            {"project_id"},
+            {"title", "thread_id", "external_agent_id", "command_id"},
+        )
         title = params.get("title")
         thread_id = params.get("thread_id")
+        agent_id = params.get("external_agent_id")
         return CreateSessionCommand(
             project_id=_session_text(params["project_id"]),
             title=None if title is None else _session_title(title),
             thread_id=None if thread_id is None else _session_text(thread_id),
+            external_agent_id=None if agent_id is None else _session_text(agent_id),
             command_id=(
                 _command_id(params["command_id"])
                 if "command_id" in params
@@ -1583,6 +1629,12 @@ async def dispatch(
         return dto
     if method == "runtime.session.open":
         return await service.open_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.external.agents.list":
+        return await service.list_external_agents(dto)  # type: ignore[arg-type]
+    if method == "runtime.external.session.initialize":
+        return await service.initialize_external_session(dto)  # type: ignore[arg-type]
+    if method == "runtime.external.session.config":
+        return await service.set_external_config(dto)  # type: ignore[arg-type]
     if method == "runtime.session.rebind":
         return await service.rebind_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.thinking.set":

@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from typing import Any
 
+from synapse.acp.external_service import DaemonExternalSessions
 from synapse.models.helpers import apply_thinking_to_settings, reasoning_level_survives_switch
 from synapse.models.registry import apply_profile_to_settings, registry_from_settings
 from synapse.projects.catalog import ProjectCatalog
@@ -23,6 +24,8 @@ from synapse.runtime.daemon.auth import (
 )
 from synapse.runtime.daemon.codex_usage import CodexUsageAdapter
 from synapse.runtime.daemon.config import DaemonConfig, ensure_directory
+from synapse.runtime.daemon.external_runtime import ExternalRuntime
+from synapse.runtime.daemon.external_session_pool import ExternalSessionPool
 from synapse.runtime.daemon.lease import DaemonLease
 from synapse.runtime.service import (
     AclAuthorizer,
@@ -38,7 +41,12 @@ from synapse.runtime.service import (
     SttService,
     bind_access,
 )
-from synapse.runtime.service.session_metadata import open_session_metadata_store
+from synapse.runtime.service.errors import InvalidRequestError
+from synapse.runtime.service.external_agents import ExternalAgentCatalog
+from synapse.runtime.service.session_metadata import (
+    open_session_metadata_store,
+    read_external_session_binding,
+)
 from synapse.runtime.sessions import RuntimeManager, SessionRef
 from synapse.runtime.transport import ConnectionAuthenticator, RuntimeWebSocketServer
 from synapse.sessions.session_binding import resolve_session_axes
@@ -317,6 +325,9 @@ class RuntimeDaemon:
         self.catalog: ProjectCatalog | Any | None = None
         self.lease: DaemonLease | Any | None = None
         self.router: RuntimeManagerRouter | Any | None = None
+        self.external_sessions: ExternalSessionPool | None = None
+        self.external_runtime: ExternalRuntime | None = None
+        self.external_service: DaemonExternalSessions | None = None
         self.server: Any | None = None
         self.metadata: dict[str, Any] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
@@ -357,6 +368,10 @@ class RuntimeDaemon:
 
         def build_session_binding(thread_id: str, _shared: Any) -> tuple[Any, Any]:
             settings = project_settings.model_copy(deep=True)
+            if read_external_session_binding(settings, thread_id) is not None:
+                raise InvalidRequestError(
+                    "External ACP sessions cannot be opened as native sessions"
+                )
             with SessionStore(settings.resolved_sessions_path()) as store:
                 # One resolution step for the whole open path: the project layer's
                 # own default first, then the thread's persisted binding, so a
@@ -507,6 +522,7 @@ class RuntimeDaemon:
                 screenshot_service=self._screenshot_service_provider(),
                 stt_service=self._stt_service_provider(),
                 collaboration_provider=self._collaboration_provider(),
+                external_sessions=self.external_service,
             )
         authorizer: AclAuthorizer | DaemonAuthorizer | ProjectScopeAuthorizer = (
             self._authorizer_factory(principal)
@@ -643,6 +659,16 @@ class RuntimeDaemon:
                 if self._router_factory is not None
                 else RuntimeManagerRouter(provider, self._make_manager)
             )
+            try:
+                external_agents = ExternalAgentCatalog.from_state_dir(self.config.state_dir)
+            except (OSError, ValueError):
+                # Optional local feature; never expose command or proxy data in diagnostics.
+                _LOGGER.warning("External ACP configuration is unavailable; integration disabled")
+            else:
+                if external_agents.list():
+                    self.external_sessions = ExternalSessionPool(external_agents)
+                    self.external_runtime = ExternalRuntime(self.external_sessions)
+                    self.external_service = DaemonExternalSessions(self.external_runtime)
             await self._start_collaboration()
             self.server = self._server_factory(
                 authenticator,
@@ -1025,6 +1051,8 @@ class RuntimeDaemon:
             (self.server, "close"),
             (self._collaboration_runtime, "stop"),
             (self._collaboration_store, "close"),
+            (self.external_sessions, "shutdown"),
+            (self.external_service, "shutdown"),
             (self.router, "shutdown"),
             (self.catalog, "close"),
             (self.lease, "release"),

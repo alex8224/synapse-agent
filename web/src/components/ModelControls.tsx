@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
+import { ExternalAgentControls } from './ExternalAgentControls.tsx';
 
 /**
  * The model and reasoning-level pickers, rendered inside the composer's control
@@ -23,6 +24,14 @@ import { useDialogKeyboardNav } from './keyboardNav.ts';
  * 640px window.
  */
 export const ModelControls: React.FC = () => {
+  // An external session's options belong to the agent, not to this console's
+  // model registry: render the peer's own snapshot instead of the native pair.
+  const externalSession = useConsoleStore((state) => state.externalSession);
+  if (externalSession !== null) return <ExternalAgentControls session={externalSession} />;
+  return <NativeModelControls />;
+};
+
+const NativeModelControls: React.FC = () => {
   const {
     modelName,
     availableModels,

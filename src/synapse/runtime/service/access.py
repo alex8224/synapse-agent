@@ -83,6 +83,14 @@ from synapse.runtime.service.external_apps import (
     OpenExternalCommand,
     OpenExternalResult,
 )
+from synapse.runtime.service.external_commands import (
+    InitializeExternalSessionCommand,
+    InitializeExternalSessionResult,
+    ListExternalAgentsQuery,
+    ListExternalAgentsResult,
+    SetExternalConfigCommand,
+    SetExternalConfigResult,
+)
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -831,6 +839,48 @@ class AccessControlledAgentRuntimeService:
         session = self._session_from_dto(command, OpenSessionCommand, "open command")
         self._authorize(session, SESSION_OPEN)
         return await self._delegate.open_session(command)
+
+    async def list_external_agents(
+        self, query: ListExternalAgentsQuery
+    ) -> ListExternalAgentsResult:
+        """Authorize a project-wide read, then list the daemon's local agents."""
+        if type(query) is not ListExternalAgentsQuery:
+            raise InvalidRequestError("query must be a ListExternalAgentsQuery")
+        if type(query.project_id) is not str or not query.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        self._authorizer.authorize_project(
+            self._principal, SESSION_READ, query.project_id
+        )
+        delegate = getattr(self._delegate, "list_external_agents", None)
+        if not callable(delegate):
+            raise InvalidRequestError("external agents are unavailable")
+        return await delegate(query)
+
+    async def initialize_external_session(
+        self, command: InitializeExternalSessionCommand
+    ) -> InitializeExternalSessionResult:
+        """Authorize ``session.open`` before opening a bound external session."""
+        session = self._session_from_dto(
+            command, InitializeExternalSessionCommand, "initialize command"
+        )
+        self._authorize(session, SESSION_OPEN)
+        delegate = getattr(self._delegate, "initialize_external_session", None)
+        if not callable(delegate):
+            raise InvalidRequestError("external sessions are unavailable")
+        return await delegate(command)
+
+    async def set_external_config(
+        self, command: SetExternalConfigCommand
+    ) -> SetExternalConfigResult:
+        """Authorize ``session.open`` before writing a peer config option."""
+        session = self._session_from_dto(
+            command, SetExternalConfigCommand, "config command"
+        )
+        self._authorize(session, SESSION_OPEN)
+        delegate = getattr(self._delegate, "set_external_config", None)
+        if not callable(delegate):
+            raise InvalidRequestError("external sessions are unavailable")
+        return await delegate(command)
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
         """Authorize SESSION_REBIND, then delegate the model rebind.

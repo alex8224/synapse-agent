@@ -34,6 +34,8 @@ import type {
   CollaborationResult,
   ReloadMcpResult,
   SessionRecoverabilityResult,
+  ExternalAgentView,
+  ExternalConfigOptionView,
 } from '../client/types.ts';
 import { isCoveredTurn } from '../client/recoverability.ts';
 import {
@@ -342,6 +344,9 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
       generation: 0,
     },
     sessionActionError: null,
+    externalAgents: [],
+    externalSession: null,
+    externalSessionError: null,
     sessionNotice: null,
     projects: [],
     activeProjectId: project.project_id,
@@ -371,6 +376,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     projectTasksLoading: false,
     projectTasksError: null,
   });
+  backgroundExternalSessions.clear();
   void connectAuthenticatedRuntime(client, project, epoch);
 }
 
@@ -475,6 +481,21 @@ async function runConsoleInit(): Promise<void> {
  * empty), and `generation` fences the page: a response from an older query can
  * never overwrite a newer result set.
  */
+/**
+ * The live external (ACP) session bound to the attached Synapse session.
+ *
+ * `options` is the peer's own configuration snapshot — never this console's
+ * model registry — so the composer renders whatever the agent reports and
+ * nothing it does not.
+ */
+export interface ExternalSessionState {
+  agentId: string;
+  remoteSessionId: string;
+  /** `manual` or `full_access`, decided by the daemon's local config only. */
+  permissionMode: string;
+  options: ExternalConfigOptionView[];
+}
+
 export interface SessionSearchState {
   query: string;
   items: SessionItem[];
@@ -733,7 +754,29 @@ interface ConsoleStore {
   switchSession: (threadId: string, title?: string) => Promise<void>;
   loadSessionHistory: (session: SessionRef) => Promise<void>;
   loadEarlierHistory: () => Promise<void>;
-  createNewSession: () => Promise<void>;
+  /**
+   * Agents this daemon configures locally (`runtime.external.agents.list`).
+   *
+   * Read-only and refreshable; an empty list means the console offers no
+   * external backend at all. The reply never carries a launch command.
+   */
+  externalAgents: ExternalAgentView[];
+  loadExternalAgents: () => Promise<void>;
+  /**
+   * The live external session bound to the attached Synapse session, or null
+   * for a native one. Its options are the peer's own snapshot, not this
+   * console's model registry.
+   */
+  externalSession: ExternalSessionState | null;
+  /**
+   * Write one peer config option and adopt the peer's complete new snapshot.
+   * Resolves false (leaving the previous value in force) when the agent
+   * rejects the switch or the session is no longer live.
+   */
+  setExternalConfig: (configId: string, value: string | boolean) => Promise<boolean>;
+  /** Last external-session failure, shown next to the composer controls. */
+  externalSessionError: string | null;
+  createNewSession: (agentId?: string) => Promise<void>;
   /**
    * Fork the current session into a new one and attach to it.
    *
@@ -797,7 +840,7 @@ interface ConsoleStore {
   ) => Promise<void>;
   switchProject: (projectId: string, threadId?: string) => Promise<void>;
   /** Create a fresh session in a specific project (per-project "+" button). */
-  createSessionInProject: (projectId: string) => Promise<void>;
+  createSessionInProject: (projectId: string, agentId?: string) => Promise<void>;
   /**
    * Register a host workspace directory as a project, refresh the switchable
    * list, switch to it and open a fresh session (the composer "+" action).
@@ -2139,6 +2182,53 @@ function liveBackgroundSubscription(
  * *not* detached: that is what lets the session keep streaming while the user is
  * elsewhere.  Pruning is LRU and detaches only the leases of the views it drops.
  */
+const backgroundExternalSessions = new Map<string, ExternalSessionState | null>();
+
+function isExternalOpenRejection(err: unknown): boolean {
+  const rpc = err as RpcCallError | undefined;
+  return (
+    rpc?.service_code === 'invalid_request' &&
+    String(rpc?.message ?? '').includes('External ACP')
+  );
+}
+
+async function attachExternalSession(
+  client: SynapseRuntimeClient,
+  session: SessionRef,
+  epoch: number,
+): Promise<void> {
+  const store = useConsoleStore;
+  try {
+    const initialized = await client.initializeExternalSession({ session });
+    if (epoch !== sessionEpoch) return;
+    store.setState({
+      externalSession: {
+        agentId: initialized.agent_id,
+        remoteSessionId: initialized.remote_session_id,
+        permissionMode: initialized.permission_mode,
+        options: initialized.options,
+      },
+      externalSessionError: null,
+    });
+    const watch = await client.watchEvents(session, 0);
+    if (epoch !== sessionEpoch) {
+      void client.unwatchEvents(watch.subscription_id);
+      return;
+    }
+    store.setState({ activeSubscriptionId: watch.subscription_id });
+    markAttached(session, epoch);
+  } catch (err) {
+    if (epoch !== sessionEpoch) return;
+    // If session/load is unsupported or fails, keep the durable transcript
+    // readable and surface why the peer session could not be resumed.
+    store.setState({
+      externalSession: null,
+      externalSessionError: describeSessionActionError(err, '外部 Agent 会话恢复失败'),
+    });
+  }
+  await loadInitialHistory(epoch);
+}
+
 function backgroundActiveSession(
   state: ConsoleStore,
   key: string,
@@ -2164,9 +2254,13 @@ function backgroundActiveSession(
     // view describes the session being left and not a wiped one.
     liveEpoch,
   );
+  backgroundExternalSessions.set(key, state.externalSession);
   const merged = { ...store.getState().backgroundViews, [key]: view };
   const { kept, evicted } = pruneBackgroundViews(merged, MAX_BACKGROUND_VIEWS, key);
   store.setState({ backgroundViews: kept });
+  for (const dropped of evicted) {
+    backgroundExternalSessions.delete(dropped);
+  }
   const client = store.getState().client;
   if (client === null) return;
   // A stale view's lease is released now (it can never be reused), and the
@@ -2199,6 +2293,8 @@ function restoreBackgroundSession(
   epoch: number,
 ): void {
   const store = useConsoleStore;
+  const restoredExternal = backgroundExternalSessions.get(key) ?? null;
+  backgroundExternalSessions.delete(key);
   store.setState((s) => {
     const { [key]: _restored, ...rest } = s.backgroundViews;
     return {
@@ -2226,6 +2322,8 @@ function restoreBackgroundSession(
       mcpTogglingServer: null,
       mcpTogglingAction: null,
       mcpRuntimeKnown: false,
+      externalSession: restoredExternal,
+      externalSessionError: null,
     };
   });
   // The epoch baseline must describe the session now on screen.  The previous
@@ -2235,6 +2333,27 @@ function restoreBackgroundSession(
   attachCoverage = null;
   markAttached(session, epoch);
   void store.getState().loadGitStatus();
+  if (restoredExternal !== null) {
+    const client = store.getState().client;
+    if (client) {
+      void client
+        .initializeExternalSession({ session })
+        .then((initialized) => {
+          if (epoch !== sessionEpoch) return;
+          store.setState({
+            externalSession: {
+              agentId: initialized.agent_id,
+              remoteSessionId: initialized.remote_session_id,
+              permissionMode: initialized.permission_mode,
+              options: initialized.options,
+            },
+            externalSessionError: null,
+          });
+        })
+        .catch(() => undefined);
+    }
+    return;
+  }
   void refreshSessionGoal(epoch);
   void refreshRuntimeConfig(epoch);
   void refreshMcpRuntime(epoch);
@@ -2334,6 +2453,8 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     mcpTogglingServer: null,
     mcpTogglingAction: null,
     mcpRuntimeKnown: false,
+    externalSession: null,
+    externalSessionError: null,
   });
   // Git chrome is per workspace and read-only: refresh it on every attach so a
   // switch cannot leave the previous session's tree on screen.
@@ -2348,7 +2469,17 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
       await client.unwatchEvents(leaving.activeSubscriptionId);
       if (epoch !== sessionEpoch) return;
     }
-    const opened = await client.openSession(session);
+    let opened;
+    try {
+      opened = await client.openSession(session);
+    } catch (err) {
+      if (epoch !== sessionEpoch) return;
+      if (isExternalOpenRejection(err)) {
+        await attachExternalSession(client, session, epoch);
+        return;
+      }
+      throw err;
+    }
     if (epoch !== sessionEpoch) return;
     if (opened.view) {
       store.setState({
@@ -2605,6 +2736,35 @@ export async function resumeAttachedWatch(): Promise<void> {
   const superseded = (): boolean => token !== recoveryToken || epoch !== sessionEpoch;
   store.setState({ recoveryState: 'resuming', recoveryDetail: null });
   try {
+    if (store.getState().externalSession !== null) {
+      const initialized = await client.initializeExternalSession({ session });
+      if (superseded()) return;
+      store.setState({
+        externalSession: {
+          agentId: initialized.agent_id,
+          remoteSessionId: initialized.remote_session_id,
+          permissionMode: initialized.permission_mode,
+          options: initialized.options,
+        },
+        externalSessionError: null,
+      });
+      const watch = await client.watchEvents(session, cursor ?? 0);
+      if (superseded()) {
+        void client.unwatchEvents(watch.subscription_id);
+        return;
+      }
+      store.setState({
+        activeSubscriptionId: watch.subscription_id,
+        recoveryState: 'resumed',
+      });
+      droppedResumePoint = null;
+      if (pendingHistory === 'initial') {
+        await loadInitialHistory(epoch);
+      } else {
+        flushBufferedLiveEvents();
+      }
+      return;
+    }
     const opened = await client.openSession(session);
     if (superseded()) return;
     if (opened.view && pendingHistory === 'initial') {
@@ -3031,6 +3191,8 @@ async function activateProject(projectId: string): Promise<boolean> {
     projectTasks: [],
     projectTasksLoading: false,
     projectTasksError: null,
+    externalSession: null,
+    externalSessionError: null,
   });
   await store.getState().fetchSessions();
   const active = store.getState().activeProjectId === projectId;
@@ -3039,6 +3201,9 @@ async function activateProject(projectId: string): Promise<boolean> {
 }
 
 export const useConsoleStore = create<ConsoleStore>((set, get) => ({
+  externalAgents: [],
+  externalSession: null,
+  externalSessionError: null,
   connectionState: 'disconnected',
   recoveryState: 'idle',
   recoveryDetail: null,
@@ -3163,7 +3328,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     project_id: '',
     thread_id: '',
   },
-  createNewSession: async () => {
+  createNewSession: async (agentId) => {
     const client = requireRuntimeClient();
     if (!client) return;
     // A brand-new session starts with an empty composer: cancel any upload that
@@ -3182,7 +3347,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     // A locally invented name would be persisted as a real title and would block
     // that binding, which is exactly what left every session called "新会话 xxxx".
     const created = await client
-      .createSession({ project_id: currentSession.project_id })
+      .createSession({
+        project_id: currentSession.project_id,
+        ...(agentId === undefined ? {} : { external_agent_id: agentId }),
+      })
       .catch((err: unknown) => {
         console.error('Failed to create session:', err);
         set({ sessionActionError: describeSessionActionError(err, '新建会话失败') });
@@ -3265,9 +3433,33 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       mcpTogglingServer: null,
       mcpTogglingAction: null,
       mcpRuntimeKnown: false,
+      externalSession: null,
+      externalSessionError: null,
     }));
     if (client) {
       try {
+        if (agentId !== undefined) {
+          // An external session has no native runtime: opening one is refused by
+          // design, so the console initializes the peer instead and paints the
+          // options the agent reports.
+          const initialized = await client.initializeExternalSession({ session: nextSession });
+          if (epoch !== sessionEpoch) return;
+          set({
+            externalSession: {
+              agentId: initialized.agent_id,
+              remoteSessionId: initialized.remote_session_id,
+              permissionMode: initialized.permission_mode,
+              options: initialized.options,
+            },
+          });
+          const watch = await client.watchEvents(nextSession, 0);
+          if (epoch !== sessionEpoch) return;
+          set({ activeSubscriptionId: watch.subscription_id });
+          markAttached(nextSession, epoch);
+          await captureLiveEpoch(epoch);
+          flushBufferedLiveEvents();
+          return;
+        }
         // No global detach: the just-created session has no lease of its own and
         // the session being left was moved into a background view above.
         const opened = await client.openSession(nextSession);
@@ -3297,6 +3489,65 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           clearAttached();
         }
       }
+    }
+  },
+  loadExternalAgents: async () => {
+    const client = requireRuntimeClient();
+    const { currentSession } = get();
+    if (!client || currentSession.project_id === '') return;
+    try {
+      const result = await client.listExternalAgents({ project_id: currentSession.project_id });
+      set({ externalAgents: result.agents });
+    } catch (err) {
+      // An older daemon without the method, or a project that cannot be read:
+      // the console then simply offers no external backend.
+      console.warn('External agents unavailable:', err);
+      set({ externalAgents: [] });
+    }
+  },
+  setExternalConfig: async (configId, value) => {
+    const client = requireRuntimeClient();
+    const { externalSession, currentSession } = get();
+    if (!client || externalSession === null) return false;
+    const epoch = sessionEpoch;
+    const targetSession = {
+      project_id: currentSession.project_id,
+      thread_id: currentSession.thread_id,
+    };
+    try {
+      const result = await client.setExternalConfig({
+        session: targetSession,
+        config_id: configId,
+        value,
+      });
+      if (
+        epoch !== sessionEpoch ||
+        get().currentSession.project_id !== targetSession.project_id ||
+        get().currentSession.thread_id !== targetSession.thread_id
+      ) {
+        return false;
+      }
+      // The reply is the peer's *complete* snapshot: a model switch can change
+      // the reasoning levels too, so the whole set is replaced, never patched.
+      set({
+        externalSession: {
+          agentId: result.agent_id,
+          remoteSessionId: result.remote_session_id,
+          permissionMode: result.permission_mode,
+          options: result.options,
+        },
+        externalSessionError: null,
+      });
+      return true;
+    } catch (err) {
+      if (
+        epoch === sessionEpoch &&
+        get().currentSession.project_id === targetSession.project_id &&
+        get().currentSession.thread_id === targetSession.thread_id
+      ) {
+        set({ externalSessionError: describeSessionActionError(err, '切换失败') });
+      }
+      return false;
     }
   },
   forkSession: async (turnId) => {
@@ -4015,6 +4266,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   loadProjects: async () => {
     const client = requireRuntimeClient();
     if (!client) return;
+    // The agent picker and the composer's external controls both read this
+    // list; refresh it with the project list so a daemon-side config change is
+    // picked up on reconnect without a reload.
+    void get().loadExternalAgents();
     // Fence this enumeration: a logout / re-pairing (authEpoch) or a newer
     // loadProjects (generation) makes every later page stale.
     const epoch = authEpoch;
@@ -4084,12 +4339,12 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     const title = get().sessions.find((item) => item.thread_id === target)?.title;
     await attachToSession({ project_id: projectId, thread_id: target }, title);
   },
-  createSessionInProject: async (projectId) => {
+  createSessionInProject: async (projectId, agentId) => {
     // Per-project "+" in the sidebar: point the console at that project first,
     // then open a fresh session in it — never a session in the project the
     // console happened to be attached to.
     if (projectId !== get().activeProjectId && !(await activateProject(projectId))) return;
-    await get().createNewSession();
+    await get().createNewSession(agentId);
   },
   addProject: async (workspacePath) => {
     // The composer "+" flow: register the host directory, refresh the switchable

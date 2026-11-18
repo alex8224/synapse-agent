@@ -50,6 +50,7 @@ def test_concurrent_shutdown_joins_same_cleanup_and_preserves_first_error() -> N
 
         daemon = RuntimeDaemon(DaemonConfig(state_dir=Path(".s8-hardening-state")))
         daemon.server = Failure("server", calls)
+        daemon.external_sessions = _Resource("external ACP", calls)
         daemon.router = _Resource("router", calls)
         daemon.catalog = _Resource("catalog", calls)
         daemon.lease = _Resource("lease", calls)
@@ -59,7 +60,7 @@ def test_concurrent_shutdown_joins_same_cleanup_and_preserves_first_error() -> N
         assert type(first) is RuntimeError
         assert type(second) is RuntimeError
         assert first is second
-        assert calls == ["server", "router", "catalog", "lease"]
+        assert calls == ["server", "external ACP", "router", "catalog", "lease"]
 
     asyncio.run(run())
 

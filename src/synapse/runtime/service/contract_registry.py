@@ -213,6 +213,17 @@ from synapse.runtime.service.external_apps import (
     OpenExternalCommand,
     OpenExternalResult,
 )
+from synapse.runtime.service.external_commands import (
+    ExternalAgentView,
+    ExternalConfigOptionView,
+    ExternalConfigValueView,
+    InitializeExternalSessionCommand,
+    InitializeExternalSessionResult,
+    ListExternalAgentsQuery,
+    ListExternalAgentsResult,
+    SetExternalConfigCommand,
+    SetExternalConfigResult,
+)
 from synapse.runtime.service.fs_browse import (
     DIRECTORY_LIST_LIMIT_DEFAULT,
     DirectoryEntry,
@@ -775,6 +786,45 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(ListSessionsQuery, role="request"),
+    _dto(ExternalAgentView, role="nested"),
+    _dto(ExternalConfigValueView, role="nested"),
+    _dto(ExternalConfigOptionView, role="nested"),
+    _dto(
+        ListExternalAgentsQuery,
+        role="request",
+        notes=(
+            "Lists the agents this daemon's own state directory configures; a client",
+            "never supplies a launch command and the reply carries no command, argument,",
+            "proxy value or credential.",
+        ),
+    ),
+    _dto(
+        ListExternalAgentsResult,
+        role="result",
+        notes=("``agents`` carries id, display name and permission mode only.",),
+    ),
+    _dto(
+        InitializeExternalSessionCommand,
+        role="request",
+        notes=(
+            "Opens (or resumes) the external session bound to this Synapse session and",
+            "reports the peer's current config options.",
+        ),
+    ),
+    _dto(
+        InitializeExternalSessionResult,
+        role="result",
+        notes=("``options`` is the peer's complete configuration snapshot.",),
+    ),
+    _dto(
+        SetExternalConfigCommand,
+        role="request",
+        notes=(
+            "``value`` is a string for a select option or a boolean for a switch;",
+            "the result always carries the peer's complete new snapshot.",
+        ),
+    ),
+    _dto(SetExternalConfigResult, role="result"),
     _dto(
         CreateSessionCommand,
         role="request",
@@ -2663,6 +2713,54 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
         scope_location="params.session",
         service_method="open_session",
         notes=("``command_id`` is generated (uuid4 hex) when omitted; it never deduplicates.",),
+    ),
+    WireMethod(
+        method="runtime.external.agents.list",
+        method_class="service",
+        request="ListExternalAgentsQuery",
+        result="ListExternalAgentsResult",
+        capability=SESSION_READ,
+        scope="project",
+        scope_location="params.project_id",
+        service_method="list_external_agents",
+        params_alias="ListExternalAgentsParams",
+        in_process=(
+            "Optional delegate method; a delegate without it reports the feature as",
+            "unavailable.  Authorization is project-wide only."
+        ),
+        notes=("Read-only: it never launches a process.",),
+    ),
+    WireMethod(
+        method="runtime.external.session.initialize",
+        method_class="service",
+        request="InitializeExternalSessionCommand",
+        result="InitializeExternalSessionResult",
+        capability=SESSION_OPEN,
+        scope="session",
+        scope_location="params.session",
+        service_method="initialize_external_session",
+        params_alias="InitializeExternalSessionParams",
+        in_process=(
+            "Optional delegate method.  It launches the locally configured agent bound",
+            "to this session; a session without a binding is ``not_found``."
+        ),
+        notes=("``command_id`` is generated (uuid4 hex) when omitted.",),
+    ),
+    WireMethod(
+        method="runtime.external.session.config",
+        method_class="service",
+        request="SetExternalConfigCommand",
+        result="SetExternalConfigResult",
+        capability=SESSION_OPEN,
+        scope="session",
+        scope_location="params.session",
+        service_method="set_external_config",
+        params_alias="SetExternalConfigParams",
+        in_process=(
+            "Optional delegate method.  A rejected write leaves the previous value in",
+            "force; the reply is the peer's own confirmed snapshot."
+        ),
+        notes=("``config_id`` and ``value`` are required; see the request schema.",),
     ),
     WireMethod(
         method="runtime.session.rebind",

@@ -131,6 +131,47 @@ def _search_predicate(text: str, available: tuple[str, ...]) -> tuple[str, list[
     return " OR ".join(clauses), params
 
 
+def read_external_session_binding(
+    settings: object, thread_id: str
+) -> tuple[str, str | None] | None:
+    """Return the configured Agent id and persisted peer id, if any."""
+    path = resolve_sessions_path(settings)
+    if path is None or not path.is_file():
+        return None
+    connection = _connect_readonly(path)
+    try:
+        if not _has_table(connection, "sessions"):
+            return None
+        columns = _available_columns(connection, "sessions")
+        if "external_agent_id" not in columns:
+            return None
+        peer_column = "external_session_id" if "external_session_id" in columns else "NULL"
+        row = connection.execute(
+            f"SELECT external_agent_id, {peer_column} FROM sessions WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        if row is None or not row[0]:
+            return None
+        return str(row[0]), _optional_text(row[1])
+    finally:
+        connection.close()
+
+
+def persist_external_session_id(
+    settings: object, thread_id: str, agent_id: str, peer_id: str
+) -> bool:
+    """Write only a confirmed remote ID for an existing external thread."""
+    path = resolve_sessions_path(settings)
+    if path is None or not path.is_file():
+        return False
+    from synapse.sessions.store import SessionStore
+
+    with SessionStore(path) as store:
+        return store.bind_external_session(
+            thread_id, external_agent_id=agent_id, external_session_id=peer_id
+        )
+
+
 def search_sessions_readonly(
     settings: object, query: SearchSessionsQuery
 ) -> SessionSearchPage:
@@ -231,11 +272,20 @@ class SessionStoreMetadataStore:
                 close()
 
     def ensure(
-        self, thread_id: str, *, title: str | None = None
+        self,
+        thread_id: str,
+        *,
+        title: str | None = None,
+        external_agent_id: str | None = None,
     ) -> tuple[SessionMetadataItem, bool]:
         with self._lock, self._open() as store:
             existing = store.get(thread_id)
-            info = store.ensure(thread_id, title=title)
+            if external_agent_id is None:
+                info = store.ensure(thread_id, title=title)
+            else:
+                info = store.ensure(
+                    thread_id, title=title, external_agent_id=external_agent_id
+                )
         return _item_from_info(info), existing is None
 
     def rename(self, thread_id: str, title: str) -> SessionMetadataItem | None:
@@ -408,7 +458,9 @@ class SessionMetadataService:
             raise InvalidRequestError("session metadata store is unavailable")
         return store
 
-    async def create(self, command: CreateSessionCommand) -> CreateSessionResult:
+    async def create(
+        self, command: CreateSessionCommand, *, external_agent_id: str | None = None
+    ) -> CreateSessionResult:
         """Create (idempotently) one persisted session metadata row."""
         if type(command) is not CreateSessionCommand:
             raise InvalidRequestError(
@@ -423,9 +475,22 @@ class SessionMetadataService:
         async with self._mutation_lock:
             context = await self._context(command.project_id)
             store = self._store(context)
-            item, created = await asyncio.to_thread(
-                store.ensure, thread_id, title=command.title
-            )
+            if external_agent_id is None:
+                item, created = await asyncio.to_thread(
+                    store.ensure, thread_id, title=command.title
+                )
+            else:
+                if not isinstance(store, SessionStoreMetadataStore):
+                    raise InvalidRequestError("External ACP metadata is unavailable")
+                try:
+                    item, created = await asyncio.to_thread(
+                        store.ensure,
+                        thread_id,
+                        title=command.title,
+                        external_agent_id=external_agent_id,
+                    )
+                except ValueError as exc:
+                    raise ConflictError("Cannot change a session's external agent binding") from exc
         return CreateSessionResult(
             command_id=command.command_id,
             session=ref,

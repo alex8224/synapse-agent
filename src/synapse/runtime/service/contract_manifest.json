@@ -629,6 +629,66 @@
       }
     },
     {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method; a delegate without it reports the feature as",
+        "unavailable.  Authorization is project-wide only."
+      ],
+      "method": "runtime.external.agents.list",
+      "notes": [
+        "Read-only: it never launches a process."
+      ],
+      "params_alias": "ListExternalAgentsParams",
+      "request": "ListExternalAgentsQuery",
+      "result": "ListExternalAgentsResult",
+      "result_nullable": false,
+      "scope": "project",
+      "scope_location": "params.project_id",
+      "service_method": "list_external_agents",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.open",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method.  A rejected write leaves the previous value in",
+        "force; the reply is the peer's own confirmed snapshot."
+      ],
+      "method": "runtime.external.session.config",
+      "notes": [
+        "``config_id`` and ``value`` are required; see the request schema."
+      ],
+      "params_alias": "SetExternalConfigParams",
+      "request": "SetExternalConfigCommand",
+      "result": "SetExternalConfigResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "set_external_config",
+      "wire_defaults": {}
+    },
+    {
+      "capability": "session.open",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method.  It launches the locally configured agent bound",
+        "to this session; a session without a binding is ``not_found``."
+      ],
+      "method": "runtime.external.session.initialize",
+      "notes": [
+        "``command_id`` is generated (uuid4 hex) when omitted."
+      ],
+      "params_alias": "InitializeExternalSessionParams",
+      "request": "InitializeExternalSessionCommand",
+      "result": "InitializeExternalSessionResult",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "initialize_external_session",
+      "wire_defaults": {}
+    },
+    {
       "capability": "fs.list",
       "class": "service",
       "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  Read-only and bounded: only immediate sub-directory names are returned, never file contents, and never a recursive walk.",
@@ -3476,6 +3536,17 @@
           "wire": "json"
         },
         {
+          "default": null,
+          "default_kind": "value",
+          "name": "external_agent_id",
+          "nullable": true,
+          "optional": true,
+          "python_type": "str | None",
+          "required": false,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
           "default": "<lambda>",
           "default_kind": "factory",
           "name": "command_id",
@@ -4084,6 +4155,39 @@
       "origin": "python",
       "role": "result"
     },
+    "ExternalAgentView": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "permission_mode",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "nested"
+    },
     "ExternalApp": {
       "fields": [
         {
@@ -4224,6 +4328,94 @@
       ],
       "origin": "python",
       "role": "result"
+    },
+    "ExternalConfigOptionView": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "category",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "current_value",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": [],
+          "default_kind": "value",
+          "name": "values",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalConfigValueView, ...]",
+          "required": true,
+          "ts_type": "ExternalConfigValueView[]",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "bool_value",
+          "nullable": true,
+          "optional": false,
+          "python_type": "bool | None",
+          "required": true,
+          "ts_type": "boolean | null",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "nested"
+    },
+    "ExternalConfigValueView": {
+      "fields": [
+        {
+          "name": "value",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "nested"
     },
     "FinishAttachmentCommand": {
       "fields": [
@@ -4955,6 +5147,99 @@
       "origin": "python",
       "role": "result"
     },
+    "InitializeExternalSessionCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Opens (or resumes) the external session bound to this Synapse session and",
+        "reports the peer's current config options."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "InitializeExternalSessionResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "agent_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "remote_session_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "permission_mode",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "options",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalConfigOptionView, ...]",
+          "required": true,
+          "ts_type": "ExternalConfigOptionView[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``options`` is the peer's complete configuration snapshot."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
     "JsonRpcError": {
       "fields": [
         {
@@ -5282,6 +5567,73 @@
       ],
       "origin": "python",
       "role": "request"
+    },
+    "ListExternalAgentsQuery": {
+      "fields": [
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Lists the agents this daemon's own state directory configures; a client",
+        "never supplies a launch command and the reply carries no command, argument,",
+        "proxy value or credential."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "ListExternalAgentsResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "project_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "agents",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalAgentView, ...]",
+          "required": true,
+          "ts_type": "ExternalAgentView[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``agents`` carries id, display name and permission mode only."
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "ListExternalAppsQuery": {
       "fields": [
@@ -8961,6 +9313,114 @@
       ],
       "origin": "python",
       "role": "request"
+    },
+    "SetExternalConfigCommand": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "config_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "value",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str | bool",
+          "required": true,
+          "ts_type": "string | boolean",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "``value`` is a string for a select option or a boolean for a switch;",
+        "the result always carries the peer's complete new snapshot."
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "SetExternalConfigResult": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "agent_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "remote_session_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "permission_mode",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "options",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalConfigOptionView, ...]",
+          "required": true,
+          "ts_type": "ExternalConfigOptionView[]",
+          "wire": "json"
+        }
+      ],
+      "origin": "python",
+      "role": "result"
     },
     "SetProjectThinkingLevelCommand": {
       "fields": [

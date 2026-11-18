@@ -35,6 +35,7 @@ from synapse.runtime.service.access import (
 from synapse.runtime.service.errors import (
     ClosedError,
     ConflictError,
+    InvalidRequestError,
     NotFoundError,
     PermissionDeniedError,
 )
@@ -96,6 +97,25 @@ def _service(
         )
 
     return SessionMetadataService(provider)
+
+
+def test_create_external_session_metadata_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.sqlite"
+    service = _service(path)
+    command = CreateSessionCommand(project_id="project", thread_id="external")
+
+    async def run() -> None:
+        created = await service.create(command, external_agent_id="agy")
+        assert created.created
+        duplicate = await service.create(command, external_agent_id="agy")
+        assert not duplicate.created
+        with pytest.raises(ConflictError, match="Cannot change"):
+            await service.create(command, external_agent_id="other")
+
+    asyncio.run(run())
+    assert session_metadata.read_external_session_binding(
+        _settings(path), "external"
+    ) == ("agy", None)
 
 
 def _make_history_stores(tmp_path: Path) -> SimpleNamespace:
@@ -1099,3 +1119,27 @@ def test_concurrent_creates_on_independent_stores_keep_created_exact(
         assert len(store.list(limit=10)) == 1
     finally:
         store.close()
+
+
+def test_external_session_refuses_unconfigured_create_and_native_open(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "sessions.sqlite"
+    service, manager = _wired_service(db)
+
+    async def run() -> None:
+        with pytest.raises(NotFoundError, match="not configured"):
+            await service.create_session(
+                CreateSessionCommand(
+                    project_id="proj", thread_id="ext", external_agent_id="agy"
+                )
+            )
+        with SessionStore(db) as store:
+            store.ensure("ext", external_agent_id="agy")
+        with pytest.raises(InvalidRequestError, match="External ACP"):
+            await protocol.dispatch(
+                service, "runtime.session.open", {"session": _ref("proj", "ext")}
+            )
+        await manager.shutdown()
+
+    asyncio.run(run())

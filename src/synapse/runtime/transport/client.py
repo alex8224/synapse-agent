@@ -70,6 +70,17 @@ from synapse.runtime.service.events import (
     ReadEventsQuery,
     RuntimeEvent,
 )
+from synapse.runtime.service.external_commands import (
+    ExternalAgentView,
+    ExternalConfigOptionView,
+    ExternalConfigValueView,
+    InitializeExternalSessionCommand,
+    InitializeExternalSessionResult,
+    ListExternalAgentsQuery,
+    ListExternalAgentsResult,
+    SetExternalConfigCommand,
+    SetExternalConfigResult,
+)
 from synapse.runtime.service.git import (
     GitDiffQuery,
     GitDiffResult,
@@ -405,6 +416,44 @@ def _wire_filter(value: EventFilter) -> dict[str, list[str]]:
 
 
 _SESSION_REF_FIELDS = frozenset({"project_id", "thread_id"})
+
+
+def _checked_command_id(result: object, expected: str) -> str:
+    if not isinstance(result, dict) or result.get("command_id") != expected:
+        raise ProtocolTransportError()
+    return expected
+
+
+def _external_options(value: object) -> tuple[ExternalConfigOptionView, ...]:
+    """Decode the peer's option snapshot without trusting its shape."""
+    if not isinstance(value, list):
+        raise ProtocolTransportError()
+    options: list[ExternalConfigOptionView] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ProtocolTransportError()
+        values = entry.get("values")
+        if not isinstance(values, list):
+            raise ProtocolTransportError()
+        category = entry.get("category")
+        bool_value = entry.get("bool_value")
+        options.append(
+            ExternalConfigOptionView(
+                id=_text(entry["id"], "id", 128),
+                name=_text(entry["name"], "name", 128),
+                category=None if category is None else _text(category, "category", 32),
+                current_value=_text(entry["current_value"], "current_value", 256),
+                values=tuple(
+                    ExternalConfigValueView(
+                        value=_text(item["value"], "value", 256),
+                        label=_text(item["label"], "label", 128),
+                    )
+                    for item in values
+                ),
+                bool_value=None if bool_value is None else bool(bool_value),
+            )
+        )
+    return tuple(options)
 
 
 def _ref(value: object) -> SessionRef:
@@ -1870,6 +1919,81 @@ class RuntimeWebSocketClient(GoalClientMixin):
         return _skill_list_page(result)
 
     @_fence_on_protocol_failure
+    @_fence_on_protocol_failure
+    async def list_external_agents(
+        self, query: ListExternalAgentsQuery
+    ) -> ListExternalAgentsResult:
+        """List the daemon's locally configured external agents (read-only)."""
+        result = await self._command(
+            "runtime.external.agents.list",
+            {"project_id": query.project_id, "command_id": query.command_id},
+            query.command_id,
+        )
+        try:
+            return ListExternalAgentsResult(
+                command_id=_checked_command_id(result, query.command_id),
+                project_id=query.project_id,
+                agents=tuple(
+                    ExternalAgentView(
+                        id=_text(entry["id"], "id", 64),
+                        name=_text(entry["name"], "name", 128),
+                        permission_mode=_text(entry["permission_mode"], "permission_mode", 16),
+                    )
+                    for entry in result["agents"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def initialize_external_session(
+        self, command: InitializeExternalSessionCommand
+    ) -> InitializeExternalSessionResult:
+        """Open or resume one bound external session and read its options."""
+        result = await self._command(
+            "runtime.external.session.initialize",
+            {"session": _wire_session(command.session), "command_id": command.command_id},
+            command.command_id,
+        )
+        try:
+            return InitializeExternalSessionResult(
+                command_id=_checked_command_id(result, command.command_id),
+                session=command.session,
+                agent_id=_text(result["agent_id"], "agent_id", 64),
+                remote_session_id=_text(result["remote_session_id"], "remote_session_id", 4096),
+                permission_mode=_text(result["permission_mode"], "permission_mode", 16),
+                options=_external_options(result["options"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def set_external_config(
+        self, command: SetExternalConfigCommand
+    ) -> SetExternalConfigResult:
+        """Write one peer config option; the reply is the peer's new snapshot."""
+        result = await self._command(
+            "runtime.external.session.config",
+            {
+                "session": _wire_session(command.session),
+                "config_id": command.config_id,
+                "value": command.value,
+                "command_id": command.command_id,
+            },
+            command.command_id,
+        )
+        try:
+            return SetExternalConfigResult(
+                command_id=_checked_command_id(result, command.command_id),
+                session=command.session,
+                agent_id=_text(result["agent_id"], "agent_id", 64),
+                remote_session_id=_text(result["remote_session_id"], "remote_session_id", 4096),
+                permission_mode=_text(result["permission_mode"], "permission_mode", 16),
+                options=_external_options(result["options"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ProtocolTransportError() from None
+
     async def create_session(self, command: CreateSessionCommand) -> CreateSessionResult:
         """Persist one session's metadata row without opening a runtime.
 
@@ -1889,6 +2013,8 @@ class RuntimeWebSocketClient(GoalClientMixin):
             params["thread_id"] = _text(command.thread_id, "thread_id", 256)
         if command.title is not None:
             params["title"] = command.title
+        if command.external_agent_id is not None:
+            params["external_agent_id"] = command.external_agent_id
         result = await self._command("runtime.session.create", params, command.command_id)
         result = _required_fields(result, _CREATE_SESSION_RESULT_FIELDS)
         try:

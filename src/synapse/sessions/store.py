@@ -106,6 +106,8 @@ class SessionInfo:
     forked_from_thread_id: str | None = None
     forked_from_boundary: str | None = None
     forked_from_turn_id: str | None = None
+    external_agent_id: str | None = None
+    external_session_id: str | None = None
 
     def binding(self) -> ModelBinding:
         return ModelBinding(
@@ -169,6 +171,8 @@ class SessionStore:
         self._ensure_column("forked_from_thread_id", "TEXT")
         self._ensure_column("forked_from_boundary", "TEXT")
         self._ensure_column("forked_from_turn_id", "TEXT")
+        self._ensure_column("external_agent_id", "TEXT")
+        self._ensure_column("external_session_id", "TEXT")
         self._conn.commit()
 
     def _ensure_column(self, name: str, decl: str) -> None:
@@ -230,9 +234,12 @@ class SessionStore:
         model: str | None = None,
         active_model: str | None = None,
         thinking: str | None = None,
+        external_agent_id: str | None = None,
     ) -> SessionInfo:
         existing = self.get(thread_id)
         if existing is not None:
+            if external_agent_id is not None and existing.external_agent_id != external_agent_id:
+                raise ValueError("Cannot change a session's external agent binding")
             return existing
         now = _utcnow()
         created_title = title_from_user_message(title) or (
@@ -248,14 +255,15 @@ class SessionStore:
             summary=None,
             active_model=active_model,
             thinking=thinking,
+            external_agent_id=external_agent_id,
         )
         self._conn.execute(
             """
             INSERT INTO sessions(
                 thread_id, title, model, created_at, updated_at,
-                tags_json, summary, active_model, thinking
+                tags_json, summary, active_model, thinking, external_agent_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 info.thread_id,
@@ -267,10 +275,33 @@ class SessionStore:
                 None,
                 info.active_model,
                 info.thinking,
+                info.external_agent_id,
             ),
         )
         self._conn.commit()
         return info
+
+    def bind_external_session(
+        self, thread_id: str, *, external_agent_id: str, external_session_id: str
+    ) -> bool:
+        """Bind a confirmed peer session to an existing matching local session."""
+        if not external_session_id or len(external_session_id) > 4096:
+            raise ValueError("Invalid external session id")
+        with self.immediate():
+            cursor = self._conn.execute(
+                """
+                UPDATE sessions SET external_session_id = ?
+                WHERE thread_id = ? AND external_agent_id = ?
+                  AND (external_session_id IS NULL OR external_session_id = ?)
+                """,
+                (
+                    external_session_id,
+                    thread_id,
+                    external_agent_id,
+                    external_session_id,
+                ),
+            )
+            return cursor.rowcount == 1
 
     def touch(
         self,
@@ -697,6 +728,10 @@ class SessionStore:
             ),
             forked_from_turn_id=(
                 row["forked_from_turn_id"] if "forked_from_turn_id" in keys else None
+            ),
+            external_agent_id=row["external_agent_id"] if "external_agent_id" in keys else None,
+            external_session_id=(
+                row["external_session_id"] if "external_session_id" in keys else None
             ),
         )
 

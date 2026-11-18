@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import inspect
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
@@ -136,6 +138,18 @@ from synapse.runtime.service.external_apps import (
     list_external_apps_host,
     open_external_workspace,
 )
+from synapse.runtime.service.external_commands import (
+    ExternalAgentView,
+    ExternalConfigOptionView,
+    ExternalConfigValueView,
+    InitializeExternalSessionCommand,
+    InitializeExternalSessionResult,
+    ListExternalAgentsQuery,
+    ListExternalAgentsResult,
+    SetExternalConfigCommand,
+    SetExternalConfigResult,
+)
+from synapse.runtime.service.external_ports import ExternalSessions
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -249,7 +263,10 @@ from synapse.runtime.service.session_management import (
     SessionProjectContext,
     SessionSearchPage,
 )
-from synapse.runtime.service.session_metadata import SessionMetadataService
+from synapse.runtime.service.session_metadata import (
+    SessionMetadataService,
+    read_external_session_binding,
+)
 from synapse.runtime.service.skills import (
     ListSkillsQuery,
     SkillEntry,
@@ -682,6 +699,20 @@ def _mcp_server_states(agent: Any) -> tuple[McpServerStateView, ...]:
     return tuple(states)
 
 
+
+def _external_option(option: Any) -> ExternalConfigOptionView:
+    """Project one daemon-side option into the wire-safe view."""
+    return ExternalConfigOptionView(
+        id=option.id,
+        name=option.name,
+        category=option.category,
+        current_value=option.current_value,
+        values=tuple(
+            ExternalConfigValueView(value.value, value.label) for value in option.values
+        ),
+        bool_value=option.bool_value,
+    )
+
 class LocalAgentRuntimeService:
     """Transport-independent, in-process implementation of the service ports."""
 
@@ -697,6 +728,7 @@ class LocalAgentRuntimeService:
         screenshot_service: ScreenshotService | None = None,
         stt_service: SttService | None = None,
         collaboration_provider: Any | None = None,
+        external_sessions: ExternalSessions | None = None,
     ) -> None:
         self._manager_provider = manager_provider
         self._session_rebinder = session_rebinder
@@ -730,6 +762,12 @@ class LocalAgentRuntimeService:
         # daemon injects an adapter over its own mailbox, and without one the two
         # methods report themselves as unavailable instead of half-working.
         self._collaboration_provider = collaboration_provider
+        # External ACP sessions are daemon-owned: the composition root injects
+        # the implementation, so the service layer never imports the ACP SDK.
+        # Without one every external surface reports itself as unavailable and
+        # the native path is unchanged.
+        self._external = external_sessions
+        self._external_turns: set[asyncio.Task[None]] = set()
         # Legacy bare providers may still return an intentionally unbound
         # manager, which RuntimeManager binds on its first successful ref.
         # RuntimeManagerRouter always enforces a bound project generation.
@@ -783,6 +821,9 @@ class LocalAgentRuntimeService:
         # present; an empty turn is rejected before any runtime work.
         if not command.text.strip() and not command.attachments and not command.attachment_refs:
             raise InvalidRequestError("submit requires text, attachments, or attachment_refs")
+        external = await self._external_for(command.session)
+        if external is not None:
+            return await self._submit_external(external, command)
         # The two attachment sources are mutually exclusive: mixing in-process
         # objects with durable refs would make the persisted ids ambiguous.
         if command.attachments and command.attachment_refs:
@@ -851,6 +892,15 @@ class LocalAgentRuntimeService:
         self._validate_ref(command.session)
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
+        if (
+            await asyncio.to_thread(
+                read_external_session_binding, manager.settings, command.session.thread_id
+            )
+            is not None
+        ):
+            raise InvalidRequestError(
+                "External ACP sessions cannot be opened as native sessions"
+            )
         try:
             runtime, created = await manager.open_session_ref(command.session)
         except RuntimeClosedError as exc:
@@ -1062,6 +1112,15 @@ class LocalAgentRuntimeService:
         self._validate_ref(command.session)
         self._validate_expected_turn_id(command.expected_turn_id)
         self._validate_reason(command.reason)
+        external = await self._external_for(command.session)
+        if external is not None:
+            requested = await external[0].cancel(command.session)
+            return CancelTurnResult(
+                command_id=command.command_id,
+                session=command.session,
+                turn_id=command.expected_turn_id,
+                cancellation_requested=requested,
+            )
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
         self._resolve_session(manager, command.session)
@@ -1474,7 +1533,88 @@ class LocalAgentRuntimeService:
         starting a turn.  The returned ref is the real persisted identity, so a
         client never invents a thread id of its own.
         """
+        external = self._external
+        if command.external_agent_id is not None:
+            if external is None:
+                raise NotFoundError("External ACP agent is not configured")
+            return await external.create(
+                self._session_metadata, command, command.external_agent_id
+            )
         return await self._session_metadata.create(command)
+
+    # -- external (ACP) session port ---------------------------------------
+
+    async def list_external_agents(
+        self, query: ListExternalAgentsQuery
+    ) -> ListExternalAgentsResult:
+        """List locally configured agents; never reveals commands or proxies."""
+        if type(query) is not ListExternalAgentsQuery:
+            raise InvalidRequestError("query must be a ListExternalAgentsQuery")
+        if type(query.project_id) is not str or not query.project_id.strip():
+            raise InvalidRequestError("project_id must be a non-empty string")
+        provider = self._external
+        if provider is None:
+            raise InvalidRequestError("external agents are unavailable")
+        await asyncio.to_thread(self._resolve_manager_project, query.project_id)
+        agents = await asyncio.to_thread(provider.list_agents)
+        return ListExternalAgentsResult(
+            command_id=query.command_id,
+            project_id=query.project_id,
+            agents=tuple(
+                ExternalAgentView(agent.id, agent.name, agent.permission_mode)
+                for agent in agents
+            ),
+        )
+
+    async def initialize_external_session(
+        self, command: InitializeExternalSessionCommand
+    ) -> InitializeExternalSessionResult:
+        """Open or resume one bound external session and return its options."""
+        if type(command) is not InitializeExternalSessionCommand:
+            raise InvalidRequestError(
+                "command must be an InitializeExternalSessionCommand"
+            )
+        provider, workspace, settings = await self._external_context(command.session)
+        view = await provider.initialize(command.session, settings, workspace)
+        return InitializeExternalSessionResult(
+            command_id=command.command_id,
+            session=command.session,
+            agent_id=view.agent_id,
+            remote_session_id=view.remote_session_id,
+            permission_mode=view.permission_mode,
+            options=tuple(_external_option(option) for option in view.options),
+        )
+
+    async def set_external_config(
+        self, command: SetExternalConfigCommand
+    ) -> SetExternalConfigResult:
+        """Write one config option; the reply is the agent's whole new snapshot."""
+        if type(command) is not SetExternalConfigCommand:
+            raise InvalidRequestError("command must be a SetExternalConfigCommand")
+        provider, workspace, settings = await self._external_context(command.session)
+        view = await provider.set_config(
+            command.session, settings, workspace, command.config_id, command.value
+        )
+        return SetExternalConfigResult(
+            command_id=command.command_id,
+            session=command.session,
+            agent_id=view.agent_id,
+            remote_session_id=view.remote_session_id,
+            permission_mode=view.permission_mode,
+            options=tuple(_external_option(option) for option in view.options),
+        )
+
+    async def _external_context(self, ref: SessionRef) -> tuple[Any, Path, Any]:
+        """Resolve provider, workspace and settings for an external session."""
+        self._validate_ref(ref)
+        external = await self._external_for(ref)
+        if external is None:
+            raise NotFoundError("external ACP session binding not found")
+        provider, _agent_id, settings = external
+        workspace = Path(str(getattr(settings, "workspace", "") or "")).expanduser()
+        if not workspace.is_dir():
+            raise InvalidRequestError("external session workspace is unavailable")
+        return provider, workspace, settings
 
     async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:
         """Rewrite one session's title; a missing session is ``not_found``."""
@@ -1495,7 +1635,12 @@ class LocalAgentRuntimeService:
         reports what survived: ``retained_history`` is true only when a store
         refused, and ``purge_failures`` then names it.
         """
-        return await self._session_metadata.delete(command)
+        result = await self._session_metadata.delete(command)
+        if self._external is not None:
+            closed = self._external.close(command.session)
+            if inspect.isawaitable(closed):
+                await closed
+        return result
 
     async def search_sessions(self, query: SearchSessionsQuery) -> SessionSearchPage:
         """Search one project's persisted session metadata (bounded page).
@@ -2480,6 +2625,9 @@ class LocalAgentRuntimeService:
         self._validate_filter(query.filter)
         manager = self._resolve_manager(query.session)
         self._check_project(manager, query.session)
+        broker = self._external_broker(query.session)
+        if broker is not None:
+            return self._read_broker_events(broker, query)
         session = self._resolve_session(manager, query.session)
         try:
             window = session.read_events_after(query.after)
@@ -2837,6 +2985,15 @@ class LocalAgentRuntimeService:
         self._validate_max_event_bytes(max_event_bytes)
         manager = self._resolve_manager(session_ref)
         self._check_project(manager, session_ref)
+        broker = self._external_broker(session_ref)
+        if broker is not None:
+            return LocalEventWatch(
+                _BrokerBackedSession(broker, session_ref),
+                after=after,
+                queue_size=int(queue_size),
+                event_filter=event_filter,
+                max_event_bytes=int(max_event_bytes),
+            )
         session = self._resolve_session(manager, session_ref)
         return LocalEventWatch(
             session,
@@ -3038,6 +3195,128 @@ class LocalAgentRuntimeService:
         if session is None:
             raise NotFoundError(f"session {ref.global_id!r} not found")
         return session
+
+    def _external_broker(self, ref: SessionRef) -> Any | None:
+        """The daemon-owned event bus for a bound external session, if live."""
+        provider = self._external
+        return None if provider is None else provider.broker(ref)
+
+    async def _external_for(self, ref: SessionRef) -> tuple[Any, str, Any] | None:
+        """Return ``(provider, agent_id, settings)`` for an externally bound session."""
+        provider = self._external
+        if provider is None:
+            return None
+        manager = self._resolve_manager(ref)
+        self._check_project(manager, ref)
+        settings = manager.settings
+        binding = await asyncio.to_thread(provider.binding, settings, ref.thread_id)
+        if binding is None:
+            return None
+        return provider, binding[0], settings
+
+    async def _submit_external(
+        self, external: tuple[Any, str, Any], command: SubmitTurnCommand
+    ) -> CommandReceipt:
+        """Start one external turn in the background; the receipt returns first."""
+        provider, _agent_id, settings = external
+        workspace = Path(str(getattr(settings, "workspace", "") or "")).expanduser()
+        if not workspace.is_dir():
+            raise InvalidRequestError("external session workspace is unavailable")
+        broker = provider.broker(command.session)
+        if broker is None:
+            raise ConflictError("external session is not initialized")
+        turn_id = uuid.uuid4().hex
+
+        async def run() -> None:
+            try:
+                await provider.submit(
+                    command.session,
+                    settings,
+                    workspace,
+                    turn_id=turn_id,
+                    text=command.text,
+                    publish=broker.emit,
+                )
+            except Exception as exc:  # noqa: BLE001 - reported as a failed turn
+                _LOGGER.warning("external turn failed: %s", type(exc).__name__)
+
+        task = asyncio.create_task(run(), name=f"external-turn-{turn_id}")
+        self._external_turns.add(task)
+        task.add_done_callback(self._external_turns.discard)
+        try:
+            await self._session_metadata.touch(command.session, title_hint=command.text)
+        except Exception as exc:  # noqa: BLE001 - the turn is already running
+            _LOGGER.warning("failed to bind session title: %s", exc)
+        return CommandReceipt(
+            command_id=command.command_id,
+            session=command.session,
+            turn_id=turn_id,
+            accepted=True,
+        )
+
+    def _read_broker_events(self, broker: Any, query: ReadEventsQuery) -> EventPage:
+        """Page one external session's events under the native cursor rules."""
+        try:
+            window = broker.read_after(query.after)
+        except InvalidEventCursorError as exc:
+            raise InvalidCursorError(
+                f"session {query.session.global_id!r} cursor must be an "
+                f"integer in the valid range 0..{exc.latest}, got "
+                f"{_describe_cursor(exc.requested)}"
+            ) from exc
+        if window.gap:
+            raise ReplayGapError(
+                f"session {query.session.global_id!r} cursor {query.after} is stale; "
+                "retained history was evicted"
+            )
+        selected: list[RuntimeEvent] = []
+        scanned: list[SessionEventEnvelope] = []
+        for envelope in window.events:
+            if len(scanned) >= query.scan_limit or len(selected) >= query.limit:
+                break
+            scanned.append(envelope)
+            if matches_event(envelope, query.filter):
+                selected.append(
+                    _to_runtime_event(envelope, max_event_bytes=query.max_event_bytes)
+                )
+        cursor = EventCursor(scanned[-1].sequence if scanned else query.after)
+        return EventPage(
+            session=query.session,
+            events=tuple(selected),
+            cursor=cursor,
+            latest_sequence=window.latest_sequence,
+            has_more=len(window.events) > len(scanned),
+            scanned_through=cursor,
+        )
+
+
+class _BrokerBackedSession:
+    """The session-shaped surface ``LocalEventWatch`` needs for an external session.
+
+    External ACP sessions have no native ``SessionRuntime`` (opening one would
+    build an agent for a session that has none), so the watch lease receives
+    this adapter instead: exactly the members the stream reads, with the same
+    replay/gap semantics as a native session.
+    """
+
+    def __init__(self, broker: Any, ref: SessionRef) -> None:
+        self._broker = broker
+        self.project_id = ref.project_id
+        self.thread_id = ref.thread_id
+
+    def subscribe_from(
+        self,
+        callback: Callable[[Any], None],
+        *,
+        after_sequence: int = 0,
+        on_close: Callable[[], None] | None = None,
+    ) -> Any:
+        return self._broker.subscribe_from(
+            callback, after_sequence=after_sequence, on_close=on_close
+        )
+
+    def read_events_after(self, after_sequence: int = 0) -> Any:
+        return self._broker.read_after(after_sequence)
 
 
 class LocalEventWatch:

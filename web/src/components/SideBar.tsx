@@ -11,6 +11,7 @@ import {
 } from '@fluentui/react-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { NewSessionButton } from './NewSessionButton.tsx';
 import { ConsoleActions } from './ConsoleActions.tsx';
 import { RunningSessionHolders } from './RunningSessionHolders.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
@@ -597,18 +598,12 @@ export const SideBar: React.FC<{ collapsed?: boolean; onExpand?: () => void; onN
                 </span>
                 {/* Per-project action: a session is always created in *this*
                     project, so the row never depends on which one is active. */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    onNavigate?.();
-                    void createSessionInProject(project.project_id);
-                  }}
-                  title={`在 ${projectLabel(project)} 新建会话`}
-                  aria-label={`在 ${projectLabel(project)} 新建会话`}
+                <NewSessionButton
+                  projectId={project.project_id}
+                  label={projectLabel(project)}
+                  onNavigate={onNavigate}
                   className="ui-icon-button ui-compact opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                >
-                  <Add20Regular aria-hidden="true" />
-                </button>
+                />
               </div>
 
               {expanded && (

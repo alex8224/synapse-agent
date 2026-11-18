@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 79 wire methods: 77 service methods
+ * The 82 wire methods: 80 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -50,6 +50,9 @@ export const WIRE_METHODS = [
   "runtime.events.read",
   "runtime.events.unwatch",
   "runtime.events.watch",
+  "runtime.external.agents.list",
+  "runtime.external.session.config",
+  "runtime.external.session.initialize",
   "runtime.fs.list",
   "runtime.git.diff",
   "runtime.git.status",
@@ -222,6 +225,9 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.config.get": "session.read",
   "runtime.events.read": "events.read",
   "runtime.events.watch": "events.watch",
+  "runtime.external.agents.list": "session.read",
+  "runtime.external.session.config": "session.open",
+  "runtime.external.session.initialize": "session.open",
   "runtime.fs.list": "fs.list",
   "runtime.git.diff": "git.diff",
   "runtime.git.status": "git.status",
@@ -709,6 +715,10 @@ export interface CreateSessionCommand {
    */
   thread_id?: string | null;
   /**
+   * python_default_kind=value python_default=null
+   */
+  external_agent_id?: string | null;
+  /**
    * python_default_kind=factory python_default="<lambda>"
    */
   command_id?: string;
@@ -870,6 +880,12 @@ export interface EventPage {
   scanned_through: EventCursor | null;
 }
 
+export interface ExternalAgentView {
+  id: string;
+  name: string;
+  permission_mode: string;
+}
+
 /**
  * ``extensions`` are the extensions the application claims (the console
  * groups its recommendations by them); ``short_name`` is the label a title
@@ -908,6 +924,26 @@ export interface ExternalAppIcon {
 export interface ExternalAppPage {
   apps: ExternalApp[];
   truncated: boolean;
+}
+
+export interface ExternalConfigOptionView {
+  id: string;
+  name: string;
+  category: string | null;
+  current_value: string;
+  /**
+   * python_default_kind=value python_default=[]
+   */
+  values: ExternalConfigValueView[];
+  /**
+   * python_default_kind=value python_default=null
+   */
+  bool_value: boolean | null;
+}
+
+export interface ExternalConfigValueView {
+  value: string;
+  label: string;
 }
 
 export interface FinishAttachmentCommand {
@@ -1099,6 +1135,30 @@ export interface HistoryEvent {
   collaboration: Record<string, string> | null;
 }
 
+/**
+ * Opens (or resumes) the external session bound to this Synapse session and
+ * reports the peer's current config options.
+ */
+export interface InitializeExternalSessionCommand {
+  session: SessionRef;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
+}
+
+/**
+ * ``options`` is the peer's complete configuration snapshot.
+ */
+export interface InitializeExternalSessionResult {
+  command_id: string;
+  session: SessionRef;
+  agent_id: string;
+  remote_session_id: string;
+  permission_mode: string;
+  options: ExternalConfigOptionView[];
+}
+
 export interface JsonRpcError {
   code: number;
   message: string;
@@ -1180,6 +1240,28 @@ export interface ListDirectoriesQuery {
    * python_default_kind=value python_default=200
    */
   limit?: number;
+}
+
+/**
+ * Lists the agents this daemon's own state directory configures; a client
+ * never supplies a launch command and the reply carries no command, argument,
+ * proxy value or credential.
+ */
+export interface ListExternalAgentsQuery {
+  project_id: string;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
+}
+
+/**
+ * ``agents`` carries id, display name and permission mode only.
+ */
+export interface ListExternalAgentsResult {
+  command_id: string;
+  project_id: string;
+  agents: ExternalAgentView[];
 }
 
 /**
@@ -2228,6 +2310,29 @@ export interface SetDefaultModelCommand {
   alias: string;
 }
 
+/**
+ * ``value`` is a string for a select option or a boolean for a switch;
+ * the result always carries the peer's complete new snapshot.
+ */
+export interface SetExternalConfigCommand {
+  session: SessionRef;
+  config_id: string;
+  value: string | boolean;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
+}
+
+export interface SetExternalConfigResult {
+  command_id: string;
+  session: SessionRef;
+  agent_id: string;
+  remote_session_id: string;
+  permission_mode: string;
+  options: ExternalConfigOptionView[];
+}
+
 export interface SetProjectThinkingLevelCommand {
   project_id: string;
   level: string;
@@ -3016,9 +3121,11 @@ export type GetProjectTaskParams = GetProjectTaskQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;
 export type HistoryToolResult = Record<string, JsonValue>;
+export type InitializeExternalSessionParams = InitializeExternalSessionCommand;
 export type ListCollaborationsParams = ListCollaborationsQuery;
 export type ListDirectoriesParams = ListDirectoriesQuery;
 export type ListDirectoriesResult = DirectoryListing;
+export type ListExternalAgentsParams = ListExternalAgentsQuery;
 export type ListProjectTasksParams = ListProjectTasksQuery;
 export type ListProjectsParams = ListProjectsQuery;
 export type ListSessionsParams = ListSessionsQuery;
@@ -3043,6 +3150,7 @@ export type SessionHistoryResult = SessionHistoryPage;
 export type SessionListResult = SessionListPage;
 export type SessionRecoverabilityResult = SessionRecoverabilityView;
 export type SessionSearchResult = SessionSearchPage;
+export type SetExternalConfigParams = SetExternalConfigCommand;
 export type SetSessionGoalParams = SetSessionGoalCommand;
 export type SteerTurnParams = SteerTurnCommand;
 export type StopCollaborationParams = StopCollaborationCommand;

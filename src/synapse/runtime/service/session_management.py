@@ -14,6 +14,7 @@ claim the conversation was erased.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -44,6 +45,10 @@ __all__ = [
 
 #: A stored session title is non-empty and at most this many characters.
 SESSION_TITLE_MAX = 120
+
+#: Same shape the daemon's local catalog accepts: a wire caller may only name
+#: an already configured agent, never supply a launch command.
+_AGENT_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z")
 
 SESSION_SEARCH_LIMIT_MIN = 1
 SESSION_SEARCH_LIMIT_MAX = 100
@@ -129,6 +134,9 @@ class CreateSessionCommand:
     project_id: str
     title: str | None = None
     thread_id: str | None = None
+    #: Locally configured external agent id; the daemon validates it against its
+    #: own catalog, so a wire caller can only name an agent, never launch one.
+    external_agent_id: str | None = None
     command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def __post_init__(self) -> None:
@@ -141,6 +149,14 @@ class CreateSessionCommand:
             object.__setattr__(self, "thread_id", self.thread_id.strip())
         if self.title is not None:
             object.__setattr__(self, "title", _validate_title(self.title))
+        if self.external_agent_id is not None:
+            agent_id = self.external_agent_id
+            if (
+                type(agent_id) is not str
+                or not _AGENT_ID.fullmatch(agent_id)
+            ):
+                raise ValueError("external_agent_id must be a configured agent id")
+            object.__setattr__(self, "external_agent_id", agent_id)
 
 
 @dataclass(frozen=True, slots=True)

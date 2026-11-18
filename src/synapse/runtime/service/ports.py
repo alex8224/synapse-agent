@@ -81,6 +81,14 @@ from synapse.runtime.service.external_apps import (
     OpenExternalCommand,
     OpenExternalResult,
 )
+from synapse.runtime.service.external_commands import (
+    InitializeExternalSessionCommand,
+    InitializeExternalSessionResult,
+    ListExternalAgentsQuery,
+    ListExternalAgentsResult,
+    SetExternalConfigCommand,
+    SetExternalConfigResult,
+)
 from synapse.runtime.service.fs_browse import (
     DirectoryListing,
     ListDirectoriesQuery,
@@ -450,6 +458,33 @@ class AgentRuntimeService(Protocol):
         Optional delegate method: an older delegate without it keeps the wrapper
         constructible and reports the feature as unavailable (see the ACL layer).
         """
+        ...
+
+    async def list_external_agents(
+        self, query: ListExternalAgentsQuery
+    ) -> ListExternalAgentsResult:
+        """List the locally configured external (ACP) agents for one project.
+
+        Optional delegate method: without a daemon-side provider the feature is
+        reported as unavailable.  The reply never carries a command, argument,
+        proxy value, or credential.
+        """
+        ...
+
+    async def initialize_external_session(
+        self, command: InitializeExternalSessionCommand
+    ) -> InitializeExternalSessionResult:
+        """Open (or resume) the external session bound to one Synapse session.
+
+        Optional delegate method; it launches the locally configured agent, so
+        the caller must already be authorized by ``session.open``.
+        """
+        ...
+
+    async def set_external_config(
+        self, command: SetExternalConfigCommand
+    ) -> SetExternalConfigResult:
+        """Write one peer config option and return the peer's new snapshot."""
         ...
 
     async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:

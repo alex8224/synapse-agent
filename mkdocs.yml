@@ -98,6 +98,7 @@ nav:
       - P6 Client 反向服务: acp-adapter/phase-6-client-services.md
       - P7 高级能力: acp-adapter/phase-7-advanced-capabilities.md
       - P8 合规与发布: acp-adapter/phase-8-compliance.md
+  - 外部 ACP Agent 接入开发指南: acp-adapter/external-agent-client.md
   - 模型配置: models.md
   - MCP Server: mcp.md
   - 程序化工具调用 (PTC): ptc.md

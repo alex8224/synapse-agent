@@ -50,6 +50,12 @@ import type {
   ListSessionsParams,
   SessionListResult,
   CreateSessionParams,
+  InitializeExternalSessionParams,
+  InitializeExternalSessionResult,
+  ListExternalAgentsParams,
+  ListExternalAgentsResult,
+  SetExternalConfigParams,
+  SetExternalConfigResult,
   CreateSessionResult,
   RenameSessionParams,
   RenameSessionResult,
@@ -742,8 +748,63 @@ export class SynapseRuntimeClient {
     const payload: Record<string, unknown> = { project_id: params.project_id };
     if (params.title !== undefined) payload.title = params.title;
     if (params.thread_id !== undefined) payload.thread_id = params.thread_id;
+    if (params.external_agent_id !== undefined) {
+      payload.external_agent_id = params.external_agent_id;
+    }
     if (params.command_id !== undefined) payload.command_id = params.command_id;
     return this.call<CreateSessionResult>('runtime.session.create', payload);
+  }
+
+  /**
+   * List the agents this daemon's own state directory configures
+   * (`runtime.external.agents.list`).
+   *
+   * Read-only and project-scoped. The reply carries no launch command, argument,
+   * proxy value or credential: the console can only *name* an agent.
+   */
+  public async listExternalAgents(
+    params: ListExternalAgentsParams,
+  ): Promise<ListExternalAgentsResult> {
+    const payload: Record<string, unknown> = { project_id: params.project_id };
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<ListExternalAgentsResult>('runtime.external.agents.list', payload);
+  }
+
+  /**
+   * Open or resume the external session bound to this Synapse session
+   * (`runtime.external.session.initialize`).
+   *
+   * The daemon launches the locally configured agent; the reply is the peer's
+   * current configuration snapshot, which the console paints as selectors.
+   */
+  public async initializeExternalSession(
+    params: InitializeExternalSessionParams,
+  ): Promise<InitializeExternalSessionResult> {
+    const payload: Record<string, unknown> = { session: params.session };
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<InitializeExternalSessionResult>(
+      'runtime.external.session.initialize',
+      payload,
+    );
+  }
+
+  /**
+   * Write one peer config option (`runtime.external.session.config`).
+   *
+   * The reply is the peer's *complete* new snapshot: a model switch can change
+   * the available reasoning levels too, so the caller replaces the whole set
+   * instead of patching one value.
+   */
+  public async setExternalConfig(
+    params: SetExternalConfigParams,
+  ): Promise<SetExternalConfigResult> {
+    const payload: Record<string, unknown> = {
+      session: params.session,
+      config_id: params.config_id,
+      value: params.value,
+    };
+    if (params.command_id !== undefined) payload.command_id = params.command_id;
+    return this.call<SetExternalConfigResult>('runtime.external.session.config', payload);
   }
 
   public async renameSession(params: RenameSessionParams): Promise<RenameSessionResult> {

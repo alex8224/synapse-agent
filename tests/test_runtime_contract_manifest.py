@@ -199,6 +199,9 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.mcp.list": "list_mcp_servers",
     "runtime.mcp.save": "save_mcp_server",
     "runtime.mcp.delete": "delete_mcp_server",
+    "runtime.external.agents.list": "list_external_agents",
+    "runtime.external.session.initialize": "initialize_external_session",
+    "runtime.external.session.config": "set_external_config",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the
@@ -241,6 +244,15 @@ ADDITIVE_AUTHORIZATION_CAPABILITIES = frozenset(
 #: (``tests/fixtures/runtime_contract/v1/web_console_types.json``).
 ADDITIVE_WEB_CONSOLE_TYPES = frozenset(
     {
+        "ExternalAgentView",
+        "ExternalConfigOptionView",
+        "ExternalConfigValueView",
+        "InitializeExternalSessionParams",
+        "InitializeExternalSessionResult",
+        "ListExternalAgentsParams",
+        "ListExternalAgentsResult",
+        "SetExternalConfigParams",
+        "SetExternalConfigResult",
         "ListProjectsParams",
         "ProjectListItem",
         "ProjectListResult",
