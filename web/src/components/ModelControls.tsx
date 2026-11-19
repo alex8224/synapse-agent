@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import { RUNTIME_CONFIG_READ_ONLY_NOTICE } from '../stores/runtimeConfigMapper';
 import { useDialogKeyboardNav } from './keyboardNav.ts';
-import { ExternalAgentControls } from './ExternalAgentControls.tsx';
+import { ExternalAgentControls, ExternalAgentStatus } from './ExternalAgentControls.tsx';
 
 /**
  * The model and reasoning-level pickers, rendered inside the composer's control
@@ -27,7 +27,24 @@ export const ModelControls: React.FC = () => {
   // An external session's options belong to the agent, not to this console's
   // model registry: render the peer's own snapshot instead of the native pair.
   const externalSession = useConsoleStore((state) => state.externalSession);
+  // Opening one launches the peer's process and runs *its* `session/new`, which
+  // an agent may spend tens of seconds on. Until it answers there is no snapshot
+  // to paint, and the native pickers would be a lie (the session has no native
+  // runtime), so the row reports the wait — and the failure when it ends so.
+  const externalPending = useConsoleStore((state) => state.externalPending);
+  const externalError = useConsoleStore((state) => state.externalSessionError);
+  const externalAgents = useConsoleStore((state) => state.externalAgents);
   if (externalSession !== null) return <ExternalAgentControls session={externalSession} />;
+  if (externalPending !== null || externalError !== null) {
+    const agentId = externalPending?.agentId ?? null;
+    // The configured name is what the sidebar menu showed, so the wait names the
+    // same thing; an unknown id (or a resume) falls back to the generic label.
+    const agentName =
+      agentId === null
+        ? null
+        : (externalAgents.find((agent) => agent.id === agentId)?.name ?? agentId);
+    return <ExternalAgentStatus agentName={agentName} error={externalError} />;
+  }
   return <NativeModelControls />;
 };
 

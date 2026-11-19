@@ -100,6 +100,7 @@ from synapse.runtime.service.errors import (
     ConflictError,
     EventOverflowError,
     EventTooLargeError,
+    ExternalSessionError,
     InvalidCursorError,
     InvalidEventPayloadError,
     InvalidRequestError,
@@ -821,9 +822,6 @@ class LocalAgentRuntimeService:
         # present; an empty turn is rejected before any runtime work.
         if not command.text.strip() and not command.attachments and not command.attachment_refs:
             raise InvalidRequestError("submit requires text, attachments, or attachment_refs")
-        external = await self._external_for(command.session)
-        if external is not None:
-            return await self._submit_external(external, command)
         # The two attachment sources are mutually exclusive: mixing in-process
         # objects with durable refs would make the persisted ids ambiguous.
         if command.attachments and command.attachment_refs:
@@ -849,6 +847,14 @@ class LocalAgentRuntimeService:
                     "size": image.size,
                 }
                 for image in attachments
+            )
+        external = await self._external_for(command.session)
+        if external is not None:
+            return await self._submit_external(
+                external,
+                command,
+                attachments=attachments,
+                attachment_refs=attachment_refs,
             )
         try:
             handle = await manager.submit_ref(
@@ -898,7 +904,7 @@ class LocalAgentRuntimeService:
             )
             is not None
         ):
-            raise InvalidRequestError(
+            raise ExternalSessionError(
                 "External ACP sessions cannot be opened as native sessions"
             )
         try:
@@ -1161,6 +1167,41 @@ class LocalAgentRuntimeService:
             raise InvalidRequestError("steer requires text or attachment_refs")
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
+        external = await self._external_for(command.session)
+        if external is not None:
+            attachments: tuple[Any, ...] = ()
+            attachment_refs: tuple[Any, ...] = ()
+            if command.attachment_refs:
+                try:
+                    attachments = await self._resolve_attachment_refs(
+                        manager, command.session, command.attachment_refs
+                    )
+                except AttachmentError as exc:
+                    raise InvalidRequestError(str(exc)) from exc
+                attachment_refs = tuple(
+                    {
+                        "image_id": image.id,
+                        "attachment_id": image.durable_id,
+                        "name": image.name,
+                        "mime": image.mime,
+                        "size": image.size,
+                    }
+                    for image in attachments
+                )
+            turn_id, pending_count = await external[0].steer(
+                command.session,
+                expected_turn_id=command.expected_turn_id,
+                text=command.text,
+                attachments=attachments,
+                attachment_refs=attachment_refs,
+            )
+            return SteerTurnResult(
+                command_id=command.command_id,
+                session=command.session,
+                turn_id=turn_id,
+                accepted=True,
+                pending_count=pending_count,
+            )
         self._resolve_session(manager, command.session)
         attachments = await self._resolve_attachment_refs(
             manager, command.session, command.attachment_refs
@@ -2060,8 +2101,13 @@ class LocalAgentRuntimeService:
             self._resolve_manager_project, query.session.project_id
         )
         self._check_project(manager, query.session)
-        session = self._resolve_session(manager, query.session)
-        broker_state, active_turn_id = session.live_recovery()
+        broker = self._external_broker(query.session)
+        if broker is not None:
+            broker_state = broker.recovery_state()
+            active_turn_id = self._external_active_turn_id(query.session)
+        else:
+            session = self._resolve_session(manager, query.session)
+            broker_state, active_turn_id = session.live_recovery()
         available, total_turns, probes = await asyncio.to_thread(
             read_transcript_coverage,
             manager.settings,
@@ -3201,6 +3247,12 @@ class LocalAgentRuntimeService:
         provider = self._external
         return None if provider is None else provider.broker(ref)
 
+    def _external_active_turn_id(self, ref: SessionRef) -> str | None:
+        """The active logical turn id for a bound external session, if any."""
+        provider = self._external
+        getter = None if provider is None else getattr(provider, "active_turn_id", None)
+        return None if not callable(getter) else getter(ref)
+
     async def _external_for(self, ref: SessionRef) -> tuple[Any, str, Any] | None:
         """Return ``(provider, agent_id, settings)`` for an externally bound session."""
         provider = self._external
@@ -3215,7 +3267,12 @@ class LocalAgentRuntimeService:
         return provider, binding[0], settings
 
     async def _submit_external(
-        self, external: tuple[Any, str, Any], command: SubmitTurnCommand
+        self,
+        external: tuple[Any, str, Any],
+        command: SubmitTurnCommand,
+        *,
+        attachments: tuple[Any, ...] = (),
+        attachment_refs: tuple[Any, ...] = (),
     ) -> CommandReceipt:
         """Start one external turn in the background; the receipt returns first."""
         provider, _agent_id, settings = external
@@ -3223,6 +3280,10 @@ class LocalAgentRuntimeService:
         if not workspace.is_dir():
             raise InvalidRequestError("external session workspace is unavailable")
         broker = provider.broker(command.session)
+        if broker is None:
+            # Resume/initialize the bound ACP session on demand (e.g. after daemon restart).
+            await provider.initialize(command.session, settings, workspace)
+            broker = provider.broker(command.session)
         if broker is None:
             raise ConflictError("external session is not initialized")
         turn_id = uuid.uuid4().hex
@@ -3236,6 +3297,8 @@ class LocalAgentRuntimeService:
                     turn_id=turn_id,
                     text=command.text,
                     publish=broker.emit,
+                    attachments=attachments,
+                    attachment_refs=attachment_refs,
                 )
             except Exception as exc:  # noqa: BLE001 - reported as a failed turn
                 _LOGGER.warning("external turn failed: %s", type(exc).__name__)

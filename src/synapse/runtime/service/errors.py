@@ -23,6 +23,7 @@ __all__ = [
     "ExternalAppPathError",
     "ExternalAppsUnavailableError",
     "ExternalAppUnknownError",
+    "ExternalSessionError",
     "GitUnavailableError",
     "HistoryTooLargeError",
     "InvalidCursorError",
@@ -255,6 +256,18 @@ class InvalidRequestError(RuntimeServiceError):
     """A request field violates its documented bounds or shape."""
 
     code = "invalid_request"
+
+
+class ExternalSessionError(InvalidRequestError):
+    """A native session operation targeted a session bound to an external ACP agent.
+
+    A named state rather than a generic ``invalid_request``: the wire transport
+    never forwards exception text, so a client opening a persisted session needs
+    a distinct ``service_code`` to tell an external ACP binding apart from an
+    actually malformed request and route to ``initialize_external_session``.
+    """
+
+    code = "external_session"
 
 
 class UnknownSttEngineError(InvalidRequestError):

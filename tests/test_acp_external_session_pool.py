@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
+from synapse.acp.external_client import ExternalTimeouts
+from synapse.runtime.daemon import external_session_pool as pool_module
 from synapse.runtime.daemon.external_session_pool import ExternalSessionPool
 from synapse.runtime.service.external_agents import ExternalAgentCatalog
 
@@ -75,6 +78,53 @@ def test_pool_coalesces_opens_and_closes_sessions(tmp_path: Path) -> None:
             await pool.open(("project", "other"), "test", tmp_path, update)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({}, ExternalTimeouts().create),
+        ({"create_timeout_s": 120}, 120.0),
+    ],
+)
+def test_pool_applies_the_configured_create_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: dict, expected: float
+) -> None:
+    """Only the peer's own `session/new` budget is widened, per agent.
+
+    A real 120s deadline cannot be waited out in a test, so the launch is
+    intercepted: what matters is that the entry's value — and the default when
+    it is absent — is what `open_external_session` is handed.
+    """
+    row = {
+        "id": "test",
+        "name": "Test",
+        "command": sys.executable,
+        "args": ["-u", "-c", _AGENT],
+        **extra,
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps({"agents": [row]}))
+    pool = ExternalSessionPool(ExternalAgentCatalog.from_state_dir(tmp_path))
+    seen: dict[str, ExternalTimeouts] = {}
+
+    @asynccontextmanager
+    async def fake_open(spec, cwd, on_update, **kwargs):
+        seen["timeouts"] = kwargs["timeouts"]
+        raise RuntimeError("stop after capturing the timeouts")
+        yield  # pragma: no cover - unreachable, keeps the contextmanager shape
+
+    monkeypatch.setattr(pool_module, "open_external_session", fake_open)
+
+    async def update(event: BaseModel) -> None:
+        pytest.fail(f"Unexpected update: {event}")
+
+    async def run() -> None:
+        async with pool.lifetime():
+            with pytest.raises(RuntimeError, match="capturing the timeouts"):
+                await pool.open(("project", "first"), "test", tmp_path, update)
+
+    asyncio.run(run())
+    assert seen["timeouts"].create == expected
 
 
 def test_open_caller_disconnect_does_not_interrupt_binding(tmp_path: Path) -> None:

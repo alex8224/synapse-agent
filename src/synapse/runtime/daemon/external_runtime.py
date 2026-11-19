@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from synapse.acp.external_client import ExternalSession, UpdateSink
 from synapse.acp.external_history import ExternalTurnBridge, run_turn
+from synapse.integrations.mcp_client import McpServerConfig, load_mcp_server_configs
 from synapse.runtime.daemon.external_session_pool import ExternalSessionPool
-from synapse.runtime.service.errors import ConflictError, NotFoundError
+from synapse.runtime.service.errors import ConflictError, NoActiveTurnError, NotFoundError
 from synapse.runtime.service.session_management import CreateSessionCommand, CreateSessionResult
 from synapse.runtime.service.session_metadata import (
     SessionMetadataService,
@@ -17,6 +21,22 @@ from synapse.runtime.service.session_metadata import (
     read_external_session_binding,
 )
 from synapse.runtime.sessions.ref import SessionRef
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _load_external_mcp_servers(settings: object, workspace: Path) -> tuple[McpServerConfig, ...]:
+    """Load enabled Synapse MCP configs for injection into an external ACP session."""
+    try:
+        configs = load_mcp_server_configs(
+            path=getattr(settings, "mcp_config_path", None),
+            json_blob=getattr(settings, "mcp_servers_json", None),
+            workspace=getattr(settings, "workspace", None) or workspace,
+        )
+    except Exception:  # noqa: BLE001 - degradation boundary: never block external session open
+        _LOGGER.warning("MCP config could not be read while initializing external ACP session")
+        return ()
+    return tuple(cfg for cfg in configs if getattr(cfg, "enabled", True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +64,8 @@ class ExternalRuntime:
         *,
         turn_id: str,
         text: str,
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
         live: UpdateSink | None = None,
     ) -> object:
         """Run one turn through the session's bridge so history is written once."""
@@ -51,7 +73,34 @@ class ExternalRuntime:
         if bridge is None:
             raise NotFoundError("External ACP session is not initialized")
         return await run_turn(
-            session, bridge, settings, turn_id=turn_id, text=text, live=live
+            session,
+            bridge,
+            settings,
+            turn_id=turn_id,
+            text=text,
+            attachments=attachments,
+            attachment_refs=attachment_refs,
+            live=live,
+        )
+
+    async def steer(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        text: str,
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[str, int]:
+        """Deliver a mid-turn steer note to the active external turn."""
+        bridge = self.bridges.get((ref.project_id, ref.thread_id))
+        if bridge is None:
+            raise NoActiveTurnError("External ACP session has no active turn")
+        return bridge.steer(
+            expected_turn_id,
+            text,
+            attachments=attachments,
+            attachment_refs=attachment_refs,
         )
 
     async def initialize(
@@ -84,6 +133,8 @@ class ExternalRuntime:
             if not persisted:
                 raise ConflictError("External ACP session binding changed during startup")
 
+        mcp_servers = await asyncio.to_thread(_load_external_mcp_servers, settings, workspace)
+
         return await self.pool.open(
             key,
             agent_id,
@@ -92,4 +143,5 @@ class ExternalRuntime:
             existing_session_id=peer_id,
             on_replay=on_replay,
             before_ready=persist if peer_id is None else None,
+            mcp_servers=mcp_servers,
         )

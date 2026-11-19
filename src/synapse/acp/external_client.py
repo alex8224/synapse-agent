@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import base64
+import logging
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,17 +20,30 @@ from acp.schema import (
     ClientCapabilities,
     ConfigOptionUpdate,
     DeniedOutcome,
+    EnvVariable,
+    HttpHeader,
+    HttpMcpServer,
+    ImageContentBlock,
     Implementation,
     InitializeResponse,
+    McpCapabilities,
+    McpServerStdio,
     NewSessionResponse,
     PermissionOption,
     PromptResponse,
     RequestPermissionResponse,
     SessionNotification,
     SetSessionConfigOptionResponse,
+    SseMcpServer,
+    TextContentBlock,
     ToolCallUpdate,
 )
 from pydantic import BaseModel
+
+from synapse.content.multimodal import PLACEHOLDER_RE
+from synapse.integrations.mcp_client import McpServerConfig
+
+_LOGGER = logging.getLogger(__name__)
 
 UpdateSink = Callable[[BaseModel], Awaitable[None]]
 PermissionSink = Callable[[ToolCallUpdate, list[PermissionOption]], Awaitable[str | None]]
@@ -149,41 +165,74 @@ class ExternalSession:
         self._callbacks = callbacks
         self._operation = asyncio.Lock()
         self._closed = False
-        self._prompt_timeout: asyncio.Timeout | None = None
+        self._prompt_deadlines: set[asyncio.Timeout] = set()
         self._cancel_requested = False
+        self.concurrent_prompt_rejected = False
 
-    async def prompt(self, text: str) -> PromptResponse:
-        async with self._operation:
-            self._ensure_open()
+    @property
+    def supports_images(self) -> bool:
+        """Whether the peer advertised ``promptCapabilities.image`` during initialize."""
+        caps = self.handshake.agent_capabilities
+        prompt_caps = caps.prompt_capabilities if caps is not None else None
+        return bool(prompt_caps and prompt_caps.image)
+
+    async def _send_prompt(
+        self, text: str, attachments: Sequence[Any] = ()
+    ) -> PromptResponse:
+        self._ensure_open()
+        if not self._prompt_deadlines:
             self._cancel_requested = False
-            try:
-                async with asyncio.timeout(self._timeouts.prompt) as deadline:
-                    self._prompt_timeout = deadline
-                    result = await self._connection.prompt(
-                        self.created.session_id, [acp.text_block(text)]
-                    )
-                    await self._callbacks.flush_updates()
-                    return result
-            except TimeoutError as exc:
-                self.invalidate()
-                stage = "session/cancel settlement" if self._cancel_requested else "session/prompt"
-                raise ExternalAgentTimeout(f"ACP {stage} timed out") from exc
-            except asyncio.CancelledError:
-                self.invalidate()
-                raise
-            finally:
-                self._prompt_timeout = None
+        blocks = prompt_blocks_to_acp(text, attachments)
+        if attachments and not self.supports_images:
+            _LOGGER.warning(
+                "Sending %d image attachment(s) to external ACP agent that did not "
+                "advertise promptCapabilities.image",
+                len(attachments),
+            )
+        deadline: asyncio.Timeout | None = None
+        try:
+            async with asyncio.timeout(self._timeouts.prompt) as active_deadline:
+                deadline = active_deadline
+                self._prompt_deadlines.add(deadline)
+                result = await self._connection.prompt(
+                    self.created.session_id, blocks
+                )
+                await self._callbacks.flush_updates()
+                return result
+        except TimeoutError as exc:
+            self.invalidate()
+            stage = "session/cancel settlement" if self._cancel_requested else "session/prompt"
+            raise ExternalAgentTimeout(f"ACP {stage} timed out") from exc
+        except asyncio.CancelledError:
+            self.invalidate()
+            raise
+        finally:
+            if deadline is not None:
+                self._prompt_deadlines.discard(deadline)
+
+    async def prompt(
+        self, text: str, attachments: Sequence[Any] = ()
+    ) -> PromptResponse:
+        async with self._operation:
+            return await self._send_prompt(text, attachments)
+
+    async def steer_prompt(
+        self, text: str, attachments: Sequence[Any] = ()
+    ) -> PromptResponse:
+        """Send a concurrent ``session/prompt`` without blocking on ``_operation``."""
+        return await self._send_prompt(text, attachments)
 
     async def cancel(self) -> bool:
-        """Notify concurrently; the pending prompt returns the actual stop reason."""
-        deadline = self._prompt_timeout
-        if deadline is None or self._closed or deadline.expired() or self._cancel_requested:
+        """Notify concurrently; the pending prompt(s) return the actual stop reason."""
+        active = [d for d in self._prompt_deadlines if not d.expired()]
+        if not active or self._closed or self._cancel_requested:
             return False
         self._cancel_requested = True
         cutoff = asyncio.get_running_loop().time() + self._timeouts.cancel_settle
-        old_cutoff = deadline.when()
-        if old_cutoff is None or cutoff < old_cutoff:
-            deadline.reschedule(cutoff)
+        for deadline in active:
+            old_cutoff = deadline.when()
+            if old_cutoff is None or cutoff < old_cutoff:
+                deadline.reschedule(cutoff)
         try:
             async with asyncio.timeout(self._timeouts.cancel_send):
                 await self._connection.cancel(self.created.session_id)
@@ -255,6 +304,142 @@ async def _deliver_updates(callbacks: _Callbacks) -> None:
             callbacks.deliveries.task_done()
 
 
+def _attachment_to_image_block(attachment: Any) -> ImageContentBlock:
+    """Encode one Synapse ``Attachment`` as an ACP ``ImageContentBlock``."""
+    data = getattr(attachment, "data", None)
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        raise ValueError("image attachment is missing binary data")
+    raw_mime = str(getattr(attachment, "mime", "") or "").strip().lower()
+    mime = "image/jpeg" if raw_mime == "image/jpg" else raw_mime
+    if not mime:
+        raise ValueError("image attachment is missing mime type")
+    encoded = base64.standard_b64encode(bytes(data)).decode("ascii")
+    return acp.image_block(encoded, mime)
+
+
+def prompt_blocks_to_acp(
+    text: str, attachments: Sequence[Any] = ()
+) -> list[TextContentBlock | ImageContentBlock]:
+    """Convert prompt text and image attachments into ACP ``session/prompt`` blocks.
+
+    When ``[image#N]`` placeholders appear in ``text`` and match attachment ids,
+    blocks are interleaved in document order and any unreferenced attachments are
+    appended at the end. Otherwise, text precedes the image blocks (falling back
+    to ``"(see attached image)"`` for image-only turns so agents requiring a text
+    block still accept the turn).
+    """
+    raw = text or ""
+    if not attachments:
+        return [acp.text_block(raw)]
+
+    by_id: dict[int, Any] = {}
+    for index, attachment in enumerate(attachments, start=1):
+        att_id = getattr(attachment, "id", None)
+        key = int(att_id) if isinstance(att_id, int) and not isinstance(att_id, bool) else index
+        by_id[key] = attachment
+
+    blocks: list[TextContentBlock | ImageContentBlock] = []
+    matches = [m for m in PLACEHOLDER_RE.finditer(raw) if int(m.group(1)) in by_id]
+    if matches:
+        used: set[int] = set()
+        pos = 0
+        for match in matches:
+            if match.start() > pos:
+                seg = raw[pos : match.start()]
+                if seg:
+                    blocks.append(acp.text_block(seg))
+            image_id = int(match.group(1))
+            blocks.append(_attachment_to_image_block(by_id[image_id]))
+            used.add(image_id)
+            pos = match.end()
+        if pos < len(raw):
+            tail = raw[pos:]
+            if tail:
+                blocks.append(acp.text_block(tail))
+        for key, attachment in by_id.items():
+            if key not in used:
+                blocks.append(_attachment_to_image_block(attachment))
+        if not any(isinstance(b, TextContentBlock) and b.text.strip() for b in blocks):
+            blocks.insert(0, acp.text_block("(see attached image)"))
+        return blocks
+
+    if raw.strip():
+        blocks.append(acp.text_block(raw))
+    else:
+        blocks.append(acp.text_block("(see attached image)"))
+    for attachment in attachments:
+        blocks.append(_attachment_to_image_block(attachment))
+    return blocks
+
+
+def mcp_servers_to_acp(
+    servers: Sequence[McpServerConfig],
+    capabilities: McpCapabilities | None = None,
+) -> list[McpServerStdio | HttpMcpServer | SseMcpServer]:
+    """Convert enabled Synapse MCP configs into ACP schema server entries."""
+    result: list[McpServerStdio | HttpMcpServer | SseMcpServer] = []
+    for cfg in servers:
+        if not cfg.enabled:
+            continue
+        transport = (cfg.transport or "stdio").casefold()
+        if transport == "stdio":
+            command = (cfg.command or "").strip()
+            if not command:
+                _LOGGER.warning("Skipping stdio MCP server %r: missing command", cfg.name)
+                continue
+            result.append(
+                McpServerStdio(
+                    name=cfg.name,
+                    command=command,
+                    args=[str(arg) for arg in (cfg.args or ())],
+                    env=[EnvVariable(name=str(k), value=str(v)) for k, v in cfg.env.items()],
+                )
+            )
+            continue
+        if transport == "streamable_http":
+            if not (capabilities and capabilities.http):
+                _LOGGER.warning(
+                    "Skipping HTTP MCP server %r: external ACP agent does not advertise http MCP",
+                    cfg.name,
+                )
+                continue
+            url = (cfg.url or "").strip()
+            if not url:
+                _LOGGER.warning("Skipping HTTP MCP server %r: missing url", cfg.name)
+                continue
+            result.append(
+                HttpMcpServer(
+                    type="http",
+                    name=cfg.name,
+                    url=url,
+                    headers=[HttpHeader(name=str(k), value=str(v)) for k, v in cfg.headers.items()],
+                )
+            )
+            continue
+        if transport == "sse":
+            if not (capabilities and capabilities.sse):
+                _LOGGER.warning(
+                    "Skipping SSE MCP server %r: external ACP agent does not advertise sse MCP",
+                    cfg.name,
+                )
+                continue
+            url = (cfg.url or "").strip()
+            if not url:
+                _LOGGER.warning("Skipping SSE MCP server %r: missing url", cfg.name)
+                continue
+            result.append(
+                SseMcpServer(
+                    type="sse",
+                    name=cfg.name,
+                    url=url,
+                    headers=[HttpHeader(name=str(k), value=str(v)) for k, v in cfg.headers.items()],
+                )
+            )
+            continue
+        _LOGGER.warning("Skipping MCP server %r: unsupported transport %r", cfg.name, cfg.transport)
+    return result
+
+
 @asynccontextmanager
 async def open_external_session(
     spec: ExternalAgentSpec,
@@ -264,6 +449,7 @@ async def open_external_session(
     on_permission: PermissionSink | None = None,
     existing_session_id: str | None = None,
     on_replay: UpdateSink | None = None,
+    mcp_servers: Sequence[McpServerConfig] = (),
     timeouts: ExternalTimeouts = ExternalTimeouts(),
 ) -> AsyncIterator[ExternalSession]:
     """Open or reload a session, keeping replay off the live update sink."""
@@ -271,13 +457,24 @@ async def open_external_session(
         raise ValueError("ACP session/load requires a dedicated replay sink")
     if not cwd.is_absolute() or not cwd.is_dir():
         raise ValueError("ACP workspace must be an existing absolute directory")
-    env = {key.upper(): value for key, value in spec.env.items() if key.upper() in _PROXY_KEYS}
+    env: dict[str, str] = {}
+    for key in _PROXY_KEYS:
+        inherited = os.environ.get(key) or os.environ.get(key.lower())
+        if inherited:
+            env[key] = inherited
+    for key, value in spec.env.items():
+        upper = key.upper()
+        if upper in _PROXY_KEYS:
+            env[upper] = value
     callbacks = _Callbacks(on_permission, timeouts.permission)
     # Drain by discarding at OS level until a redacted diagnostics sink is added.
     # Raw stderr can contain credentials and must not block the protocol pipe.
     async with acp.spawn_agent_process(
         callbacks, spec.command, *spec.args, env=env, cwd=cwd,
-        transport_kwargs={"stderr": asyncio.subprocess.DEVNULL},
+        transport_kwargs={
+            "stderr": asyncio.subprocess.DEVNULL,
+            "limit": 50 * 1024 * 1024,
+        },
         observers=[lambda event: callbacks.observe(event, on_update)],
     ) as (connection, process):
         delivery = asyncio.create_task(_deliver_updates(callbacks))
@@ -291,10 +488,16 @@ async def open_external_session(
                 )
             if handshake.protocol_version != acp.PROTOCOL_VERSION:
                 raise RuntimeError("ACP agent negotiated an unsupported protocol version")
+            mcp_caps = (
+                handshake.agent_capabilities.mcp_capabilities
+                if handshake.agent_capabilities is not None
+                else None
+            )
+            acp_mcp_servers = mcp_servers_to_acp(mcp_servers, mcp_caps)
             if existing_session_id is None:
                 stage = "session/new"
                 async with asyncio.timeout(timeouts.create):
-                    created = await connection.new_session(str(cwd), mcp_servers=[])
+                    created = await connection.new_session(str(cwd), mcp_servers=acp_mcp_servers)
             else:
                 stage = "session/load"
                 capabilities = handshake.agent_capabilities
@@ -304,7 +507,7 @@ async def open_external_session(
                 callbacks.replay = on_replay
                 async with asyncio.timeout(timeouts.create):
                     loaded = await connection.load_session(
-                        str(cwd), existing_session_id, mcp_servers=[]
+                        str(cwd), existing_session_id, mcp_servers=acp_mcp_servers
                     )
                     await callbacks.flush_updates()
                 callbacks.replay = None

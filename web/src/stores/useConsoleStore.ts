@@ -346,6 +346,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     sessionActionError: null,
     externalAgents: [],
     externalSession: null,
+    externalPending: null,
     externalSessionError: null,
     sessionNotice: null,
     projects: [],
@@ -496,6 +497,20 @@ export interface ExternalSessionState {
   options: ExternalConfigOptionView[];
 }
 
+/**
+ * The external session the console is opening right now.
+ *
+ * Opening one launches the peer's own process and runs *its* `session/new`,
+ * which can take tens of seconds when the agent validates a cloud account
+ * first. The composer paints this while it lasts so a slow start never reads as
+ * "choosing the agent did nothing", and so the native model pickers are not
+ * shown for a session that has no native runtime.
+ */
+export interface ExternalPendingState {
+  /** The configured agent id when it is known; null while resuming a bound one. */
+  agentId: string | null;
+}
+
 export interface SessionSearchState {
   query: string;
   items: SessionItem[];
@@ -524,6 +539,18 @@ function describeSessionActionError(error: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/**
+ * What a failed external open says when the daemon did not classify it.
+ *
+ * Opening an ACP session runs the *peer's* own `session/new`, and an agent that
+ * checks its cloud account there can take far longer than this console's other
+ * calls (measured 5-30s for `agy`, minutes when its cloud path is unreachable).
+ * So an unclassified failure is reported as a slow or unreachable network — that
+ * is what the user can act on — rather than as a console bug.
+ */
+const EXTERNAL_CONNECT_FALLBACK =
+  '外部 Agent 连接失败：可能是网络或代理较慢导致初始化超时，请检查该 Agent 的网络设置后重试。';
 
 /**
  * User-facing text for a refused revert.
@@ -768,6 +795,12 @@ interface ConsoleStore {
    * console's model registry.
    */
   externalSession: ExternalSessionState | null;
+  /**
+   * The external agent being opened, or null. Set for the whole launch window —
+   * the peer's `session/new` is the slow part — and cleared on success, on
+   * failure, and whenever the console attaches to another session.
+   */
+  externalPending: ExternalPendingState | null;
   /**
    * Write one peer config option and adopt the peer's complete new snapshot.
    * Resolves false (leaving the previous value in force) when the agent
@@ -2186,6 +2219,7 @@ const backgroundExternalSessions = new Map<string, ExternalSessionState | null>(
 
 function isExternalOpenRejection(err: unknown): boolean {
   const rpc = err as RpcCallError | undefined;
+  if (rpc?.service_code === 'external_session') return true;
   return (
     rpc?.service_code === 'invalid_request' &&
     String(rpc?.message ?? '').includes('External ACP')
@@ -2198,6 +2232,10 @@ async function attachExternalSession(
   epoch: number,
 ): Promise<void> {
   const store = useConsoleStore;
+  // Resuming a bound external session runs the peer's `session/new`/`load`
+  // again, so the composer paints "connecting" for this window too. The agent id
+  // is only known from the reply here, hence the null.
+  store.setState({ externalPending: { agentId: null }, externalSessionError: null });
   try {
     const initialized = await client.initializeExternalSession({ session });
     if (epoch !== sessionEpoch) return;
@@ -2208,9 +2246,31 @@ async function attachExternalSession(
         permissionMode: initialized.permission_mode,
         options: initialized.options,
       },
+      externalPending: null,
       externalSessionError: null,
     });
-    const watch = await client.watchEvents(session, 0);
+    await captureLiveEpoch(epoch);
+    if (epoch !== sessionEpoch) return;
+    const coverage = attachCoverage as SessionRecoverabilityResult | null;
+    const active = coverage?.active_turn_id ?? null;
+    if (active !== null) {
+      store.setState({ runtimeStatus: 'running', activeTurnId: active });
+    }
+    const latestSequence = coverage?.live_latest_sequence ?? 0;
+    const cursor = chooseAttachCursor({ activeTurnId: active, latestSequence }, coverage);
+    let watch;
+    try {
+      watch = await client.watchEvents(session, cursor.after);
+    } catch (err) {
+      if (epoch !== sessionEpoch) return;
+      const code = (err as RpcCallError)?.service_code;
+      if (code !== 'replay_gap' && code !== 'invalid_cursor') throw err;
+      await captureLiveEpoch(epoch);
+      if (epoch !== sessionEpoch) return;
+      const freshLatest =
+        (attachCoverage as SessionRecoverabilityResult | null)?.live_latest_sequence ?? 0;
+      watch = await client.watchEvents(session, freshLatest);
+    }
     if (epoch !== sessionEpoch) {
       void client.unwatchEvents(watch.subscription_id);
       return;
@@ -2223,7 +2283,8 @@ async function attachExternalSession(
     // readable and surface why the peer session could not be resumed.
     store.setState({
       externalSession: null,
-      externalSessionError: describeSessionActionError(err, '外部 Agent 会话恢复失败'),
+      externalPending: null,
+      externalSessionError: describeSessionActionError(err, EXTERNAL_CONNECT_FALLBACK),
     });
   }
   await loadInitialHistory(epoch);
@@ -2323,6 +2384,7 @@ function restoreBackgroundSession(
       mcpTogglingAction: null,
       mcpRuntimeKnown: false,
       externalSession: restoredExternal,
+      externalPending: null,
       externalSessionError: null,
     };
   });
@@ -2347,10 +2409,19 @@ function restoreBackgroundSession(
               permissionMode: initialized.permission_mode,
               options: initialized.options,
             },
+            externalPending: null,
             externalSessionError: null,
           });
         })
-        .catch(() => undefined);
+        .catch((err: unknown) => {
+          // The restored snapshot stays on screen, but the peer refused to
+          // resume: say so instead of swallowing it, or the stale options look
+          // live while every turn will fail.
+          if (epoch !== sessionEpoch) return;
+          store.setState({
+            externalSessionError: describeSessionActionError(err, EXTERNAL_CONNECT_FALLBACK),
+          });
+        });
     }
     return;
   }
@@ -2454,6 +2525,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     mcpTogglingAction: null,
     mcpRuntimeKnown: false,
     externalSession: null,
+    externalPending: null,
     externalSessionError: null,
   });
   // Git chrome is per workspace and read-only: refresh it on every attach so a
@@ -2748,7 +2820,21 @@ export async function resumeAttachedWatch(): Promise<void> {
         },
         externalSessionError: null,
       });
-      const watch = await client.watchEvents(session, cursor ?? 0);
+      let watch;
+      let resynced = false;
+      try {
+        watch = await client.watchEvents(session, cursor ?? 0);
+      } catch (err) {
+        if (superseded()) return;
+        const code = (err as RpcCallError)?.service_code;
+        if (code !== 'replay_gap' && code !== 'invalid_cursor') throw err;
+        await captureLiveEpoch(epoch);
+        if (superseded()) return;
+        const freshLatest =
+          (attachCoverage as SessionRecoverabilityResult | null)?.live_latest_sequence ?? 0;
+        watch = await client.watchEvents(session, freshLatest);
+        resynced = true;
+      }
       if (superseded()) {
         void client.unwatchEvents(watch.subscription_id);
         return;
@@ -2758,7 +2844,7 @@ export async function resumeAttachedWatch(): Promise<void> {
         recoveryState: 'resumed',
       });
       droppedResumePoint = null;
-      if (pendingHistory === 'initial') {
+      if (resynced || pendingHistory === 'initial') {
         await loadInitialHistory(epoch);
       } else {
         flushBufferedLiveEvents();
@@ -3192,6 +3278,7 @@ async function activateProject(projectId: string): Promise<boolean> {
     projectTasksLoading: false,
     projectTasksError: null,
     externalSession: null,
+    externalPending: null,
     externalSessionError: null,
   });
   await store.getState().fetchSessions();
@@ -3203,6 +3290,7 @@ async function activateProject(projectId: string): Promise<boolean> {
 export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   externalAgents: [],
   externalSession: null,
+  externalPending: null,
   externalSessionError: null,
   connectionState: 'disconnected',
   recoveryState: 'idle',
@@ -3434,6 +3522,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       mcpTogglingAction: null,
       mcpRuntimeKnown: false,
       externalSession: null,
+      // The agent is known here (the sidebar picked it), so the composer can
+      // name it while the peer's own `session/new` runs — that call is the
+      // slow part and used to be indistinguishable from "nothing happened".
+      externalPending: agentId === undefined ? null : { agentId },
       externalSessionError: null,
     }));
     if (client) {
@@ -3451,6 +3543,7 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
               permissionMode: initialized.permission_mode,
               options: initialized.options,
             },
+            externalPending: null,
           });
           const watch = await client.watchEvents(nextSession, 0);
           if (epoch !== sessionEpoch) return;
@@ -3485,7 +3578,17 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           console.error('Failed to initialize new session with runtime:', err);
           // The row is already persisted, so the session is not lost: say what
           // failed instead of leaving a console that silently never attaches.
-          set({ sessionActionError: describeSessionActionError(err, '会话初始化失败') });
+          set({
+            sessionActionError: describeSessionActionError(err, '会话初始化失败'),
+            // A bound external session cannot fall back to the native backend,
+            // so its failure must also reach the composer row that replaced the
+            // model pickers — otherwise the console just looks idle.
+            externalPending: null,
+            externalSessionError:
+              agentId === undefined
+                ? null
+                : describeSessionActionError(err, EXTERNAL_CONNECT_FALLBACK),
+          });
           clearAttached();
         }
       }
@@ -5139,19 +5242,37 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
     composerGeneration += 1;
     get().addUserMessage(body, attachmentDisplaysOf(pending));
     set({ runtimeStatus: 'running', activeTurnId: null, activity: null });
-    try {
-      const opened = await client.openSession(currentSession);
-      // Re-sync the authoritative totals here: this call is already being made,
-      // and it is what corrects a session that was also used elsewhere.
-      if (epoch !== sessionEpoch) return false;
-      set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
+    if (get().externalSession !== null) {
       if (!get().activeSubscriptionId) {
-        const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
-        if (epoch !== sessionEpoch) return false;
-        set({ activeSubscriptionId: watch.subscription_id });
+        try {
+          await client.initializeExternalSession({ session: currentSession });
+          if (epoch !== sessionEpoch) return false;
+          await captureLiveEpoch(epoch);
+          if (epoch !== sessionEpoch) return false;
+          const latest =
+            (attachCoverage as SessionRecoverabilityResult | null)?.live_latest_sequence ?? 0;
+          const watch = await client.watchEvents(currentSession, latest);
+          if (epoch !== sessionEpoch) return false;
+          set({ activeSubscriptionId: watch.subscription_id });
+        } catch (err) {
+          console.warn('Ensure external session watch note:', err);
+        }
       }
-    } catch (err) {
-      console.warn('Ensure open session note:', err);
+    } else {
+      try {
+        const opened = await client.openSession(currentSession);
+        // Re-sync the authoritative totals here: this call is already being made,
+        // and it is what corrects a session that was also used elsewhere.
+        if (epoch !== sessionEpoch) return false;
+        set({ sessionUsage: parseSessionUsage(opened.view?.usage) });
+        if (!get().activeSubscriptionId) {
+          const watch = await client.watchEvents(currentSession, opened.view?.latest_sequence ?? 0);
+          if (epoch !== sessionEpoch) return false;
+          set({ activeSubscriptionId: watch.subscription_id });
+        }
+      } catch (err) {
+        console.warn('Ensure open session note:', err);
+      }
     }
     if (epoch !== sessionEpoch) return false;
     try {

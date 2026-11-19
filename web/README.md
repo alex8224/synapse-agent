@@ -596,6 +596,22 @@ node tests/shellLayout.verify.ts
 Fluent 主界面可另运行 `node tests/fluentAppearance.verify.ts`：使用隔离的合成项目/会话，
 不连接真实宿主，检查明暗切换、控件尺寸、焦点、菜单和窄屏；截图输出到工作区 `.tmp/`。
 
+## 外部 Agent 会话（输入区控件）
+
+侧栏「+」在 daemon 报告了本机外部 Agent 时变成菜单（`NewSessionButton.tsx`）：`Synapse（内置）` 与
+`本机外部 Agent` 两类。菜单只拿到 `runtime.external.agents.list` 的 id / 名称 / 权限模式，**不含启动命令**；
+选中后会话在创建时就绑定该 Agent，之后不能切回原生后端。
+
+| 输入区状态 | 显示 |
+|---|---|
+| 连接中 | `正在连接 <Agent>…`（`ExternalAgentStatus`）。这段等待是对方自己的 `session/new`，慢的是它的云端往返，不是控制台 |
+| 已连接 | Agent 上报的配置项（`model` / `thought_level` / `mode` …），一个控件对应一个 `configId`；`完全权限` 只是徽标，不能在浏览器里切换 |
+| 失败 | 红色错误行（`role="alert"`）留在输入区，并给出网络/代理方向的原因 |
+
+原生模型与思考选择器**只在没有外部会话、也没有连接中/失败状态时**渲染——否则一个没打开成功的外部会话
+会看起来像普通会话。`useConsoleStore.externalPending` 在创建、恢复、切换会话、成功与失败各条路径上都会
+置位或清理，`tests/externalAgentControls.test.ts` 钉住这三条规则。
+
 ## Markdown 渲染：公式与图形
 
 正文一律由 `src/markdown/parse.ts` 解析成类型化节点、再由 React 渲染，**不生成 HTML**。

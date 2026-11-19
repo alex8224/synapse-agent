@@ -1,7 +1,48 @@
-import { Checkmark16Regular, ChevronDown20Regular, Bot20Regular, LockClosed20Regular } from '@fluentui/react-icons';
+import { ArrowSync20Regular, Checkmark16Regular, ChevronDown20Regular, Bot20Regular, LockClosed20Regular, Warning20Regular } from '@fluentui/react-icons';
 import React, { useState } from 'react';
 import { useConsoleStore } from '../stores/useConsoleStore.ts';
 import type { ExternalSessionState } from '../stores/useConsoleStore.ts';
+
+/**
+ * The composer's stand-in while an external session is being opened, and the
+ * place its failure is reported.
+ *
+ * Initializing an ACP session launches the peer's own process and runs *its*
+ * `session/new`; an agent that validates a cloud account first can spend tens of
+ * seconds there (`agy` does). Without this row the composer fell back to the
+ * native model pickers for that whole window, and a failed open left no visible
+ * trace at all — the error was only rendered by the controls that never appear.
+ */
+export const ExternalAgentStatus: React.FC<{
+  /** The agent being opened, or null while resuming an already-bound session. */
+  agentName: string | null;
+  /** Last failure; when set the row reports it instead of the wait. */
+  error: string | null;
+}> = ({ agentName, error }) => (
+  <>
+    {error === null ? (
+      <span
+        role="status"
+        title={agentName === null ? '正在连接外部 Agent' : `正在连接 ${agentName}`}
+        className="flex items-center gap-1.5 rounded-control bg-blue-50/80 px-2 py-1 text-[11px] font-medium text-blue-500"
+      >
+        <ArrowSync20Regular aria-hidden="true" className="animate-spin" />
+        <span className="max-w-[14rem] truncate">
+          {agentName === null ? '正在连接外部 Agent…' : `正在连接 ${agentName}…`}
+        </span>
+      </span>
+    ) : (
+      <span
+        role="alert"
+        title={error}
+        className="flex items-center gap-1 rounded-control bg-red-50 px-2 py-1 text-[11px] font-medium text-red-600"
+      >
+        <Warning20Regular aria-hidden="true" className="shrink-0" />
+        <span className="max-w-[20rem] truncate">{error}</span>
+      </span>
+    )}
+  </>
+);
 
 /**
  * The composer controls for a session backed by an external ACP agent.

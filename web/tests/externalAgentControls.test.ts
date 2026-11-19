@@ -42,3 +42,43 @@ test('boolean options are selectable and session switches fence config writes an
   assert.match(store, /await attachExternalSession\(client, session, epoch\)/);
   assert.match(store, /get\(\)\.currentSession\.thread_id !== targetSession\.thread_id/);
 });
+
+test('a slow external open reports the wait instead of the native pickers', () => {
+  // The launch window is the peer's own `session/new`, which an agent may spend
+  // tens of seconds on; the native pickers would be a lie for that session.
+  assert.match(controls, /state\.externalPending/);
+  assert.match(controls, /if \(externalPending !== null \|\| externalError !== null\)/);
+  assert.match(controls, /<ExternalAgentStatus agentName=\{agentName\} error=\{externalError\} \/>/);
+  assert.match(external, /export const ExternalAgentStatus/);
+  assert.match(external, /正在连接/);
+  assert.match(external, /role="status"/);
+});
+
+test('a failed external open stays visible after the wait ends', () => {
+  // The error used to render only inside the controls that appear once the peer
+  // answers, so a failed open left the composer looking idle.
+  assert.match(controls, /state\.externalSessionError/);
+  assert.match(external, /role="alert"/);
+  assert.match(external, /error === null \?/);
+  assert.match(store, /externalSessionError:\s*\n?\s*agentId === undefined/);
+  assert.match(store, /EXTERNAL_CONNECT_FALLBACK/);
+});
+
+test('the pending window is set on both open paths and always cleared', () => {
+  // Create: the sidebar picked the agent, so the wait can name it.
+  assert.match(store, /externalPending: agentId === undefined \? null : \{ agentId \}/);
+  // Resume: the agent id only arrives with the reply.
+  assert.match(
+    store,
+    /store\.setState\(\{ externalPending: \{ agentId: null \}, externalSessionError: null \}\)/,
+  );
+  // Success, failure and every session switch clear it, or the row would keep
+  // claiming a connection that already ended.
+  assert.ok((store.match(/externalPending: null/g) ?? []).length >= 4);
+});
+
+test('external open rejection matches the wire service_code rather than stripped error text', () => {
+  // The JSON-RPC transport strips exception text to "runtime service error",
+  // so refresh / re-enter must detect external bindings by `service_code`.
+  assert.match(store, /rpc\?\.service_code === 'external_session'/);
+});

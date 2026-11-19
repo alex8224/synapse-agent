@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +108,11 @@ class DaemonExternalSessions:
     def broker(self, ref: SessionRef) -> SessionEventBroker | None:
         return self._brokers.get((ref.project_id, ref.thread_id))
 
+    def active_turn_id(self, ref: SessionRef) -> str | None:
+        """Return the active logical turn id for *ref*, or ``None`` when idle."""
+        bridge = self._runtime.bridges.get((ref.project_id, ref.thread_id))
+        return None if bridge is None else bridge.active_turn_id
+
     def _ensure_broker(self, ref: SessionRef) -> SessionEventBroker:
         key = (ref.project_id, ref.thread_id)
         broker = self._brokers.get(key)
@@ -187,6 +192,8 @@ class DaemonExternalSessions:
         turn_id: str,
         text: str,
         publish: Callable[[Any], None],
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> ExternalSessionView:
         binding = self._agent_for(settings, ref)
         if binding is None:
@@ -203,7 +210,14 @@ class DaemonExternalSessions:
                 on_replay=_replay_sink(),
             )
             response = await self._runtime.turn(
-                ref, session, settings, turn_id=turn_id, text=text, live=publish
+                ref,
+                session,
+                settings,
+                turn_id=turn_id,
+                text=text,
+                attachments=attachments,
+                attachment_refs=attachment_refs,
+                live=publish,
             )
         except BaseException:
             self._terminal(broker, ref, turn_id, "failed")
@@ -237,9 +251,34 @@ class DaemonExternalSessions:
             )
         )
 
+    async def steer(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        text: str,
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[str, int]:
+        return await self._runtime.steer(
+            ref,
+            expected_turn_id=expected_turn_id,
+            text=text,
+            attachments=attachments,
+            attachment_refs=attachment_refs,
+        )
+
     async def cancel(self, ref: SessionRef) -> bool:
-        session = self._runtime.pool.session((ref.project_id, ref.thread_id))
-        return False if session is None else await session.cancel()
+        key = (ref.project_id, ref.thread_id)
+        session = self._runtime.pool.session(key)
+        if session is None:
+            return False
+        cancelled = await session.cancel()
+        if cancelled:
+            bridge = self._runtime.bridges.get(key)
+            if bridge is not None:
+                bridge.mark_cancelled()
+        return cancelled
 
     async def close(self, ref: SessionRef) -> None:
         key = (ref.project_id, ref.thread_id)

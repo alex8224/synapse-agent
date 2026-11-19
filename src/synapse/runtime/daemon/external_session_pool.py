@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,11 +11,25 @@ from pathlib import Path
 from synapse.acp.external_client import (
     ExternalAgentSpec,
     ExternalSession,
+    ExternalTimeouts,
     PermissionSink,
     UpdateSink,
     open_external_session,
 )
-from synapse.runtime.service.external_agents import ExternalAgentCatalog
+from synapse.integrations.mcp_client import McpServerConfig
+from synapse.runtime.service.external_agents import ExternalAgentCatalog, LocalExternalAgent
+
+
+def _timeouts_for(agent: LocalExternalAgent) -> ExternalTimeouts:
+    """Per-agent deadlines; only the peer's own ``session/new`` may be widened.
+
+    An agent that validates its cloud account before answering ``session/new``
+    (``agy`` does) can spend tens of seconds there, so the launch budget is the
+    one deadline a local config entry may override.
+    """
+    if agent.create_timeout_s is None:
+        return ExternalTimeouts()
+    return ExternalTimeouts(create=agent.create_timeout_s)
 
 
 @dataclass(slots=True)
@@ -47,6 +61,7 @@ class ExternalSessionPool:
         existing_session_id: str | None = None,
         on_replay: UpdateSink | None = None,
         before_ready: Callable[[ExternalSession], Awaitable[None]] | None = None,
+        mcp_servers: Sequence[McpServerConfig] = (),
     ) -> ExternalSession:
         """Coalesce concurrent opens. Key and backend must come from persisted metadata."""
         if self._closed:
@@ -66,7 +81,8 @@ class ExternalSessionPool:
             worker = asyncio.create_task(
                 self._serve(
                     key, spec, cwd, on_update, on_permission, ready, stop,
-                    existing_session_id, on_replay, before_ready,
+                    existing_session_id, on_replay, before_ready, tuple(mcp_servers),
+                    _timeouts_for(agent),
                 )
             )
             entry = self._entries[key] = _Entry(agent_id, cwd, ready, stop, worker)
@@ -102,6 +118,8 @@ class ExternalSessionPool:
         existing_session_id: str | None,
         on_replay: UpdateSink | None,
         before_ready: Callable[[ExternalSession], Awaitable[None]] | None,
+        mcp_servers: Sequence[McpServerConfig] = (),
+        timeouts: ExternalTimeouts = ExternalTimeouts(),
     ) -> None:
         try:
             async with open_external_session(
@@ -111,6 +129,8 @@ class ExternalSessionPool:
                 on_permission=on_permission,
                 existing_session_id=existing_session_id,
                 on_replay=on_replay,
+                mcp_servers=mcp_servers,
+                timeouts=timeouts,
             ) as s:
                 if before_ready is not None:
                     await before_ready(s)

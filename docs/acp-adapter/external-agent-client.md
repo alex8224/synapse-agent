@@ -34,6 +34,29 @@
 
 首版 GUI 可显示「完全权限」标识，不需要为这类会话实现审批弹窗。`full_access` 标识本机启动策略，不改变 Runtime ACL，也不赋予系统管理员权限。若 Agent 仍发来 `session/request_permission` 且没有审批处理器，客户端返回 `cancelled`，绝不替它自动批准。默认 `manual`；交互审批留作后续能力。
 
+#### 新建会话的等待窗口
+
+`session/new` 是 Agent 自己的活儿，可能包含它的云端往返（`agy` 会先校验账号与模型目录）。同一台机器实测 `agy 1.5.10`：代理可用时 5–30 秒返回并给出 `model` / `thought_level` / `mode`；云端不可达时 180 秒后才降级返回，且 `configOptions` 只剩 `mode`。客户端默认给这一段 45 秒，因此慢启动的 Agent 会以 `ACP session/new timed out` 失败。
+
+本机 `external-acp-agents.json` 的条目可单独放宽这一段：
+
+```json
+{
+  "id": "agy",
+  "name": "Antigravity CLI",
+  "command": "C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe",
+  "args": ["acp", "--dangerously-skip-permissions"],
+  "permission_mode": "full_access",
+  "env": {"HTTPS_PROXY": "http://127.0.0.1:7892"},
+  "create_timeout_s": 120
+}
+```
+
+- `create_timeout_s` 只放宽 `session/new` / `session/load`；握手、配置写、回合和取消仍用各自默认值。
+- 取值 5–600 秒，省略即沿用默认 45 秒；非数字、布尔或越界会拒绝整个配置（daemon 启动时记录一条 warning 并关闭该功能，不猜测意图）。
+- 文件在 daemon 启动时读取一次，改完需重启 `synapse-runtime`。
+- 超时不会被当成"没有配置"静默回退：控制台在等待期间显示「正在连接 <Agent>…」，失败后在输入区保留错误提示，不会改用原生模型/思考选择器冒充正常会话。
+
 ### 2. Runtime 会话与配置契约
 
 在 `src/synapse/runtime/service/local.py` 的会话创建、提交和取消接入分流，并通过服务访问层复用现有项目/会话权限检查。Runtime 拥有子进程，不由浏览器或 Tauri 启动。产品首版以一活跃外部会话对应一子进程为基线，同一会话串行处理配置写和回合。

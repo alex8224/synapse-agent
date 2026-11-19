@@ -43,3 +43,34 @@ def test_external_agent_catalog_rejects_invalid_launch_config(
     (tmp_path / "external-acp-agents.json").write_text(json.dumps({"agents": [row]}))
     with pytest.raises(ValueError):
         ExternalAgentCatalog.from_state_dir(tmp_path)
+
+
+def test_external_agent_catalog_reads_a_per_agent_create_timeout(tmp_path: Path) -> None:
+    """`session/new` is the peer's own work, so its budget is configurable."""
+    row = {"id": "agy", "name": "Antigravity", "command": sys.executable,
+           "create_timeout_s": 120}
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps({"agents": [row]}))
+    agent = ExternalAgentCatalog.from_state_dir(tmp_path).get("agy")
+    assert agent is not None
+    assert agent.create_timeout_s == 120.0
+    # Absent means "keep the client default", never "no timeout".
+    plain = {"id": "other", "name": "Other", "command": sys.executable}
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps({"agents": [plain]}))
+    default_agent = ExternalAgentCatalog.from_state_dir(tmp_path).get("other")
+    assert default_agent is not None
+    assert default_agent.create_timeout_s is None
+
+
+@pytest.mark.parametrize("value", [True, "120", 0, 4.9, 601, None])
+def test_external_agent_catalog_rejects_an_unusable_create_timeout(
+    tmp_path: Path, value: object
+) -> None:
+    # `null` is accepted as "default", so only the other values may raise.
+    row = {"id": "agy", "name": "Antigravity", "command": sys.executable,
+           "create_timeout_s": value}
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps({"agents": [row]}))
+    if value is None:
+        assert ExternalAgentCatalog.from_state_dir(tmp_path).get("agy").create_timeout_s is None
+        return
+    with pytest.raises(ValueError):
+        ExternalAgentCatalog.from_state_dir(tmp_path)

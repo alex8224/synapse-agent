@@ -12,6 +12,12 @@ from typing import Any, Literal
 _MAX_CONFIG_BYTES = 64 * 1024
 _AGENT_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z")
 _PROXY_KEYS = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"})
+# `session/new` is the *peer's* own work, not a Synapse call: an agent that checks
+# its cloud account and model catalogue first legitimately needs tens of seconds
+# (measured: 5-30s for `agy`, minutes when its cloud path is unreachable). These
+# bounds only stop a typo from parking a session open for hours.
+_MIN_CREATE_TIMEOUT_S = 5.0
+_MAX_CREATE_TIMEOUT_S = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,10 +33,20 @@ class LocalExternalAgent:
     command: str = field(repr=False)
     args: tuple[str, ...] = field(repr=False)
     proxy_env: MappingProxyType[str, str] = field(repr=False)
+    #: Per-agent budget for the peer's `session/new`; `None` keeps the default.
+    create_timeout_s: float | None = None
 
 
 def _parse_agent(row: Any) -> LocalExternalAgent:
-    allowed_keys = {"id", "name", "command", "args", "env", "permission_mode"}
+    allowed_keys = {
+        "id",
+        "name",
+        "command",
+        "args",
+        "env",
+        "permission_mode",
+        "create_timeout_s",
+    }
     if not isinstance(row, dict) or set(row) - allowed_keys:
         raise ValueError("Invalid external ACP agent entry")
     permission_mode = row.get("permission_mode", "manual")
@@ -63,11 +79,20 @@ def _parse_agent(row: Any) -> LocalExternalAgent:
         for key, value in env.items()
     ):
         raise ValueError("Only supported proxy environment overrides are allowed")
+    create_timeout_s = row.get("create_timeout_s")
+    if create_timeout_s is not None:
+        # `bool` subclasses `int`, so a JSON `true` must be rejected explicitly.
+        if isinstance(create_timeout_s, bool) or not isinstance(create_timeout_s, (int, float)):
+            raise ValueError("Invalid external ACP create timeout")
+        if not _MIN_CREATE_TIMEOUT_S <= create_timeout_s <= _MAX_CREATE_TIMEOUT_S:
+            raise ValueError("External ACP create timeout is out of range")
+        create_timeout_s = float(create_timeout_s)
     return LocalExternalAgent(
         ExternalAgentInfo(agent_id, name.strip(), permission_mode),
         command,
         tuple(args),
         MappingProxyType(env),
+        create_timeout_s,
     )
 
 

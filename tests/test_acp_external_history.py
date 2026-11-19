@@ -25,7 +25,9 @@ for line in sys.stdin:
         send({'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'text', 'text': 'plan'}})
         send({'sessionUpdate': 'tool_call', 'toolCallId': 'raw', 'title': 'Write',
               'status': 'in_progress', 'rawInput': {'path': '/secret'}})
-        send({'sessionUpdate': 'tool_call_update', 'toolCallId': 'raw', 'status': 'completed'})
+        send({'sessionUpdate': 'tool_call_update', 'toolCallId': 'raw', 'status': 'completed',
+              'content': [{'type': 'content',
+                           'content': {'type': 'text', 'text': 'wrote 42 bytes'}}]})
         send({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'done'}})
         result = {'stopReason': 'end_turn'}
     else:
@@ -64,4 +66,6 @@ def test_external_turn_is_projected_into_transcript(tmp_path: Path) -> None:
     kinds = [event.kind for event in events]
     assert kinds == ["user", "thought", "tools", "answer"]
     assert "/secret" not in json.dumps([event.text for event in events])
+    assert events[2].tool_results[0]["content"] == "wrote 42 bytes"
+    assert events[2].tool_results[0]["status"] == "completed"
     assert events[-1].text == "done"

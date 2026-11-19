@@ -762,8 +762,11 @@ class SynapseACPAgent:
         except ACPContentError as exc:
             raise acp.RequestError.invalid_params({"prompt": str(exc)}) from exc
         text = render_resource_links(content)
-        if not text:
+        attachments = to_runtime_attachments(content)
+        if not text and not attachments:
             raise acp.RequestError.invalid_params({"prompt": "a text block is required"})
+        if not text:
+            text = "(see attached image)"
         stored = self.catalog.get(session_id)
         if stored is not None and stored.title is None:
             titled = self.catalog.touch(session_id, title=text)
@@ -804,7 +807,7 @@ class SynapseACPAgent:
 
         async def submit() -> Any:
             try:
-                return await managed.submit(text, to_runtime_attachments(content), on_event)
+                return await managed.submit(text, attachments, on_event)
             except RuntimeError as exc:
                 raise acp.RequestError.invalid_params({"sessionId": str(exc)}) from exc
 

@@ -6,7 +6,7 @@ plain data shapes and a Protocol; the daemon supplies the implementation.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -82,9 +82,21 @@ class ExternalSessions(Protocol):
         turn_id: str,
         text: str,
         publish: Callable[[Any], None],
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> ExternalSessionView: ...
 
     async def cancel(self, ref: SessionRef) -> bool: ...
+
+    async def steer(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        text: str,
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[str, int]: ...
 
     def broker(self, ref: SessionRef) -> Any | None:
         """Return a broker exposing ``subscribe_from``/``read_after``/``emit``."""
