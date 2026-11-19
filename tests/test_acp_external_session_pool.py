@@ -196,3 +196,83 @@ def test_pool_permissions(
             assert response.stop_reason == reason
 
     asyncio.run(run())
+
+
+def test_pool_evicts_idle_session_and_frees_capacity(tmp_path: Path) -> None:
+    config = {
+        "agents": [
+            {
+                "id": "test",
+                "name": "Test",
+                "command": sys.executable,
+                "args": ["-u", "-c", _AGENT],
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    pool = ExternalSessionPool(
+        ExternalAgentCatalog.from_state_dir(tmp_path),
+        capacity=1,
+        idle_timeout_s=0.15,
+    )
+
+    async def update(event: BaseModel) -> None:
+        pytest.fail(f"Unexpected update: {event}")
+
+    async def run() -> None:
+        async with pool.lifetime():
+            first = await pool.open(("project", "first"), "test", tmp_path, update)
+            assert first.usable
+            # Wait until idle eviction tears down the first subprocess.
+            for _ in range(50):
+                if pool.session(("project", "first")) is None:
+                    break
+                await asyncio.sleep(0.03)
+            assert pool.session(("project", "first")) is None
+            assert not first.usable
+            # Capacity slot is now free for another session.
+            second = await pool.open(("project", "second"), "test", tmp_path, update)
+            assert second.usable
+
+    asyncio.run(run())
+
+
+def test_pool_defers_eviction_while_session_is_busy(tmp_path: Path) -> None:
+    config = {
+        "agents": [
+            {
+                "id": "test",
+                "name": "Test",
+                "command": sys.executable,
+                "args": ["-u", "-c", _AGENT],
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    pool = ExternalSessionPool(
+        ExternalAgentCatalog.from_state_dir(tmp_path),
+        capacity=1,
+        idle_timeout_s=0.12,
+    )
+    busy = True
+    pool.set_busy_probe(lambda _key: busy)
+
+    async def update(event: BaseModel) -> None:
+        pytest.fail(f"Unexpected update: {event}")
+
+    async def run() -> None:
+        nonlocal busy
+        async with pool.lifetime():
+            session = await pool.open(("project", "first"), "test", tmp_path, update)
+            await asyncio.sleep(0.25)
+            assert pool.session(("project", "first")) is session
+            assert session.usable
+            busy = False
+            for _ in range(50):
+                if pool.session(("project", "first")) is None:
+                    break
+                await asyncio.sleep(0.03)
+            assert pool.session(("project", "first")) is None
+            assert not session.usable
+
+    asyncio.run(run())

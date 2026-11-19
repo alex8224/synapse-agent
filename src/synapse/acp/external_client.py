@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -87,6 +88,7 @@ class _Callbacks:
         self.delivery_error: str | None = None
         self.delivery_exc: BaseException | None = None
         self.invalidated = asyncio.Event()
+        self.last_activity_at: float = time.monotonic()
         self._permission = permission
         self._timeout = timeout
 
@@ -110,6 +112,7 @@ class _Callbacks:
             return
         try:
             self.deliveries.put_nowait((self.replay or live, update))
+            self.last_activity_at = time.monotonic()
         except asyncio.QueueFull:
             self.overflow = True
             self.invalidated.set()
@@ -168,6 +171,20 @@ class ExternalSession:
         self._prompt_deadlines: set[asyncio.Timeout] = set()
         self._cancel_requested = False
         self.concurrent_prompt_rejected = False
+        self._last_activity_at: float = time.monotonic()
+
+    @property
+    def last_activity_at(self) -> float:
+        """Monotonic timestamp of the latest RPC or incoming peer update."""
+        return max(self._last_activity_at, self._callbacks.last_activity_at)
+
+    def touch(self) -> None:
+        self._last_activity_at = time.monotonic()
+
+    @property
+    def is_busy(self) -> bool:
+        """True while any prompt or config RPC is currently in flight."""
+        return bool(self._prompt_deadlines) or self._operation.locked()
 
     @property
     def supports_images(self) -> bool:
@@ -180,6 +197,7 @@ class ExternalSession:
         self, text: str, attachments: Sequence[Any] = ()
     ) -> PromptResponse:
         self._ensure_open()
+        self.touch()
         if not self._prompt_deadlines:
             self._cancel_requested = False
         blocks = prompt_blocks_to_acp(text, attachments)
@@ -207,6 +225,7 @@ class ExternalSession:
             self.invalidate()
             raise
         finally:
+            self.touch()
             if deadline is not None:
                 self._prompt_deadlines.discard(deadline)
 
@@ -244,6 +263,7 @@ class ExternalSession:
     async def set_config(self, config_id: str, value: str | bool) -> SetSessionConfigOptionResponse:
         async with self._operation:
             self._ensure_open()
+            self.touch()
             try:
                 async with asyncio.timeout(self._timeouts.config):
                     result = await self._connection.set_config_option(

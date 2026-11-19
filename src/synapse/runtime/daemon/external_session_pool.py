@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -18,6 +20,9 @@ from synapse.acp.external_client import (
 )
 from synapse.integrations.mcp_client import McpServerConfig
 from synapse.runtime.service.external_agents import ExternalAgentCatalog, LocalExternalAgent
+
+_LOGGER = logging.getLogger(__name__)
+DEFAULT_IDLE_TIMEOUT_S = 1800.0
 
 
 def _timeouts_for(agent: LocalExternalAgent) -> ExternalTimeouts:
@@ -39,16 +44,31 @@ class _Entry:
     ready: asyncio.Future[ExternalSession]
     stop: asyncio.Event
     worker: asyncio.Task[None]
+    last_activity: float
 
 
 class ExternalSessionPool:
     """Keep the context and subprocess alive independently of Web connections."""
 
-    def __init__(self, catalog: ExternalAgentCatalog, *, capacity: int = 16) -> None:
+    def __init__(
+        self,
+        catalog: ExternalAgentCatalog,
+        *,
+        capacity: int = 16,
+        idle_timeout_s: float | None = DEFAULT_IDLE_TIMEOUT_S,
+    ) -> None:
+        if idle_timeout_s is not None and idle_timeout_s <= 0:
+            raise ValueError("idle_timeout_s must be positive or None")
         self.catalog = catalog
         self._capacity = capacity
+        self._idle_timeout_s = idle_timeout_s
         self._entries: dict[tuple[str, str], _Entry] = {}
+        self._is_busy: Callable[[tuple[str, str]], bool] | None = None
         self._closed = False
+
+    def set_busy_probe(self, probe: Callable[[tuple[str, str]], bool] | None) -> None:
+        """Register an optional callback reporting whether *key* has an active logical turn."""
+        self._is_busy = probe
 
     async def open(
         self,
@@ -85,9 +105,12 @@ class ExternalSessionPool:
                     _timeouts_for(agent),
                 )
             )
-            entry = self._entries[key] = _Entry(agent_id, cwd, ready, stop, worker)
+            entry = self._entries[key] = _Entry(
+                agent_id, cwd, ready, stop, worker, time.monotonic()
+            )
         elif entry.agent_id != agent_id or entry.cwd != cwd:
             raise RuntimeError("ACP session launch binding does not match the live session")
+        entry.last_activity = time.monotonic()
         session = await asyncio.shield(entry.ready)
         if existing_session_id is not None and session.created.session_id != existing_session_id:
             raise RuntimeError("ACP remote session binding does not match the live session")
@@ -99,6 +122,8 @@ class ExternalSessionPool:
             raise RuntimeError("ACP session is no longer usable")
         if entry.stop.is_set():
             raise RuntimeError("ACP session is no longer usable")
+        session.touch()
+        entry.last_activity = time.monotonic()
         return session
 
     @staticmethod
@@ -138,9 +163,21 @@ class ExternalSessionPool:
                 stopped = asyncio.create_task(stop.wait())
                 exited = asyncio.create_task(s.wait_exited())
                 invalidated = asyncio.create_task(s.wait_invalidated())
-                watchers = (stopped, exited, invalidated)
+                watchers: list[asyncio.Task[object]] = [stopped, exited, invalidated]
+                idle_watcher: asyncio.Task[object] | None = None
+                if self._idle_timeout_s is not None:
+                    idle_watcher = asyncio.create_task(self._watch_idle(key, s))
+                    watchers.append(idle_watcher)
                 try:
-                    await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+                    done, _pending = await asyncio.wait(
+                        watchers, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if idle_watcher is not None and idle_watcher in done:
+                        _LOGGER.info(
+                            "Evicted idle external ACP session %s after %.1fs",
+                            key,
+                            self._idle_timeout_s,
+                        )
                 finally:
                     for watcher in watchers:
                         watcher.cancel()
@@ -157,6 +194,27 @@ class ExternalSessionPool:
                 raise
         finally:
             self._entries.pop(key, None)
+
+    async def _watch_idle(self, key: tuple[str, str], session: ExternalSession) -> None:
+        timeout = self._idle_timeout_s
+        if timeout is None:
+            return
+        while True:
+            entry = self._entries.get(key)
+            last = session.last_activity_at
+            if entry is not None:
+                last = max(last, entry.last_activity)
+            remaining = (last + timeout) - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            if session.is_busy or (self._is_busy is not None and self._is_busy(key)):
+                session.touch()
+                if entry is not None:
+                    entry.last_activity = time.monotonic()
+                await asyncio.sleep(timeout)
+                continue
+            return
 
     async def close(self, key: tuple[str, str]) -> None:
         entry = self._entries.get(key)

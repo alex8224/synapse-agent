@@ -45,6 +45,13 @@ class ExternalRuntime:
     #: One bridge per session: it owns the active turn's event projection.
     bridges: dict[tuple[str, str], ExternalTurnBridge] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.pool.set_busy_probe(self._is_bridge_busy)
+
+    def _is_bridge_busy(self, key: tuple[str, str]) -> bool:
+        bridge = self.bridges.get(key)
+        return bridge is not None and bridge.active_turn_id is not None
+
     async def create(
         self,
         metadata: SessionMetadataService,
