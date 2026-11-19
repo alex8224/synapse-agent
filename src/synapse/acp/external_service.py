@@ -125,6 +125,21 @@ class DaemonExternalSessions:
         agent = catalog.get(agent_id)
         mode = "manual" if agent is None else agent.info.permission_mode
         options = tuple(_option(option) for option in session.created.config_options or ())
+        if not options and session.created.modes is not None:
+            modes_state = session.created.modes
+            values = tuple(
+                ExternalConfigValue(m.id, m.name) for m in (modes_state.available_modes or ())
+            )
+            if values:
+                options = (
+                    ExternalConfigOption(
+                        id="mode",
+                        name="Mode",
+                        category="mode",
+                        current_value=modes_state.current_mode_id,
+                        values=values,
+                    ),
+                )
         return ExternalSessionView(
             agent_id=agent_id,
             remote_session_id=session.created.session_id,
@@ -173,6 +188,13 @@ class DaemonExternalSessions:
             on_update=self._ensure_broker(ref).emit,
             on_replay=_replay_sink(),
         )
+        if (
+            not session.created.config_options
+            and config_id == "mode"
+            and session.created.modes is not None
+        ):
+            await session.set_mode(str(value))
+            return self._view(session, binding[0])
         result = await session.set_config(config_id, value)
         options = tuple(_option(option) for option in result.config_options or ())
         view = self._view(session, binding[0])
@@ -240,6 +262,8 @@ class DaemonExternalSessions:
             "completed": TurnEventKind.TURN_COMPLETED,
             "cancelled": TurnEventKind.TURN_CANCELLED,
         }.get(status, TurnEventKind.TURN_FAILED)
+        bridge = self._runtime.bridges.get((ref.project_id, ref.thread_id))
+        in_tok, out_tok, cache_tok = (0, 0, 0) if bridge is None else bridge.last_turn_usage
         broker.emit(
             TurnEvent(
                 EVENT_VERSION,
@@ -247,8 +271,29 @@ class DaemonExternalSessions:
                 turn_id,
                 broker.latest_sequence + 1,
                 kind,
-                TurnTerminalPayload(status=status),
+                TurnTerminalPayload(
+                    status=status,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_tokens=cache_tok,
+                ),
             )
+        )
+
+    def pending_approval(
+        self, ref: SessionRef, expected_turn_id: str | None = None
+    ) -> tuple[str, tuple[tuple[str, dict[str, Any]], ...]]:
+        return self._runtime.pending_approval(ref, expected_turn_id)
+
+    async def resume_approval(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        decisions: Sequence[Mapping[str, Any]],
+    ) -> str:
+        return await self._runtime.resume_approval(
+            ref, expected_turn_id=expected_turn_id, decisions=decisions
         )
 
     async def steer(

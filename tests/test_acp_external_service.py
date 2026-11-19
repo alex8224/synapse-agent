@@ -956,6 +956,288 @@ for line in sys.stdin:
     asyncio.run(run())
 
 
+def test_external_acp_interactive_approval_roundtrip(tmp_path: Path) -> None:
+    """Manual-mode permission requests bridge through APPROVAL_REQUIRED and resume_turn."""
+    from synapse.runtime.service.commands import (
+        ApprovalDecision,
+        ResumeTurnCommand,
+        SubmitTurnCommand,
+    )
+    from synapse.runtime.service.local import LocalAgentRuntimeService
+    from synapse.runtime.service.queries import PendingApprovalQuery
+    from synapse.runtime.sessions.manager import RuntimeManager
+
+    agent_script = '''
+import json, sys
+
+pending_prompt_id = None
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        resp = {"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}}
+        print(json.dumps(resp), flush=True)
+    elif method == "session/new":
+        resp = {"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "peer-perm"}}
+        print(json.dumps(resp), flush=True)
+    elif method == "session/prompt":
+        pending_prompt_id = msg["id"]
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "peer-perm",
+                "toolCall": {"toolCallId": "tc-1", "title": "Run shell", "kind": "execute"},
+                "options": [
+                    {"optionId": "once", "name": "Allow once", "kind": "allow_once"},
+                    {"optionId": "deny", "name": "Reject", "kind": "reject_once"},
+                ],
+            },
+        }), flush=True)
+    elif msg.get("id") == 99:
+        outcome = msg["result"]["outcome"]
+        approved = outcome.get("optionId") == "once"
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "peer-perm",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "approved-ok" if approved else "denied"},
+                },
+            },
+        }), flush=True)
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": pending_prompt_id,
+            "result": {
+                "stopReason": "end_turn",
+                "usage": {
+                    "totalTokens": 165,
+                    "inputTokens": 120,
+                    "outputTokens": 45,
+                    "cachedReadTokens": 30,
+                },
+            },
+        }), flush=True)
+'''
+    settings = SimpleNamespace(
+        sessions_path=tmp_path / "sessions.sqlite",
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+        workspace=tmp_path,
+    )
+    config = {
+        "agents": [
+            {
+                "id": "perm-mock",
+                "name": "Perm Mock",
+                "command": sys.executable,
+                "args": ["-u", "-c", agent_script],
+                "permission_mode": "manual",
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    pool = ExternalSessionPool(catalog)
+    external_service = DaemonExternalSessions(ExternalRuntime(pool))
+    ref = SessionRef(project_id="project", thread_id="external-perm")
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        project_id=ref.project_id,
+    )
+    local_service = LocalAgentRuntimeService(
+        lambda project: manager if project == ref.project_id else None,
+        external_sessions=external_service,
+    )
+
+    async def run() -> None:
+        try:
+            await local_service.create_session(
+                CreateSessionCommand(
+                    project_id=ref.project_id,
+                    thread_id=ref.thread_id,
+                    external_agent_id="perm-mock",
+                )
+            )
+            receipt = await local_service.submit_turn(SubmitTurnCommand(ref, "run it"))
+            broker = external_service.broker(ref)
+            assert broker is not None
+
+            for _ in range(100):
+                kinds = [env.event.kind.value for env in broker.read_after(0).events]
+                if "approval_required" in kinds:
+                    break
+                await asyncio.sleep(0.02)
+            assert "approval_required" in kinds
+
+            pending = await local_service.pending_approval(
+                PendingApprovalQuery(ref, expected_turn_id=receipt.turn_id)
+            )
+            assert pending.turn_id == receipt.turn_id
+            assert pending.actions[0].name == "Run shell"
+
+            resumed = await local_service.resume_turn(
+                ResumeTurnCommand(
+                    ref,
+                    expected_turn_id=receipt.turn_id,
+                    decisions=(ApprovalDecision("allow_once"),),
+                )
+            )
+            assert resumed.turn_id == receipt.turn_id
+
+            if local_service._external_turns:
+                await asyncio.gather(*list(local_service._external_turns))
+
+            events = [env.event for env in broker.read_after(0).events]
+            answer = "".join(e.payload.text for e in events if e.kind.value == "answer_delta")
+            assert answer == "approved-ok"
+            usage_events = [e for e in events if e.kind.value == "usage_updated"]
+            assert len(usage_events) == 1
+            assert usage_events[0].payload.turn_input == 120
+            assert usage_events[0].payload.turn_output == 45
+            assert usage_events[0].payload.turn_cache == 30
+            terminal = [e for e in events if e.kind.value == "turn_completed"][-1]
+            assert terminal.payload.input_tokens == 120
+            assert terminal.payload.output_tokens == 45
+            assert terminal.payload.cache_tokens == 30
+        finally:
+            await external_service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_external_acp_close_fork_legacy_modes_and_stderr_redaction(tmp_path: Path) -> None:
+    """Covers close_session, fork guard, legacy modes, available_commands, and stderr redaction."""
+    import pytest
+
+    from synapse.runtime.service.commands import CloseSessionCommand
+    from synapse.runtime.service.errors import InvalidRequestError
+    from synapse.runtime.service.local import LocalAgentRuntimeService
+    from synapse.runtime.service.session_management import ForkSessionCommand
+    from synapse.runtime.sessions.manager import RuntimeManager
+
+    agent_script = '''
+import json, sys
+
+print("auth Bearer supersecrettoken12345 api_key=mysecretkey99", file=sys.stderr, flush=True)
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        resp = {"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}}
+        print(json.dumps(resp), flush=True)
+    elif method == "session/new":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "result": {
+                "sessionId": "peer-modes",
+                "modes": {
+                    "currentModeId": "code",
+                    "availableModes": [
+                        {"id": "code", "name": "Code"},
+                        {"id": "architect", "name": "Architect"},
+                    ],
+                },
+            },
+        }), flush=True)
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "peer-modes",
+                "update": {
+                    "sessionUpdate": "available_commands_update",
+                    "availableCommands": [{"name": "review", "description": "Review diff"}],
+                },
+            },
+        }), flush=True)
+    elif method == "session/set_mode":
+        assert msg["params"]["modeId"] == "architect"
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+'''
+    settings = SimpleNamespace(
+        sessions_path=tmp_path / "sessions.sqlite",
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+        workspace=tmp_path,
+    )
+    config = {
+        "agents": [
+            {
+                "id": "modes-mock",
+                "name": "Modes Mock",
+                "command": sys.executable,
+                "args": ["-u", "-c", agent_script],
+                "permission_mode": "manual",
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    pool = ExternalSessionPool(catalog)
+    runtime = ExternalRuntime(pool)
+    external_service = DaemonExternalSessions(runtime)
+    ref = SessionRef(project_id="project", thread_id="external-modes")
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        project_id=ref.project_id,
+    )
+    local_service = LocalAgentRuntimeService(
+        lambda project: manager if project == ref.project_id else None,
+        external_sessions=external_service,
+    )
+
+    async def run() -> None:
+        try:
+            await local_service.create_session(
+                CreateSessionCommand(
+                    project_id=ref.project_id,
+                    thread_id=ref.thread_id,
+                    external_agent_id="modes-mock",
+                )
+            )
+            view = await external_service.initialize(ref, settings, tmp_path)
+            assert len(view.options) == 1
+            assert view.options[0].id == "mode"
+            assert view.options[0].current_value == "code"
+
+            updated = await external_service.set_config(
+                ref, settings, tmp_path, "mode", "architect"
+            )
+            assert updated.options[0].current_value == "architect"
+
+            live_session = pool.session((ref.project_id, ref.thread_id))
+            assert live_session is not None
+            for _ in range(50):
+                if live_session.stderr_tail and live_session.available_commands:
+                    break
+                await asyncio.sleep(0.02)
+            assert any("[REDACTED]" in line for line in live_session.stderr_tail)
+            assert all("supersecrettoken12345" not in line for line in live_session.stderr_tail)
+            assert all("mysecretkey99" not in line for line in live_session.stderr_tail)
+            assert [c.name for c in live_session.available_commands] == ["review"]
+
+            # Forking an external ACP session is explicitly rejected.
+            with pytest.raises(InvalidRequestError, match="External ACP"):
+                await local_service.fork_session(ForkSessionCommand(source=ref))
+
+            # Closing an external ACP session terminates its live subprocess.
+            closed = await local_service.close_session(CloseSessionCommand(ref))
+            assert closed.closed is True
+            assert pool.session((ref.project_id, ref.thread_id)) is None
+        finally:
+            await external_service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_open_session_rejects_external_with_wire_service_code_and_reconciles(
     tmp_path: Path,
 ) -> None:

@@ -1099,6 +1099,14 @@ class LocalAgentRuntimeService:
             }
             for decision in command.decisions
         ]
+        external = await self._external_for(command.session)
+        if external is not None:
+            turn_id = await external[0].resume_approval(
+                command.session,
+                expected_turn_id=command.expected_turn_id,
+                decisions=decisions,
+            )
+            return ResumeTurnResult(command.command_id, command.session, turn_id)
         try:
             handle = await manager.resume_ref(
                 command.session, command.expected_turn_id, decisions
@@ -1243,6 +1251,27 @@ class LocalAgentRuntimeService:
         self._validate_cancel_active(command.cancel_active)
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
+        external = await self._external_for(command.session)
+        if external is not None:
+            provider = external[0]
+            active_turn_id = self._external_active_turn_id(command.session)
+            cancellation_requested = False
+            if active_turn_id is not None:
+                if not command.cancel_active:
+                    raise ConflictError(
+                        "External ACP session has an active turn; pass cancel_active=True to close"
+                    )
+                cancellation_requested = await provider.cancel(command.session)
+            closed_res = provider.close(command.session)
+            if inspect.isawaitable(closed_res):
+                await closed_res
+            return CloseSessionResult(
+                command_id=command.command_id,
+                session=command.session,
+                closed=True,
+                active_turn_id=active_turn_id,
+                cancellation_requested=cancellation_requested,
+            )
         try:
             closed, active_turn_id, cancellation_requested = (
                 await manager.close_session_ref(
@@ -1524,6 +1553,17 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.session)
         manager = self._resolve_manager(query.session)
         self._check_project(manager, query.session)
+        external = await self._external_for(query.session)
+        if external is not None:
+            turn_id, actions = external[0].pending_approval(
+                query.session, query.expected_turn_id
+            )
+            return PendingApprovalView(
+                turn_id=turn_id,
+                actions=tuple(
+                    ApprovalActionView(i, name, args) for i, (name, args) in enumerate(actions)
+                ),
+            )
         session = self._resolve_session(manager, query.session)
         try:
             turn_id, actions = session.pending_approval(query.expected_turn_id)
@@ -1663,6 +1703,12 @@ class LocalAgentRuntimeService:
 
     async def fork_session(self, command: ForkSessionCommand) -> ForkSessionResult:
         """Fork one open session into a fresh one; delegate to the metadata service."""
+        if isinstance(command, ForkSessionCommand):
+            external = await self._external_for(command.source)
+            if external is not None:
+                raise InvalidRequestError(
+                    "External ACP sessions cannot be forked directly; create a new session instead"
+                )
         return await self._session_metadata.fork(command)
 
     async def delete_session(self, command: DeleteSessionCommand) -> DeleteSessionResult:

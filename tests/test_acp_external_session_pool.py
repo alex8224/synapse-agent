@@ -276,3 +276,38 @@ def test_pool_defers_eviction_while_session_is_busy(tmp_path: Path) -> None:
             assert not session.usable
 
     asyncio.run(run())
+
+
+def test_pool_evicts_lru_idle_session_when_full(tmp_path: Path) -> None:
+    config = {
+        "agents": [
+            {
+                "id": "test",
+                "name": "Test",
+                "command": sys.executable,
+                "args": ["-u", "-c", _AGENT],
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    pool = ExternalSessionPool(
+        ExternalAgentCatalog.from_state_dir(tmp_path),
+        capacity=1,
+        idle_timeout_s=60.0,
+        evict_lru_on_full=True,
+    )
+
+    async def update(event: BaseModel) -> None:
+        pytest.fail(f"Unexpected update: {event}")
+
+    async def run() -> None:
+        async with pool.lifetime():
+            first = await pool.open(("project", "first"), "test", tmp_path, update)
+            assert first.usable
+            # Opening a second session evicts the idle first session automatically.
+            second = await pool.open(("project", "second"), "test", tmp_path, update)
+            assert second.usable
+            assert pool.session(("project", "first")) is None
+            assert not first.usable
+
+    asyncio.run(run())

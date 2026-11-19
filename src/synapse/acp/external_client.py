@@ -6,7 +6,9 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -18,8 +20,11 @@ from acp.client.connection import ClientSideConnection
 from acp.connection import StreamDirection, StreamEvent
 from acp.schema import (
     AllowedOutcome,
+    AvailableCommand,
+    AvailableCommandsUpdate,
     ClientCapabilities,
     ConfigOptionUpdate,
+    CurrentModeUpdate,
     DeniedOutcome,
     EnvVariable,
     HttpHeader,
@@ -49,6 +54,44 @@ _LOGGER = logging.getLogger(__name__)
 UpdateSink = Callable[[BaseModel], Awaitable[None]]
 PermissionSink = Callable[[ToolCallUpdate, list[PermissionOption]], Awaitable[str | None]]
 _PROXY_KEYS = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"})
+_STDERR_MAX_LINES = 40
+_STDERR_MAX_LINE_CHARS = 512
+_REDACT_PATTERNS = (
+    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1[REDACTED]"),
+    (
+        re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)([^\s,;\"']+)"),
+        r"\1[REDACTED]",
+    ),
+    (re.compile(r"(https?://)([^:@\s/]+:[^@\s/]+)@"), r"\1[REDACTED]@"),
+    (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,})\b"), "[REDACTED]"),
+)
+
+
+def _redact_stderr_line(raw: str) -> str:
+    line = raw.strip()
+    if len(line) > _STDERR_MAX_LINE_CHARS:
+        line = line[: _STDERR_MAX_LINE_CHARS - 3] + "..."
+    for pattern, repl in _REDACT_PATTERNS:
+        line = pattern.sub(repl, line)
+    return line
+
+
+async def _drain_stderr(
+    stream: asyncio.StreamReader | None, buffer: deque[str]
+) -> None:
+    """Continuously drain subprocess stderr into a bounded, redacted ring buffer."""
+    if stream is None:
+        return
+    try:
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                return
+            text = _redact_stderr_line(raw.decode("utf-8", errors="replace"))
+            if text:
+                buffer.append(text)
+    except (asyncio.CancelledError, OSError):
+        return
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +125,7 @@ class _Callbacks:
         self.session_id: str | None = None
         self.created: NewSessionResponse | None = None
         self.replay: UpdateSink | None = None
+        self.available_commands: tuple[AvailableCommand, ...] = ()
         self.deliveries: asyncio.Queue[tuple[UpdateSink, BaseModel]] = asyncio.Queue(1024)
         self.overflow = False
         self.delivery_failed = False
@@ -102,9 +146,19 @@ class _Callbacks:
         if event.direction != StreamDirection.INCOMING or msg.get("method") != "session/update":
             return
         params = msg.get("params")
-        if self.session_id is None or not isinstance(params, dict):
+        if not isinstance(params, dict) or self.overflow:
             return
-        if params.get("sessionId") != self.session_id or self.overflow:
+        if self.session_id is None:
+            # Some peers emit available_commands_update immediately after session/new
+            # before the client has observed the new_session response.
+            try:
+                early_update = SessionNotification.model_validate(params).update
+            except ValueError:
+                return
+            if isinstance(early_update, AvailableCommandsUpdate):
+                self.available_commands = tuple(early_update.available_commands[:100])
+            return
+        if params.get("sessionId") != self.session_id:
             return
         try:
             update = SessionNotification.model_validate(params).update
@@ -159,6 +213,7 @@ class ExternalSession:
         created: NewSessionResponse,
         timeouts: ExternalTimeouts,
         callbacks: _Callbacks,
+        stderr_buffer: deque[str] | None = None,
     ) -> None:
         self.handshake = handshake
         self.created = created
@@ -166,12 +221,30 @@ class ExternalSession:
         self._process = process
         self._timeouts = timeouts
         self._callbacks = callbacks
+        self._stderr_buffer: deque[str] = (
+            stderr_buffer if stderr_buffer is not None else deque(maxlen=_STDERR_MAX_LINES)
+        )
         self._operation = asyncio.Lock()
         self._closed = False
         self._prompt_deadlines: set[asyncio.Timeout] = set()
         self._cancel_requested = False
         self.concurrent_prompt_rejected = False
         self._last_activity_at: float = time.monotonic()
+
+    @property
+    def stderr_tail(self) -> tuple[str, ...]:
+        """Bounded, credential-redacted tail of subprocess stderr lines."""
+        return tuple(self._stderr_buffer)
+
+    @property
+    def available_commands(self) -> tuple[AvailableCommand, ...]:
+        """Latest slash commands advertised by the peer via ``available_commands_update``."""
+        return self._callbacks.available_commands
+
+    @property
+    def supports_load_session(self) -> bool:
+        caps = self.handshake.agent_capabilities
+        return bool(caps and caps.load_session)
 
     @property
     def last_activity_at(self) -> float:
@@ -280,6 +353,26 @@ class ExternalSession:
                 self.invalidate()
                 raise
 
+    async def set_mode(self, mode_id: str) -> None:
+        """Legacy ``session/set_mode`` fallback for peers exposing ``modes``."""
+        async with self._operation:
+            self._ensure_open()
+            self.touch()
+            try:
+                async with asyncio.timeout(self._timeouts.config):
+                    await self._connection.set_session_mode(
+                        mode_id=mode_id, session_id=self.created.session_id
+                    )
+                    await self._callbacks.flush_updates()
+                    if self.created.modes is not None:
+                        self.created.modes.current_mode_id = mode_id
+            except TimeoutError as exc:
+                self.invalidate()
+                raise ExternalAgentTimeout("ACP session/set_mode timed out") from exc
+            except asyncio.CancelledError:
+                self.invalidate()
+                raise
+
     def invalidate(self) -> None:
         """Mark this session unsafe to reuse and wake its resource owner."""
         self._closed = True
@@ -314,6 +407,11 @@ async def _deliver_updates(callbacks: _Callbacks) -> None:
             if not callbacks.delivery_failed:
                 if isinstance(update, ConfigOptionUpdate) and callbacks.created is not None:
                     callbacks.created.config_options = update.config_options
+                elif isinstance(update, CurrentModeUpdate) and callbacks.created is not None:
+                    if callbacks.created.modes is not None:
+                        callbacks.created.modes.current_mode_id = update.current_mode_id
+                elif isinstance(update, AvailableCommandsUpdate):
+                    callbacks.available_commands = tuple(update.available_commands[:100])
                 await sink(update)
         except Exception as exc:  # noqa: BLE001 - invalidate, never leak event data
             callbacks.delivery_failed = True
@@ -487,17 +585,19 @@ async def open_external_session(
         if upper in _PROXY_KEYS:
             env[upper] = value
     callbacks = _Callbacks(on_permission, timeouts.permission)
-    # Drain by discarding at OS level until a redacted diagnostics sink is added.
-    # Raw stderr can contain credentials and must not block the protocol pipe.
+    stderr_buffer: deque[str] = deque(maxlen=_STDERR_MAX_LINES)
+    # Drain stderr continuously into a bounded, credential-redacted ring buffer so
+    # the pipe never blocks while still preserving diagnostics on launch/exit failure.
     async with acp.spawn_agent_process(
         callbacks, spec.command, *spec.args, env=env, cwd=cwd,
         transport_kwargs={
-            "stderr": asyncio.subprocess.DEVNULL,
+            "stderr": asyncio.subprocess.PIPE,
             "limit": 50 * 1024 * 1024,
         },
         observers=[lambda event: callbacks.observe(event, on_update)],
     ) as (connection, process):
         delivery = asyncio.create_task(_deliver_updates(callbacks))
+        stderr_task = asyncio.create_task(_drain_stderr(process.stderr, stderr_buffer))
         stage = "initialize"
         try:
             async with asyncio.timeout(timeouts.handshake):
@@ -538,17 +638,33 @@ async def open_external_session(
                 )
         except BaseException as exc:
             delivery.cancel()
-            await asyncio.gather(delivery, return_exceptions=True)
+            stderr_task.cancel()
+            await asyncio.gather(delivery, stderr_task, return_exceptions=True)
+            if stderr_buffer:
+                _LOGGER.warning(
+                    "External ACP %s failed; redacted stderr tail: %s",
+                    stage,
+                    " | ".join(list(stderr_buffer)[-5:]),
+                )
             if isinstance(exc, TimeoutError):
                 raise ExternalAgentTimeout(f"ACP {stage} timed out") from exc
             raise
         callbacks.session_id = created.session_id
         callbacks.created = created
-        session = ExternalSession(connection, process, handshake, created, timeouts, callbacks)
+        session = ExternalSession(
+            connection,
+            process,
+            handshake,
+            created,
+            timeouts,
+            callbacks,
+            stderr_buffer=stderr_buffer,
+        )
         try:
             yield session
         finally:
             session.invalidate()
             callbacks.session_id = None
             delivery.cancel()
-            await asyncio.gather(delivery, return_exceptions=True)
+            stderr_task.cancel()
+            await asyncio.gather(delivery, stderr_task, return_exceptions=True)

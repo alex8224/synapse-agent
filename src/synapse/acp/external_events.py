@@ -12,6 +12,8 @@ from acp.schema import (
     FileEditToolCallContent,
     TerminalToolCallContent,
     ToolCallProgress,
+    Usage,
+    UsageUpdate,
 )
 from acp.schema import ToolCallStart as AcpToolCallStart
 from pydantic import BaseModel
@@ -25,6 +27,7 @@ from synapse.runtime.service.event_types import (
     ToolItemPayload,
     TurnEvent,
     TurnEventKind,
+    UsagePayload,
 )
 from synapse.runtime.timeline import _basename, tool_category
 
@@ -142,6 +145,10 @@ class ExternalTurnEvents:
         self._paths: dict[str, str | None] = {}
         self._previews: dict[str, str] = {}
         self._finished: set[str] = set()
+        self.input_tokens: int = 0
+        self.output_tokens: int = 0
+        self.cache_tokens: int = 0
+        self.context_size: int | None = None
 
     def project(self, update: BaseModel) -> tuple[TurnEvent, ...]:
         if isinstance(update, (AgentMessageChunk, AgentThoughtChunk)):
@@ -159,9 +166,51 @@ class ExternalTurnEvents:
                 for entry in update.entries[:100]
             )
             return (self._event(TurnEventKind.PLAN_UPDATED, PlanPayload(self.turn_id, entries)),)
+        if isinstance(update, UsageUpdate):
+            used = max(0, int(update.used))
+            size = max(0, int(update.size)) or None
+            if used > self.input_tokens:
+                self.input_tokens = used
+            if size is not None:
+                self.context_size = size
+            payload = UsagePayload(
+                turn_input=self.input_tokens,
+                turn_output=self.output_tokens,
+                turn_cache=self.cache_tokens,
+                last_input=used,
+                last_output=self.output_tokens,
+                last_cache=self.cache_tokens,
+                context_size=self.context_size,
+            )
+            return (self._event(TurnEventKind.USAGE_UPDATED, payload),)
         if isinstance(update, (AcpToolCallStart, ToolCallProgress)):
             return self._tool(update)
         return ()
+
+    def project_prompt_usage(self, usage: Usage | None) -> TurnEvent | None:
+        """Project final token counts from ``PromptResponse.usage`` into ``USAGE_UPDATED``."""
+        if usage is None:
+            return None
+        inp = max(0, int(usage.input_tokens or 0))
+        out = max(0, int(usage.output_tokens or 0))
+        cache = max(0, int(usage.cached_read_tokens or 0)) + max(
+            0, int(usage.cached_write_tokens or 0)
+        )
+        if inp == 0 and out == 0 and cache == 0:
+            return None
+        self.input_tokens += inp
+        self.output_tokens += out
+        self.cache_tokens += cache
+        payload = UsagePayload(
+            turn_input=self.input_tokens,
+            turn_output=self.output_tokens,
+            turn_cache=self.cache_tokens,
+            last_input=inp,
+            last_output=out,
+            last_cache=cache,
+            context_size=self.context_size,
+        )
+        return self._event(TurnEventKind.USAGE_UPDATED, payload)
 
     def _tool(self, update: AcpToolCallStart | ToolCallProgress) -> tuple[TurnEvent, ...]:
         peer_id = update.tool_call_id

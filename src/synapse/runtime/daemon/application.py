@@ -665,10 +665,11 @@ class RuntimeDaemon:
                 # Optional local feature; never expose command or proxy data in diagnostics.
                 _LOGGER.warning("External ACP configuration is unavailable; integration disabled")
             else:
-                if external_agents.list():
-                    self.external_sessions = ExternalSessionPool(external_agents)
-                    self.external_runtime = ExternalRuntime(self.external_sessions)
-                    self.external_service = DaemonExternalSessions(self.external_runtime)
+                self.external_sessions = ExternalSessionPool(
+                    external_agents, evict_lru_on_full=True
+                )
+                self.external_runtime = ExternalRuntime(self.external_sessions)
+                self.external_service = DaemonExternalSessions(self.external_runtime)
             await self._start_collaboration()
             self.server = self._server_factory(
                 authenticator,

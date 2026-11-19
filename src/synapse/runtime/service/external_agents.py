@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
+
+_LOGGER = logging.getLogger(__name__)
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _AGENT_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z")
@@ -97,19 +100,29 @@ def _parse_agent(row: Any) -> LocalExternalAgent:
 
 
 class ExternalAgentCatalog:
-    def __init__(self, agents: tuple[LocalExternalAgent, ...] = ()) -> None:
+    def __init__(
+        self,
+        agents: tuple[LocalExternalAgent, ...] = (),
+        *,
+        config_path: Path | None = None,
+        stat_key: tuple[int, int] | None = None,
+    ) -> None:
         self._agents = {agent.info.id: agent for agent in agents}
         if len(self._agents) != len(agents):
             raise ValueError("Duplicate external ACP agent id")
+        self._config_path = config_path
+        self._stat_key = stat_key
 
-    @classmethod
-    def from_state_dir(cls, state_dir: Path) -> ExternalAgentCatalog:
-        """Read once at startup from the daemon's trusted state directory."""
+    @staticmethod
+    def _load_file(
+        config_path: Path,
+    ) -> tuple[tuple[LocalExternalAgent, ...], tuple[int, int] | None]:
         try:
-            with (state_dir / "external-acp-agents.json").open("rb") as stream:
+            st = config_path.stat()
+            with config_path.open("rb") as stream:
                 raw = stream.read(_MAX_CONFIG_BYTES + 1)
         except FileNotFoundError:
-            return cls()
+            return (), None
         if len(raw) > _MAX_CONFIG_BYTES:
             raise ValueError("External ACP configuration exceeds the size limit")
         try:
@@ -121,10 +134,48 @@ class ExternalAgentCatalog:
         rows = data["agents"]
         if not isinstance(rows, list) or len(rows) > 32:
             raise ValueError("External ACP configuration must contain at most 32 agents")
-        return cls(tuple(_parse_agent(row) for row in rows))
+        parsed = tuple(_parse_agent(row) for row in rows)
+        if len({agent.info.id for agent in parsed}) != len(parsed):
+            raise ValueError("Duplicate external ACP agent id")
+        return parsed, (st.st_mtime_ns, st.st_size)
+
+    @classmethod
+    def from_state_dir(cls, state_dir: Path) -> ExternalAgentCatalog:
+        """Read from the daemon's trusted state directory and hot-reload on file change."""
+        config_path = state_dir / "external-acp-agents.json"
+        agents, stat_key = cls._load_file(config_path)
+        return cls(agents, config_path=config_path, stat_key=stat_key)
+
+    def _maybe_reload(self) -> None:
+        if self._config_path is None:
+            return
+        try:
+            st = self._config_path.stat()
+            current_key: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            if self._stat_key is not None:
+                self._agents = {}
+                self._stat_key = None
+            return
+        except OSError:
+            return
+        if current_key == self._stat_key:
+            return
+        try:
+            agents, stat_key = self._load_file(self._config_path)
+        except (OSError, ValueError):
+            # Degradation boundary: keep last known good catalog while user edits file.
+            _LOGGER.warning(
+                "Failed to hot-reload external ACP configuration; keeping previous catalog"
+            )
+            return
+        self._agents = {agent.info.id: agent for agent in agents}
+        self._stat_key = stat_key
 
     def list(self) -> tuple[ExternalAgentInfo, ...]:
+        self._maybe_reload()
         return tuple(agent.info for agent in self._agents.values())
 
     def get(self, agent_id: str) -> LocalExternalAgent | None:
+        self._maybe_reload()
         return self._agents.get(agent_id)

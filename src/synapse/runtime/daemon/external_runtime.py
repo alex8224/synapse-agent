@@ -110,6 +110,26 @@ class ExternalRuntime:
             attachment_refs=attachment_refs,
         )
 
+    def pending_approval(
+        self, ref: SessionRef, expected_turn_id: str | None = None
+    ) -> tuple[str, tuple[tuple[str, dict[str, Any]], ...]]:
+        bridge = self.bridges.get((ref.project_id, ref.thread_id))
+        if bridge is None:
+            raise NoActiveTurnError("External ACP session has no pending approval")
+        return bridge.pending_approval(expected_turn_id)
+
+    async def resume_approval(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        decisions: Sequence[Mapping[str, Any]],
+    ) -> str:
+        bridge = self.bridges.get((ref.project_id, ref.thread_id))
+        if bridge is None:
+            raise NoActiveTurnError("External ACP session has no pending approval")
+        return await bridge.resolve_permission(expected_turn_id, decisions)
+
     async def initialize(
         self,
         ref: SessionRef,
@@ -146,6 +166,7 @@ class ExternalRuntime:
             agent_id,
             workspace,
             bridge.feed,
+            bridge.request_permission,
             existing_session_id=peer_id,
             on_replay=on_replay,
             before_ready=persist if peer_id is None else None,

@@ -93,7 +93,13 @@ Tauri 和浏览器共用 React 控制台，无需另写 Rust 聊天界面。
 - **P1 完成**。离线子进程验证配置、流式通知、取消、创建超时与加载隔离；真实 `agy` 验证握手、模型与推理档位切换、两轮对话、取消、跨进程加载后续聊和免审批工具写入。
 - **P2/P4 完成**。本机 `external-acp-agents.json` 配置、daemon 共享会话池、不可变 Agent 绑定、远端 ID 原子持久化、失效回收、回合事件转换、回合写入既有 `transcript.sqlite`，以及 **daemon 级事件总线回退**：外部会话没有原生 `SessionRuntime`，`runtime.events.read` / `runtime.events.watch` 改由每会话一个 `SessionEventBroker` 提供相同的游标、gap 与重连语义。
 - **P3 完成（GUI 已可用）**。新建会话菜单列出「Synapse（内置）」与 daemon 报告的本机 Agent；外部会话的模型、推理档位等控件直接渲染 Agent 的 `configOptions`，切换走 `runtime.external.session.config` 并整体替换快照；`full_access` 只显示为徽标，控制台不能切换它。
-- **P5 部分完成**。离线用例、契约生成、前端类型与构建通过；仍需在有网络与已认证环境做一次真实 `agy` 的桌面冒烟，并补工具审批往返（当前 `full_access` 走 Agent 自身参数，控制台不弹审批）。
+- **P5 完成（核心能力与健壮性补齐）**：
+  - **并发插话与严格对端队列兜底**：`runtime.turn.steer` 路由至外部 ACP 会话，优先通过并发 `session/prompt` 注入（适配 `agy acp`），若对端返回 `busy` / `RequestError` 则自动降级为客户端 FIFO 队列，并在取消时清空待发队列；分段写入 `transcript.sqlite`。
+  - **空闲态后台唤醒续接**：`ExternalTurnBridge` 长期持有 `broker.emit`，捕获对端在 `end_turn` 后因后台任务唤醒主动推送的 `session/update`，自动开启续接 turn 实时推送前端并通过 `TranscriptProjection.append_continuation` 落盘，不伪造空用户气泡。
+  - **交互式工具审批往返**：`session/request_permission` 桥接到 `APPROVAL_REQUIRED` / `runtime.turn.pending_approval` / `runtime.turn.resume`，支持在 `manual` 权限模式下由前端弹窗确认并选择 `allow_once` / `reject_once`。
+  - **Token 用量与上下文占比**：投影 ACP `usage_update` 与 `PromptResponse.usage` 到 `USAGE_UPDATED`、`TurnTerminalPayload` 及 `TranscriptProjection`。
+  - **生命周期与资源治理**：`ExternalSessionPool` 支持默认 30 分钟空闲自动回收（忙碌态自动顺延）与满容量（16）时的 LRU 空闲淘汰；`close_session` 同步释放外部子进程；`fork_session` 对外部会话明确拒绝以防共享 `remote_session_id` 串上下文；`external-acp-agents.json` 支持按文件修改热重载（损坏时保留上一次有效目录）。
+  - **诊断与多 Agent 兼容**：子进程 `stderr` 改为有界环形缓冲 + 凭据脱敏采集；兼容仅暴露旧版 `modes` 的对端（`session/set_mode`）；捕获 `available_commands_update` 与 `config_option_update` 并在回合结束时自动同步前端配置快照；支持图片附件与已启用 MCP Server 透传。
 
 ### 公开方法（全部走现有 ACL）
 

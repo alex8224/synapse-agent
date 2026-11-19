@@ -98,6 +98,20 @@ class ExternalSessions(Protocol):
         attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> tuple[str, int]: ...
 
+    def active_turn_id(self, ref: SessionRef) -> str | None: ...
+
+    def pending_approval(
+        self, ref: SessionRef, expected_turn_id: str | None = None
+    ) -> tuple[str, tuple[tuple[str, dict[str, Any]], ...]]: ...
+
+    async def resume_approval(
+        self,
+        ref: SessionRef,
+        *,
+        expected_turn_id: str,
+        decisions: Sequence[Mapping[str, Any]],
+    ) -> str: ...
+
     def broker(self, ref: SessionRef) -> Any | None:
         """Return a broker exposing ``subscribe_from``/``read_after``/``emit``."""
 

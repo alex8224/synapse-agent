@@ -56,12 +56,14 @@ class ExternalSessionPool:
         *,
         capacity: int = 16,
         idle_timeout_s: float | None = DEFAULT_IDLE_TIMEOUT_S,
+        evict_lru_on_full: bool = False,
     ) -> None:
         if idle_timeout_s is not None and idle_timeout_s <= 0:
             raise ValueError("idle_timeout_s must be positive or None")
         self.catalog = catalog
         self._capacity = capacity
         self._idle_timeout_s = idle_timeout_s
+        self._evict_lru_on_full = evict_lru_on_full
         self._entries: dict[tuple[str, str], _Entry] = {}
         self._is_busy: Callable[[tuple[str, str]], bool] | None = None
         self._closed = False
@@ -89,7 +91,12 @@ class ExternalSessionPool:
         entry = self._entries.get(key)
         if entry is None:
             if len(self._entries) >= self._capacity:
-                raise RuntimeError("External ACP session capacity reached")
+                if self._evict_lru_on_full:
+                    evicted = await self._evict_oldest_idle()
+                    if not evicted:
+                        raise RuntimeError("External ACP session capacity reached")
+                else:
+                    raise RuntimeError("External ACP session capacity reached")
             agent = self.catalog.get(agent_id)
             if agent is None:
                 raise ValueError("External ACP agent is not configured")
@@ -178,6 +185,14 @@ class ExternalSessionPool:
                             key,
                             self._idle_timeout_s,
                         )
+                    elif exited in done and not stop.is_set():
+                        tail = s.stderr_tail
+                        if tail:
+                            _LOGGER.warning(
+                                "External ACP session %s exited unexpectedly; redacted stderr: %s",
+                                key,
+                                " | ".join(tail[-5:]),
+                            )
                 finally:
                     for watcher in watchers:
                         watcher.cancel()
@@ -194,6 +209,30 @@ class ExternalSessionPool:
                 raise
         finally:
             self._entries.pop(key, None)
+
+    async def _evict_oldest_idle(self) -> bool:
+        """Close the least-recently-used idle session to free one capacity slot."""
+        victim_key: tuple[str, str] | None = None
+        oldest = float("inf")
+        for candidate_key, candidate_entry in list(self._entries.items()):
+            if not candidate_entry.ready.done() or candidate_entry.ready.cancelled():
+                continue
+            if candidate_entry.ready.exception() is not None:
+                continue
+            session = candidate_entry.ready.result()
+            if session.is_busy or (
+                self._is_busy is not None and self._is_busy(candidate_key)
+            ):
+                continue
+            activity = max(candidate_entry.last_activity, session.last_activity_at)
+            if activity < oldest:
+                oldest = activity
+                victim_key = candidate_key
+        if victim_key is None:
+            return False
+        _LOGGER.info("Evicting LRU idle external ACP session %s to free capacity", victim_key)
+        await self.close(victim_key)
+        return True
 
     async def _watch_idle(self, key: tuple[str, str], session: ExternalSession) -> None:
         timeout = self._idle_timeout_s

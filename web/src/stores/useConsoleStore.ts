@@ -1282,7 +1282,35 @@ function applyLiveEvents(entries: readonly LiveEventEntry[]): void {
   // A finished turn may also have changed the workspace (the agent edits files),
   // so re-read the read-only git chrome once per batch.  `loadGitStatus` is
   // best-effort and scoped to the current session, so a switch mid-flight is safe.
-  if (turnEnded) void useConsoleStore.getState().loadGitStatus();
+  if (turnEnded) {
+    void useConsoleStore.getState().loadGitStatus();
+    if (useConsoleStore.getState().externalSession !== null) {
+      void refreshExternalSessionSnapshot(sessionEpoch);
+    }
+  }
+}
+
+/** Re-read cached external ACP config options after a turn settles (best-effort). */
+async function refreshExternalSessionSnapshot(epoch: number): Promise<void> {
+  const client = requireRuntimeClient();
+  const state = useConsoleStore.getState();
+  if (!client || state.externalSession === null || epoch !== sessionEpoch) return;
+  try {
+    const initialized = await client.initializeExternalSession({
+      session: state.currentSession,
+    });
+    if (epoch !== sessionEpoch) return;
+    useConsoleStore.setState({
+      externalSession: {
+        agentId: initialized.agent_id,
+        remoteSessionId: initialized.remote_session_id,
+        permissionMode: initialized.permission_mode,
+        options: initialized.options,
+      },
+    });
+  } catch {
+    // Best-effort refresh: keep the last confirmed config snapshot if the peer closed.
+  }
 }
 
 /** Apply every queued delta now: the display window closed, or an event needs the order kept. */

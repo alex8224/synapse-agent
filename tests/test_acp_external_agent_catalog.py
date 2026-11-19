@@ -74,3 +74,33 @@ def test_external_agent_catalog_rejects_an_unusable_create_timeout(
         return
     with pytest.raises(ValueError):
         ExternalAgentCatalog.from_state_dir(tmp_path)
+
+
+def test_external_agent_catalog_hot_reloads_and_preserves_valid_on_bad_json(
+    tmp_path: Path,
+) -> None:
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    assert catalog.list() == ()
+
+    config_path = tmp_path / "external-acp-agents.json"
+    config_path.write_text(
+        json.dumps({"agents": [{"id": "agy", "name": "Antigravity", "command": sys.executable}]})
+    )
+    assert [a.id for a in catalog.list()] == ["agy"]
+
+    # Temporarily invalid JSON must not wipe the last known good catalog.
+    config_path.write_text("{broken json")
+    assert [a.id for a in catalog.list()] == ["agy"]
+
+    # Updating to a valid new list takes effect immediately without restart.
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"id": "agy", "name": "Antigravity", "command": sys.executable},
+                    {"id": "claude", "name": "Claude ACP", "command": sys.executable},
+                ]
+            }
+        )
+    )
+    assert [a.id for a in catalog.list()] == ["agy", "claude"]
