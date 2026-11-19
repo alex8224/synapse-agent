@@ -6,6 +6,23 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.64
+
+### New Features
+
+- **External ACP Agent Integration**: Synapse can now connect to locally configured external ACP agents (`external-acp-agents.json`) from the daemon and Web Console. Users can create bound external sessions from the sidebar, view and switch peer config options (with legacy `modes` fallback), stream live thoughts/tools/answers, and persist durable transcripts with remote session resumption (`session/load`).
+- **Mid-Turn Steering, Attachments, Approvals & Usage**: External ACP sessions support mid-turn steering (concurrent `session/prompt` with automatic sequential queue fallback), image attachments, interactive HITL permission approvals (`session/request_permission`), token usage reporting, and capturing unsolicited background-wakeup continuation turns.
+- **Session Pool Lifecycle & Hot-Reload**: Added idle timeout eviction, LRU eviction when capacity is reached, bounded redacted stderr diagnostics on subprocess failures, and automatic hot-reload of the external ACP agent catalog.
+
+### Bug Fixes
+
+- **MCP Toggle & Reload On External ACP Sessions**: Calling `runtime.session.mcp.reload` (and MCP maintenance CRUD) on an external ACP session no longer fails with `not_found` (`runtime service error`). Changes now persist to `mcp.json`, reload idle sessions via `session/load` when supported (preserving the event broker and bridge), surface transport capability warnings (such as unsupported HTTP/SSE MCP), and report truthful attachment status in the MCP panel and settings dialog.
+- **Interleaved Thought & Tool Ordering**: Fixed live transcript rendering and external ACP history persistence so interleaved reasoning blocks, tool call groups, and assistant text segments stay in strict chronological order even when an ACP peer omits `tool_batch_*` or `*_completed` boundary events.
+
+### Engineering
+
+- **External ACP Contract & Boundaries**: Added the service-side `ExternalSessions` port, wire contract DTOs and RPC methods (`runtime.external_agents.list`, `runtime.session.external.initialize`, `runtime.session.external.set_config`), and regenerated the contract manifest and TypeScript client bindings while keeping the service layer free of ACP SDK imports.
+
 ## v0.1.63
 
 ### New Features
