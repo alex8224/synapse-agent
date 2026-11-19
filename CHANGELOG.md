@@ -6,6 +6,16 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.65
+
+### New Features
+
+- **MCP Stdio Proxy For External ACP Sessions**: Added `synapse-mcp-stdio-proxy` (`src/synapse/acp/mcp_stdio_proxy.py`, exposed via `synapse.entry`) so external ACP agents that only support stdio MCP transports can still connect to HTTP/SSE MCP servers configured in `mcp.json`.
+
+### Bug Fixes
+
+- **External ACP Runtime & Client Stability**: Updated `ExternalRuntime` and `ExternalAcpClient` with improved MCP proxy wiring and expanded unit test coverage in `tests/test_acp_external_client.py` and `tests/test_acp_external_service.py`.
+
 ## v0.1.64
 
 ### New Features
