@@ -24,6 +24,10 @@ def main() -> None:
         from synapse.runtime.daemon.entry import main as daemon_main
 
         raise SystemExit(daemon_main(sys.argv[2:]))
+    if sys.argv[1:2] == ["--synapse-mcp-stdio-proxy"]:
+        from synapse.acp.mcp_stdio_proxy import main as proxy_main
+
+        raise SystemExit(proxy_main(sys.argv[2:]))
     from synapse.observability.startup_trace import ensure_started, mark
 
     ensure_started()

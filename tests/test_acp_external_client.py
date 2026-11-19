@@ -228,21 +228,46 @@ def test_mcp_servers_to_acp_filters_disabled_and_by_capabilities() -> None:
         ),
     ]
     without_caps = mcp_servers_to_acp(servers, None)
-    assert len(without_caps) == 1
-    assert isinstance(without_caps[0], McpServerStdio)
-    assert without_caps[0].name == "fs"
+    assert [type(item) for item in without_caps] == [
+        McpServerStdio,
+        McpServerStdio,
+        McpServerStdio,
+    ]
+    assert [item.name for item in without_caps] == ["fs", "remote_http", "remote_sse"]
     assert without_caps[0].command == "uvx"
     assert without_caps[0].args == ["mcp-fs", "/tmp"]
     assert [(item.name, item.value) for item in without_caps[0].env] == [("TOKEN", "secret")]
+    assert without_caps[1].command == sys.executable
+    assert without_caps[1].args == [
+        "-m",
+        "synapse.acp.mcp_stdio_proxy",
+        "--transport",
+        "streamable_http",
+        "--url",
+        "https://example.com/mcp",
+    ]
+    http_proxy_env = {item.name: item.value for item in without_caps[1].env}
+    assert http_proxy_env["SYNAPSE_MCP_PROXY_HEADERS_JSON"] == '{"Authorization": "Bearer abc"}'
+    assert "Bearer abc" not in " ".join(without_caps[1].args)
+    assert without_caps[2].args == [
+        "-m",
+        "synapse.acp.mcp_stdio_proxy",
+        "--transport",
+        "sse",
+        "--url",
+        "https://example.com/sse",
+    ]
 
     with_http = mcp_servers_to_acp(servers, McpCapabilities(http=True, sse=False))
-    assert [type(item) for item in with_http] == [McpServerStdio, HttpMcpServer]
+    assert [type(item) for item in with_http] == [McpServerStdio, HttpMcpServer, McpServerStdio]
     assert with_http[1].url == "https://example.com/mcp"
     assert [(h.name, h.value) for h in with_http[1].headers] == [("Authorization", "Bearer abc")]
+    assert with_http[2].name == "remote_sse"
 
     with_sse = mcp_servers_to_acp(servers, McpCapabilities(http=False, sse=True))
-    assert [type(item) for item in with_sse] == [McpServerStdio, SseMcpServer]
-    assert with_sse[1].url == "https://example.com/sse"
+    assert [type(item) for item in with_sse] == [McpServerStdio, McpServerStdio, SseMcpServer]
+    assert with_sse[1].name == "remote_http"
+    assert with_sse[2].url == "https://example.com/sse"
 
 
 def test_external_acp_forwards_mcp_servers_on_new_and_load(tmp_path: Path) -> None:
@@ -258,11 +283,12 @@ for line in sys.stdin:
         )
     elif method in ("session/new", "session/load"):
         servers = msg["params"]["mcpServers"]
-        assert [s["name"] for s in servers] == ["fs", "remote_http"]
+        assert [s["name"] for s in servers] == ["fs", "remote_http", "remote_sse"]
         assert servers[0]["command"] == "uvx"
         assert servers[0]["env"] == [dict(name="KEY", value="val")]
         assert servers[1]["type"] == "http"
         assert servers[1]["url"] == "https://example.com/mcp"
+        assert "synapse.acp.mcp_stdio_proxy" in servers[2]["args"]
         result = dict(sessionId="peer-1") if method == "session/new" else {}
     else:
         raise AssertionError(method)
@@ -410,3 +436,427 @@ for line in sys.stdin:
             assert [u.model_dump()["content"]["text"] for u in updates] == ["saw image"]
 
     asyncio.run(run())
+
+
+def test_mcp_stdio_proxy_bridges_streamable_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    import http.server
+    import json
+    import os
+    import subprocess
+    import threading
+
+    seen_auth: list[str | None] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler convention
+            seen_auth.append(self.headers.get("Authorization"))
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            method = payload.get("method")
+            if method == "initialize":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "mock-http-mcp", "version": "1.0"},
+                        },
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if method == "notifications/initialized":
+                self.send_response(202)
+                self.end_headers()
+                return
+            if method == "tools/list":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {
+                            "tools": [{"name": "search", "inputSchema": {"type": "object"}}]
+                        },
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = dict(os.environ)
+        env["SYNAPSE_MCP_PROXY_HEADERS_JSON"] = '{"Authorization": "Bearer test-token"}'
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            env.pop(key, None)
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "synapse.acp.mcp_stdio_proxy",
+                "--transport",
+                "streamable_http",
+                "--url",
+                f"http://127.0.0.1:{port}/mcp",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            encoding="utf-8",
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        init_req = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1.0"},
+            },
+        }
+        proc.stdin.write(json.dumps(init_req) + "\n")
+        proc.stdin.flush()
+        init_resp = json.loads(proc.stdout.readline())
+        assert init_resp["id"] == 1
+        assert init_resp["result"]["serverInfo"]["name"] == "mock-http-mcp"
+
+        initialized_notif = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        proc.stdin.write(json.dumps(initialized_notif) + "\n")
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
+        proc.stdin.flush()
+        tools_resp = json.loads(proc.stdout.readline())
+        assert tools_resp["id"] == 2
+        assert [t["name"] for t in tools_resp["result"]["tools"]] == ["search"]
+
+        proc.stdin.close()
+        _stdout, stderr = proc.communicate(timeout=15)
+        assert proc.returncode == 0, stderr
+        assert seen_auth == ["Bearer test-token", "Bearer test-token", "Bearer test-token"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_mcp_stdio_proxy_sanitizes_stdio_tool_schemas(tmp_path: Path) -> None:
+    import json
+    import os
+    import subprocess
+
+    child_script = tmp_path / "mock_cua.py"
+    child_script.write_text(
+        """import json, sys
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        resp = {
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "cua", "version": "1.0"},
+            },
+        }
+        print(json.dumps(resp), flush=True)
+    elif method == "tools/list":
+        schema = {
+            "type": "object",
+            "properties": {
+                "expect": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "element": {
+                                "type": "object",
+                                "properties": {
+                                    "exists": {"type": "string", "enum": [""]},
+                                    "visible": {"type": "boolean", "enum": [True, False]},
+                                    "mode": {"type": "string", "enum": ["", "fast", "accurate"]},
+                                },
+                            }
+                        },
+                    },
+                }
+            },
+        }
+        resp = {
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "result": {"tools": [{"name": "cua_act", "inputSchema": schema}]},
+        }
+        print(json.dumps(resp), flush=True)
+""",
+        encoding="utf-8",
+    )
+
+    env = dict(os.environ)
+    env["SYNAPSE_MCP_PROXY_STDIO_JSON"] = json.dumps(
+        {"command": sys.executable, "args": ["-u", str(child_script)]}
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "synapse.acp.mcp_stdio_proxy", "--transport", "stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+        encoding="utf-8",
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "gemini-cli", "version": "1.0"},
+                },
+            }
+        )
+        + "\n"
+    )
+    proc.stdin.flush()
+    init_resp = json.loads(proc.stdout.readline())
+    assert init_resp["id"] == 1
+
+    proc.stdin.write(
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+    )
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
+    proc.stdin.flush()
+    tools_resp = json.loads(proc.stdout.readline())
+    assert tools_resp["id"] == 2
+    props = (
+        tools_resp["result"]["tools"][0]["inputSchema"]["properties"]["expect"]["items"][
+            "properties"
+        ]["element"]["properties"]
+    )
+    assert props["exists"] == {"type": "string"}
+    assert props["visible"] == {"type": "boolean"}
+    assert props["mode"] == {"type": "string", "enum": ["fast", "accurate"]}
+
+    proc.stdin.close()
+    _stdout, stderr = proc.communicate(timeout=15)
+    assert proc.returncode == 0, stderr
+
+
+def test_gemini_external_acp_wraps_stdio_mcp_for_schema_sanitization() -> None:
+    from acp.schema import Implementation, InitializeResponse
+
+    from synapse.acp.external_client import _should_sanitize_stdio_mcp
+
+    gemini_handshake = InitializeResponse(
+        protocol_version=1,
+        agent_info=Implementation(name="gemini-cli", version="1.0"),
+    )
+    claude_handshake = InitializeResponse(
+        protocol_version=1,
+        agent_info=Implementation(name="claude-code-acp", version="1.0"),
+    )
+    assert _should_sanitize_stdio_mcp(ExternalAgentSpec("gemini"), gemini_handshake) is True
+    assert _should_sanitize_stdio_mcp(ExternalAgentSpec("npx", ("@foo/bar",)), gemini_handshake)
+    assert _should_sanitize_stdio_mcp(ExternalAgentSpec("claude"), claude_handshake) is False
+
+    wrapped = mcp_servers_to_acp(
+        [McpServerConfig(name="cua", transport="stdio", command="cua-mcp", args=["--stdio"])],
+        None,
+        sanitize_stdio=True,
+    )
+    assert len(wrapped) == 1
+    assert isinstance(wrapped[0], McpServerStdio)
+    assert wrapped[0].command == sys.executable
+    env_map = {item.name: item.value for item in wrapped[0].env}
+    assert env_map["SYNAPSE_MCP_PROXY_STDIO_JSON"] == (
+        '{"args": ["--stdio"], "command": "cua-mcp"}'
+    )
+
+
+def test_mcp_stdio_proxy_recovers_from_errors_and_retries_stale_connection() -> None:
+    import http.server
+    import json
+    import subprocess
+    import threading
+
+    drop_once = {"dropped": False}
+
+    class _FlakyHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler convention
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            req_id = payload.get("id")
+            method = payload.get("method")
+            if method == "initialize":
+                body = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "flaky-http-mcp", "version": "1.0"},
+                        },
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if req_id == 2:
+                err_body = b"upstream boom"
+                self.send_response(500)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(err_body)))
+                self.end_headers()
+                self.wfile.write(err_body)
+                return
+            if req_id == 3 and not drop_once["dropped"]:
+                drop_once["dropped"] = True
+                self.close_connection = True
+                return
+            if req_id == 4:
+                sse_payload = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"content": [{"type": "text", "text": "from-sse"}]},
+                    }
+                )
+                body = f"event: message\ndata: {sse_payload}\n\n".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"content": [{"type": "text", "text": f"ok-{req_id}"}]},
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FlakyHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "synapse.acp.mcp_stdio_proxy",
+                "--transport",
+                "streamable_http",
+                "--url",
+                f"http://127.0.0.1:{port}/mcp",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                }
+            )
+            + "\n"
+        )
+        proc.stdin.flush()
+        assert json.loads(proc.stdout.readline())["id"] == 1
+
+        # HTTP 500 must return a JSON-RPC error instead of hanging or killing the proxy.
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}}) + "\n"
+        )
+        proc.stdin.flush()
+        err_resp = json.loads(proc.stdout.readline())
+        assert err_resp["id"] == 2
+        assert "500" in err_resp["error"]["message"]
+
+        # Abrupt server disconnect on first attempt must transparently retry once and succeed.
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {}}) + "\n"
+        )
+        proc.stdin.flush()
+        retry_resp = json.loads(proc.stdout.readline())
+        assert retry_resp["id"] == 3
+        assert retry_resp["result"]["content"][0]["text"] == "ok-3"
+
+        # Concurrent SSE + JSON requests must both complete without closure-capture loss.
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}}) + "\n"
+        )
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {}}) + "\n"
+        )
+        proc.stdin.flush()
+        both = [json.loads(proc.stdout.readline()), json.loads(proc.stdout.readline())]
+        by_id = {item["id"]: item["result"]["content"][0]["text"] for item in both}
+        assert by_id == {4: "from-sse", 5: "ok-5"}
+
+        proc.stdin.close()
+        _out, stderr = proc.communicate(timeout=15)
+        assert proc.returncode == 0, stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+
+

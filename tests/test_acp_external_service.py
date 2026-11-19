@@ -1450,15 +1450,15 @@ for line in sys.stdin:
             disk_enabled = {srv["name"]: srv["enabled"] for srv in disk["servers"]}
             assert disk_enabled == {"cdp": False, "cua": True, "stitch": False}
 
-            # 4) Enabling an HTTP server when peer does not advertise http MCP persists the flag,
-            #    does NOT restart the subprocess, and reports a clear capability warning.
+            # 4) Enabling an HTTP server when peer does not advertise http MCP persists the flag
+            #    and bridges it via stdio on session/load with no capability warning.
             http_res = await local_service.reload_mcp(
                 ReloadMcpCommand(ref, server="stitch", enabled=True)
             )
             assert http_res.enabled is True
-            assert http_res.attached is False
-            assert http_res.active_servers == ("cua",)
-            assert any("stitch" in w and "http" in w.lower() for w in http_res.warnings)
+            assert http_res.attached is True
+            assert http_res.active_servers == ("cua", "stitch")
+            assert http_res.warnings == ()
 
             log_entries = [
                 json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()
@@ -1467,6 +1467,7 @@ for line in sys.stdin:
                 {"op": "new", "mcp": ["cdp"]},
                 {"op": "load", "mcp": ["cdp", "cua"]},
                 {"op": "load", "mcp": ["cua"]},
+                {"op": "load", "mcp": ["cua", "stitch"]},
             ]
         finally:
             await external_service.shutdown()

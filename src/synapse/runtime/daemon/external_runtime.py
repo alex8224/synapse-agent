@@ -220,7 +220,9 @@ class ExternalRuntime:
             live = self.pool.session(key)
             if live is not None and live.usable:
                 desired_acp, desired_warnings = _convert_mcp_servers_to_acp(
-                    latest_configs, live.mcp_capabilities
+                    latest_configs,
+                    live.mcp_capabilities,
+                    sanitize_stdio=getattr(live, "sanitize_stdio_mcp", False),
                 )
                 if tuple(desired_acp) == live.acp_mcp_servers:
                     return live.attached_mcp_servers, desired_warnings

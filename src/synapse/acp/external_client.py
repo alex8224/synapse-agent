@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
+import sys
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -46,6 +48,11 @@ from acp.schema import (
 )
 from pydantic import BaseModel
 
+from synapse.acp.mcp_stdio_proxy import (
+    HEADERS_ENV_VAR,
+    PROXY_URL_ENV_VAR,
+    STDIO_TARGET_ENV_VAR,
+)
 from synapse.content.multimodal import PLACEHOLDER_RE
 from synapse.integrations.mcp_client import McpServerConfig
 
@@ -217,6 +224,7 @@ class ExternalSession:
         *,
         acp_mcp_servers: Sequence[McpServerStdio | HttpMcpServer | SseMcpServer] = (),
         mcp_warnings: Sequence[str] = (),
+        sanitize_stdio_mcp: bool = False,
     ) -> None:
         self.handshake = handshake
         self.created = created
@@ -231,6 +239,7 @@ class ExternalSession:
             acp_mcp_servers
         )
         self._mcp_warnings: tuple[str, ...] = tuple(mcp_warnings)
+        self._sanitize_stdio_mcp = sanitize_stdio_mcp
         self._operation = asyncio.Lock()
         self._closed = False
         self._prompt_deadlines: set[asyncio.Timeout] = set()
@@ -263,6 +272,11 @@ class ExternalSession:
     def mcp_warnings(self) -> tuple[str, ...]:
         """Non-fatal warnings produced while preparing MCP servers for this session."""
         return self._mcp_warnings
+
+    @property
+    def sanitize_stdio_mcp(self) -> bool:
+        """Whether stdio MCP servers in this session are wrapped for schema sanitization."""
+        return self._sanitize_stdio_mcp
 
     @property
     def available_commands(self) -> tuple[AvailableCommand, ...]:
@@ -518,9 +532,71 @@ def prompt_blocks_to_acp(
     return blocks
 
 
+def _should_sanitize_stdio_mcp(
+    spec: ExternalAgentSpec,
+    handshake: InitializeResponse,
+) -> bool:
+    """Return True when the external ACP peer needs Gemini-safe MCP tool schemas."""
+    candidates: list[str] = [spec.command, *spec.args]
+    agent_info = handshake.agent_info
+    if agent_info is not None:
+        if agent_info.name:
+            candidates.append(agent_info.name)
+        if agent_info.title:
+            candidates.append(agent_info.title)
+    return any("gemini" in item.casefold() for item in candidates if item)
+
+
+def _build_stdio_proxy_server(
+    cfg: McpServerConfig,
+    transport: str,
+    url: str | None = None,
+    *,
+    stdio_command: str | None = None,
+) -> McpServerStdio:
+    """Wrap a remote HTTP/SSE or child stdio MCP server in Synapse's stdio bridge."""
+    if getattr(sys, "frozen", False):
+        args = ["--synapse-mcp-stdio-proxy", "--transport", transport]
+    else:
+        args = ["-m", "synapse.acp.mcp_stdio_proxy", "--transport", transport]
+    if url is not None:
+        args.extend(["--url", url])
+
+    env_map: dict[str, str] = {str(k): str(v) for k, v in cfg.env.items()}
+    if stdio_command is not None:
+        env_map[STDIO_TARGET_ENV_VAR] = json.dumps(
+            {
+                "command": stdio_command,
+                "args": [str(arg) for arg in (cfg.args or ())],
+            },
+            sort_keys=True,
+        )
+    else:
+        for key in sorted(_PROXY_KEYS):
+            if key not in env_map:
+                inherited = os.environ.get(key) or os.environ.get(key.lower())
+                if inherited:
+                    env_map[key] = inherited
+        if cfg.proxy:
+            env_map[PROXY_URL_ENV_VAR] = str(cfg.proxy)
+        if cfg.headers:
+            env_map[HEADERS_ENV_VAR] = json.dumps(
+                {str(k): str(v) for k, v in cfg.headers.items()},
+                sort_keys=True,
+            )
+    return McpServerStdio(
+        name=cfg.name,
+        command=sys.executable,
+        args=args,
+        env=[EnvVariable(name=k, value=v) for k, v in env_map.items()],
+    )
+
+
 def _convert_mcp_servers_to_acp(
     servers: Sequence[McpServerConfig],
     capabilities: McpCapabilities | None = None,
+    *,
+    sanitize_stdio: bool = False,
 ) -> tuple[list[McpServerStdio | HttpMcpServer | SseMcpServer], tuple[str, ...]]:
     """Convert enabled Synapse MCP configs into ACP entries plus skip warnings."""
     result: list[McpServerStdio | HttpMcpServer | SseMcpServer] = []
@@ -535,58 +611,69 @@ def _convert_mcp_servers_to_acp(
                 _LOGGER.warning("Skipping stdio MCP server %r: missing command", cfg.name)
                 warnings.append(f"{cfg.name}: missing stdio command")
                 continue
-            result.append(
-                McpServerStdio(
-                    name=cfg.name,
-                    command=command,
-                    args=[str(arg) for arg in (cfg.args or ())],
-                    env=[EnvVariable(name=str(k), value=str(v)) for k, v in cfg.env.items()],
+            if sanitize_stdio:
+                result.append(_build_stdio_proxy_server(cfg, "stdio", stdio_command=command))
+            else:
+                result.append(
+                    McpServerStdio(
+                        name=cfg.name,
+                        command=command,
+                        args=[str(arg) for arg in (cfg.args or ())],
+                        env=[EnvVariable(name=str(k), value=str(v)) for k, v in cfg.env.items()],
+                    )
                 )
-            )
             continue
-        if transport == "streamable_http":
-            if not (capabilities and capabilities.http):
-                _LOGGER.warning(
-                    "Skipping HTTP MCP server %r: external ACP agent does not advertise http MCP",
-                    cfg.name,
-                )
-                warnings.append(f"{cfg.name}: external ACP agent does not advertise http MCP")
-                continue
+        if transport in {"streamable_http", "http"}:
             url = (cfg.url or "").strip()
             if not url:
                 _LOGGER.warning("Skipping HTTP MCP server %r: missing url", cfg.name)
                 warnings.append(f"{cfg.name}: missing HTTP url")
                 continue
-            result.append(
-                HttpMcpServer(
-                    type="http",
-                    name=cfg.name,
-                    url=url,
-                    headers=[HttpHeader(name=str(k), value=str(v)) for k, v in cfg.headers.items()],
+            if capabilities and capabilities.http:
+                result.append(
+                    HttpMcpServer(
+                        type="http",
+                        name=cfg.name,
+                        url=url,
+                        headers=[
+                            HttpHeader(name=str(k), value=str(v))
+                            for k, v in cfg.headers.items()
+                        ],
+                    )
                 )
-            )
-            continue
-        if transport == "sse":
-            if not (capabilities and capabilities.sse):
-                _LOGGER.warning(
-                    "Skipping SSE MCP server %r: external ACP agent does not advertise sse MCP",
+            else:
+                _LOGGER.info(
+                    "Bridging HTTP MCP server %r over stdio: "
+                    "external ACP agent does not advertise http MCP",
                     cfg.name,
                 )
-                warnings.append(f"{cfg.name}: external ACP agent does not advertise sse MCP")
-                continue
+                result.append(_build_stdio_proxy_server(cfg, "streamable_http", url))
+            continue
+        if transport == "sse":
             url = (cfg.url or "").strip()
             if not url:
                 _LOGGER.warning("Skipping SSE MCP server %r: missing url", cfg.name)
                 warnings.append(f"{cfg.name}: missing SSE url")
                 continue
-            result.append(
-                SseMcpServer(
-                    type="sse",
-                    name=cfg.name,
-                    url=url,
-                    headers=[HttpHeader(name=str(k), value=str(v)) for k, v in cfg.headers.items()],
+            if capabilities and capabilities.sse:
+                result.append(
+                    SseMcpServer(
+                        type="sse",
+                        name=cfg.name,
+                        url=url,
+                        headers=[
+                            HttpHeader(name=str(k), value=str(v))
+                            for k, v in cfg.headers.items()
+                        ],
+                    )
                 )
-            )
+            else:
+                _LOGGER.info(
+                    "Bridging SSE MCP server %r over stdio: "
+                    "external ACP agent does not advertise sse MCP",
+                    cfg.name,
+                )
+                result.append(_build_stdio_proxy_server(cfg, "sse", url))
             continue
         _LOGGER.warning("Skipping MCP server %r: unsupported transport %r", cfg.name, cfg.transport)
         warnings.append(f"{cfg.name}: unsupported transport {cfg.transport!r}")
@@ -596,9 +683,15 @@ def _convert_mcp_servers_to_acp(
 def mcp_servers_to_acp(
     servers: Sequence[McpServerConfig],
     capabilities: McpCapabilities | None = None,
+    *,
+    sanitize_stdio: bool = False,
 ) -> list[McpServerStdio | HttpMcpServer | SseMcpServer]:
     """Convert enabled Synapse MCP configs into ACP schema server entries."""
-    result, _warnings = _convert_mcp_servers_to_acp(servers, capabilities)
+    result, _warnings = _convert_mcp_servers_to_acp(
+        servers,
+        capabilities,
+        sanitize_stdio=sanitize_stdio,
+    )
     return result
 
 
@@ -657,7 +750,12 @@ async def open_external_session(
                 if handshake.agent_capabilities is not None
                 else None
             )
-            acp_mcp_servers, mcp_warnings = _convert_mcp_servers_to_acp(mcp_servers, mcp_caps)
+            sanitize_stdio = _should_sanitize_stdio_mcp(spec, handshake)
+            acp_mcp_servers, mcp_warnings = _convert_mcp_servers_to_acp(
+                mcp_servers,
+                mcp_caps,
+                sanitize_stdio=sanitize_stdio,
+            )
             if existing_session_id is None:
                 stage = "session/new"
                 async with asyncio.timeout(timeouts.create):
@@ -705,6 +803,7 @@ async def open_external_session(
             stderr_buffer=stderr_buffer,
             acp_mcp_servers=acp_mcp_servers,
             mcp_warnings=mcp_warnings,
+            sanitize_stdio_mcp=sanitize_stdio,
         )
         try:
             yield session
