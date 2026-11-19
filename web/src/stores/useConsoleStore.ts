@@ -3,7 +3,12 @@ import { readLastProjectId, saveLastProjectId } from './lastProject.ts';
 import { SynapseRuntimeClient } from '../client/SynapseRuntimeClient.ts';
 import type { GitStatusView } from '../runtime-client/git.ts';
 import { describeOpenExternalFailure } from '../runtime-client/externalApps.ts';
-import { fetchGitStatus } from '../client/tauriGitFs.ts';
+import {
+  fetchExternalApps,
+  fetchGitStatus,
+  hasNativeGitSurface,
+  openExternalNativeOrRpc,
+} from '../client/tauriGitFs.ts';
 import type { ExternalAppView } from '../runtime-client/externalApps.ts';
 import type { OpenExternalMode } from '../runtime-client/externalApps.ts';
 import {
@@ -3403,13 +3408,13 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   externalAppsError: null,
   loadExternalApps: async () => {
     const client = requireRuntimeClient();
-    if (!client) return;
+    if (!hasNativeGitSurface() && !client) return;
     // One read per console: the catalog is a host property, and a menu that is
     // opened again must not re-probe the machine.  A failed read is remembered as
     // a failure (not as an empty catalog), so the menu can say so.
     if (get().externalApps !== null) return;
     try {
-      const page = await client.listExternalApps();
+      const page = await fetchExternalApps(client);
       set({ externalApps: page.apps, externalAppsError: null });
     } catch (err) {
       console.error('Failed to read the host application catalog:', err);
@@ -3425,16 +3430,26 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
   lastOpenWithAppId: null,
   openExternal: async (path, appId, mode) => {
     const client = requireRuntimeClient();
-    if (!client) return false;
+    const native = hasNativeGitSurface();
+    if (!native && !client) return false;
     const session = get().currentSession;
-    if (!session.thread_id) return false;
+    if (!native && !session.thread_id) return false;
     if (!path) return false;
+    const activeProject = get().projects.find((p) => p.project_id === get().activeProjectId);
+    const workspacePath = activeProject?.workspace_path || get().workspacePath || '';
     const apps = get().externalApps ?? [];
     const named = apps.find((app) => app.id === appId);
     const label = named?.shortName ?? (appId === undefined ? '系统默认应用' : String(appId));
     set({ openExternalError: null });
     try {
-      await client.openExternal({ session, path, appId, mode });
+      await openExternalNativeOrRpc({
+        path,
+        workspacePath,
+        appId,
+        mode,
+        client,
+        session,
+      });
     } catch (err) {
       console.error('Failed to open a file with an external program:', err);
       const code = err instanceof RpcCallError ? err.service_code : undefined;

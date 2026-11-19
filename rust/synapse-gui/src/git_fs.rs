@@ -836,12 +836,30 @@ pub fn get_git_status(workspace: &Path) -> Result<GitStatusView, String> {
     })
 }
 
+/// Normalize a path to Windows backslashes without the `\\?\` verbatim prefix.
+///
+/// Windows `explorer.exe` rejects forward slashes (`/`) in `/select,<path>` and
+/// directory arguments, and some shell openers behave inconsistently with them.
+#[cfg(any(windows, test))]
+fn normalize_windows_path(target: &Path) -> String {
+    let raw = target.to_string_lossy().replace('/', "\\");
+    raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+}
+
 /// Open a file or directory using the operating system's default application
 pub fn open_path(target: &Path) -> Result<(), String> {
     if !target.exists() {
         return Err(format!("路径不存在: {}", target.display()));
     }
-    open::that(target).map_err(|e| format!("打开失败: {}", e))
+    #[cfg(windows)]
+    {
+        let normalized = normalize_windows_path(target);
+        return open::that(&normalized).map_err(|e| format!("打开失败: {}", e));
+    }
+    #[cfg(not(windows))]
+    {
+        open::that(target).map_err(|e| format!("打开失败: {}", e))
+    }
 }
 
 /// Open a file in VS Code using CLI or protocol handler
@@ -912,11 +930,14 @@ pub fn reveal_in_explorer(target: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let mut cmd = Command::new("explorer");
+        let win_path = normalize_windows_path(&target_buf);
+        let mut cmd = Command::new("explorer.exe");
         if target_buf.is_dir() {
-            cmd.arg(&target_buf);
+            cmd.arg(&win_path);
         } else {
-            cmd.arg(format!("/select,{}", target_buf.display()));
+            // `explorer.exe` parses `/select,"<path>"` directly; `Command::arg`
+            // would wrap the whole string in quotes when the path has spaces.
+            cmd.raw_arg(format!("/select,\"{}\"", win_path));
         }
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         cmd.spawn().map_err(|e| format!("启动文件管理器失败: {}", e))?;
@@ -934,40 +955,61 @@ pub fn reveal_in_explorer(target: &Path) -> Result<(), String> {
     }
 }
 
-/// Fetch unified diff for a single path
-pub fn get_git_diff(workspace: &Path, file_path: &str) -> Result<GitDiffView, String> {
-    // Try git diff HEAD -- <path> first
-    let text = match run_git_cmd(workspace, &["diff", "HEAD", "--", file_path]) {
-        Ok(res) if !res.is_empty() => res,
-        _ => {
-            // Try git diff -- <path> for unstaged changes
-            match run_git_cmd(workspace, &["diff", "--", file_path]) {
+fn untracked_file_diff(workspace: &Path, file_path: &str) -> String {
+    let target = workspace.join(file_path);
+    if !target.is_file() {
+        return String::new();
+    }
+    let Ok(bytes) = fs::read(&target) else {
+        return String::new();
+    };
+    if bytes.contains(&0) {
+        return format!("Binary files /dev/null and b/{} differ\n", file_path);
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    let mut buf = format!(
+        "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n",
+        file_path,
+        content.lines().count()
+    );
+    for line in content.lines() {
+        buf.push('+');
+        buf.push_str(line);
+        buf.push('\n');
+    }
+    buf
+}
+
+/// Fetch unified diff for a single path.
+///
+/// - `staged = Some(true)`: staged (index vs HEAD) diff (`--cached`).
+/// - `staged = Some(false)`: unstaged (worktree vs index) diff, with untracked fallback.
+/// - `staged = None`: combined `HEAD` diff, then unstaged diff, then untracked fallback.
+pub fn get_git_diff(
+    workspace: &Path,
+    file_path: &str,
+    staged: Option<bool>,
+) -> Result<GitDiffView, String> {
+    let text = match staged {
+        Some(true) => run_git_cmd(
+            workspace,
+            &["diff", "--no-color", "--unified=3", "--cached", "--", file_path],
+        )
+        .unwrap_or_default(),
+        Some(false) => match run_git_cmd(
+            workspace,
+            &["diff", "--no-color", "--unified=3", "--", file_path],
+        ) {
+            Ok(res) if !res.is_empty() => res,
+            _ => untracked_file_diff(workspace, file_path),
+        },
+        None => match run_git_cmd(workspace, &["diff", "HEAD", "--", file_path]) {
+            Ok(res) if !res.is_empty() => res,
+            _ => match run_git_cmd(workspace, &["diff", "--", file_path]) {
                 Ok(res) if !res.is_empty() => res,
-                _ => {
-                    // Check if it is an untracked file, create unified addition diff if readable
-                    let target = workspace.join(file_path);
-                    if target.is_file() {
-                        if let Ok(content) = fs::read_to_string(&target) {
-                            let mut buf = format!(
-                                "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n",
-                                file_path,
-                                content.lines().count()
-                            );
-                            for line in content.lines() {
-                                buf.push('+');
-                                buf.push_str(line);
-                                buf.push('\n');
-                            }
-                            buf
-                        } else {
-                            String::new()
-                        }
-                    } else {
-                        String::new()
-                    }
-                }
-            }
-        }
+                _ => untracked_file_diff(workspace, file_path),
+            },
+        },
     };
 
     let binary = text.contains("Binary files ") || text.contains("GIT binary patch");
@@ -1907,4 +1949,354 @@ pub fn read_artifact_chunk(
         modified_at: modified_at_of(&metadata),
         revision: revision_of(&metadata),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Native external application catalog & launch (mirrors runtime external_apps)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAppIconView {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAppView {
+    pub id: String,
+    pub name: String,
+    pub short_name: String,
+    pub kind: String,
+    pub extensions: Vec<String>,
+    pub icon: ExternalAppIconView,
+    pub is_system_default: bool,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAppPageView {
+    pub apps: Vec<ExternalAppView>,
+    pub truncated: bool,
+}
+
+#[allow(dead_code)]
+struct AppCandidate {
+    id: &'static str,
+    name: &'static str,
+    short_name: &'static str,
+    kind: &'static str,
+    glyph: &'static str,
+    extensions: &'static [&'static str],
+    nt: &'static [&'static str],
+    linux: &'static [&'static str],
+    darwin: &'static [&'static str],
+}
+
+const APP_CANDIDATES: &[AppCandidate] = &[
+    AppCandidate {
+        id: "vscode",
+        name: "Visual Studio Code",
+        short_name: "VS Code",
+        kind: "editor",
+        glyph: "vscode",
+        extensions: &[
+            "tsx", "ts", "js", "jsx", "json", "md", "py", "rs", "css", "html",
+        ],
+        nt: &[
+            r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+            r"%ProgramFiles%\Microsoft VS Code\Code.exe",
+            r"%ProgramFiles(x86)%\Microsoft VS Code\Code.exe",
+            "code.exe",
+        ],
+        linux: &["code", "code-insiders"],
+        darwin: &["/Applications/Visual Studio Code.app", "code"],
+    },
+    AppCandidate {
+        id: "cursor",
+        name: "Cursor",
+        short_name: "Cursor",
+        kind: "editor",
+        glyph: "cursor",
+        extensions: &["ts", "tsx", "py", "rs", "md"],
+        nt: &[
+            r"%LOCALAPPDATA%\Programs\cursor\Cursor.exe",
+            r"%ProgramFiles%\Cursor\Cursor.exe",
+            "cursor.exe",
+        ],
+        linux: &["cursor"],
+        darwin: &["/Applications/Cursor.app", "cursor"],
+    },
+    AppCandidate {
+        id: "zed",
+        name: "Zed",
+        short_name: "Zed",
+        kind: "editor",
+        glyph: "zed",
+        extensions: &["rs", "ts", "md"],
+        nt: &[r"%LOCALAPPDATA%\Programs\Zed\zed.exe", "zed.exe"],
+        linux: &["zed", "zeditor"],
+        darwin: &["/Applications/Zed.app", "zed"],
+    },
+    AppCandidate {
+        id: "sublime",
+        name: "Sublime Text",
+        short_name: "Sublime Text",
+        kind: "editor",
+        glyph: "sublime",
+        extensions: &["txt", "md", "json"],
+        nt: &[
+            r"%ProgramFiles%\Sublime Text\sublime_text.exe",
+            r"%ProgramFiles(x86)%\Sublime Text\sublime_text.exe",
+        ],
+        linux: &["subl", "sublime_text"],
+        darwin: &["/Applications/Sublime Text.app", "subl"],
+    },
+    AppCandidate {
+        id: "notepadpp",
+        name: "Notepad++",
+        short_name: "Notepad++",
+        kind: "editor",
+        glyph: "notepadpp",
+        extensions: &["txt", "md", "json", "log"],
+        nt: &[
+            r"%ProgramFiles%\Notepad++\notepad++.exe",
+            r"%ProgramFiles(x86)%\Notepad++\notepad++.exe",
+        ],
+        linux: &["notepadqq"],
+        darwin: &[],
+    },
+    AppCandidate {
+        id: "notepad",
+        name: "记事本（Windows）",
+        short_name: "记事本",
+        kind: "viewer",
+        glyph: "notepad",
+        extensions: &["txt", "log"],
+        nt: &[r"%WINDIR%\System32\notepad.exe"],
+        linux: &[],
+        darwin: &[],
+    },
+    AppCandidate {
+        id: "terminal",
+        name: "Windows Terminal",
+        short_name: "终端",
+        kind: "terminal",
+        glyph: "terminal",
+        extensions: &[],
+        nt: &[r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe"],
+        linux: &["x-terminal-emulator", "gnome-terminal", "konsole"],
+        darwin: &["/Applications/Utilities/Terminal.app", "open"],
+    },
+    AppCandidate {
+        id: "explorer",
+        name: "资源管理器（定位到文件）",
+        short_name: "资源管理器",
+        kind: "shell",
+        glyph: "explorer",
+        extensions: &[],
+        nt: &[r"%WINDIR%\explorer.exe"],
+        linux: &["xdg-open"],
+        darwin: &["open"],
+    },
+];
+
+fn expand_env_template(template: &str) -> Option<String> {
+    let mut out = String::with_capacity(template.len());
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(end) = template[i + 1..].find('%') {
+                let var_name = &template[i + 1..i + 1 + end];
+                let val = std::env::var(var_name).ok()?;
+                out.push_str(&val);
+                i += end + 2;
+                continue;
+            }
+            return None;
+        }
+        let ch = template[i..].chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Some(out)
+}
+
+fn find_on_path(binary: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_app_probe(probe: &str) -> Option<String> {
+    if probe.contains('\\') || probe.contains('/') || probe.contains('%') {
+        let expanded = expand_env_template(probe)?;
+        let p = Path::new(&expanded);
+        if p.exists() {
+            return Some(expanded);
+        }
+        return None;
+    }
+    find_on_path(probe)
+}
+
+fn platform_probes(candidate: &AppCandidate) -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        candidate.nt
+    }
+    #[cfg(target_os = "macos")]
+    {
+        candidate.darwin
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        candidate.linux
+    }
+}
+
+fn resolve_host_external_apps() -> (Vec<ExternalAppView>, HashMap<String, String>) {
+    let mut apps = Vec::new();
+    let mut targets = HashMap::new();
+
+    for candidate in APP_CANDIDATES {
+        let mut resolved = None;
+        for probe in platform_probes(candidate) {
+            if let Some(found) = resolve_app_probe(probe) {
+                resolved = Some(found);
+                break;
+            }
+        }
+        let Some(executable) = resolved else {
+            continue;
+        };
+        apps.push(ExternalAppView {
+            id: candidate.id.to_string(),
+            name: candidate.name.to_string(),
+            short_name: candidate.short_name.to_string(),
+            kind: candidate.kind.to_string(),
+            extensions: candidate.extensions.iter().map(|s| s.to_string()).collect(),
+            icon: ExternalAppIconView {
+                kind: "glyph".to_string(),
+                value: candidate.glyph.to_string(),
+            },
+            is_system_default: false,
+            available: true,
+        });
+        targets.insert(candidate.id.to_string(), executable);
+    }
+
+    apps.push(ExternalAppView {
+        id: "system".to_string(),
+        name: "系统默认应用".to_string(),
+        short_name: "系统默认".to_string(),
+        kind: "system".to_string(),
+        extensions: Vec::new(),
+        icon: ExternalAppIconView {
+            kind: "glyph".to_string(),
+            value: "system".to_string(),
+        },
+        is_system_default: true,
+        available: true,
+    });
+
+    let kind_rank = |k: &str| match k {
+        "editor" => 0usize,
+        "viewer" => 1,
+        "terminal" => 2,
+        "shell" => 3,
+        "system" => 4,
+        _ => 5,
+    };
+    apps.sort_by(|a, b| kind_rank(&a.kind).cmp(&kind_rank(&b.kind)).then_with(|| a.name.cmp(&b.name)));
+
+    (apps, targets)
+}
+
+/// List the external applications available on this desktop host.
+pub fn list_external_apps() -> ExternalAppPageView {
+    let (apps, _) = resolve_host_external_apps();
+    ExternalAppPageView {
+        apps,
+        truncated: false,
+    }
+}
+
+/// Open or reveal a workspace file with a host application.
+pub fn open_external(
+    workspace: &Path,
+    path: &str,
+    app_id: Option<&str>,
+    mode: Option<&str>,
+) -> Result<(), String> {
+    let clean_path = path.trim_start_matches(['/', '\\']);
+    let target = if Path::new(path).is_absolute() || path.starts_with(r"\\") {
+        PathBuf::from(path)
+    } else {
+        workspace.join(clean_path)
+    };
+
+    let mode = mode.unwrap_or("open");
+    if mode == "reveal" {
+        return reveal_in_explorer(&target);
+    }
+
+    let app_id = app_id.unwrap_or("system").trim();
+    if app_id.is_empty() || app_id == "system" {
+        return open_path(&target);
+    }
+    if app_id == "explorer" {
+        return reveal_in_explorer(&target);
+    }
+
+    if !target.exists() {
+        return Err(format!("路径不存在: {}", target.display()));
+    }
+
+    let (_, targets) = resolve_host_external_apps();
+    let Some(executable) = targets.get(app_id) else {
+        return Err(format!("宿主上没有名为 {app_id} 的应用"));
+    };
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let win_target = normalize_windows_path(&target);
+        let mut cmd = Command::new(executable);
+        cmd.arg(&win_target);
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.spawn()
+            .map_err(|e| format!("启动 {app_id} 失败: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if executable.ends_with(".app") {
+            Command::new("open")
+                .arg("-a")
+                .arg(executable)
+                .arg(&target)
+                .spawn()
+                .map_err(|e| format!("启动 {app_id} 失败: {e}"))?;
+        } else {
+            Command::new(executable)
+                .arg(&target)
+                .spawn()
+                .map_err(|e| format!("启动 {app_id} 失败: {e}"))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Command::new(executable)
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("启动 {app_id} 失败: {e}"))?;
+        Ok(())
+    }
 }

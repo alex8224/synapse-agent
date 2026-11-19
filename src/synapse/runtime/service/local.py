@@ -23,6 +23,7 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final, Self
 
 import synapse.runtime.service.attachment_store as attachment_store
@@ -2300,7 +2301,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.ref.session)
         manager = self._resolve_manager(query.ref.session)
         self._check_project(manager, query.ref.session)
-        session = self._resolve_session(manager, query.ref.session)
+        session = await self._resolve_workspace_session(manager, query.ref.session)
         return await asyncio.to_thread(stat_artifact_filesystem, query, session)
 
     async def list_artifacts(self, query: ListArtifactsQuery) -> ArtifactPage:
@@ -2313,7 +2314,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.session)
         manager = self._resolve_manager(query.session)
         self._check_project(manager, query.session)
-        session = self._resolve_session(manager, query.session)
+        session = await self._resolve_workspace_session(manager, query.session)
         return await asyncio.to_thread(list_artifacts_filesystem, query, session)
 
     async def read_artifact(self, query: ReadArtifactQuery) -> ArtifactChunk:
@@ -2326,7 +2327,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.ref.session)
         manager = self._resolve_manager(query.ref.session)
         self._check_project(manager, query.ref.session)
-        session = self._resolve_session(manager, query.ref.session)
+        session = await self._resolve_workspace_session(manager, query.ref.session)
         return await asyncio.to_thread(read_artifact_filesystem, query, session)
 
     async def git_status(self, query: GitStatusQuery) -> GitStatusResult:
@@ -2339,7 +2340,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.session)
         manager = self._resolve_manager(query.session)
         self._check_project(manager, query.session)
-        session = self._resolve_session(manager, query.session)
+        session = await self._resolve_workspace_session(manager, query.session)
         return await asyncio.to_thread(git_status_workspace, query, session)
 
     async def git_diff(self, query: GitDiffQuery) -> GitDiffResult:
@@ -2352,7 +2353,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(query.session)
         manager = self._resolve_manager(query.session)
         self._check_project(manager, query.session)
-        session = self._resolve_session(manager, query.session)
+        session = await self._resolve_workspace_session(manager, query.session)
         return await asyncio.to_thread(git_diff_workspace, query, session)
 
     # -- revert port -------------------------------------------------------
@@ -2413,7 +2414,7 @@ class LocalAgentRuntimeService:
         self._validate_ref(command.session)
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
-        session = self._resolve_session(manager, command.session)
+        session = await self._resolve_workspace_session(manager, command.session)
         return await asyncio.to_thread(open_external_workspace, command, session)
 
     # -- window-capture port ------------------------------------------------
@@ -3440,6 +3441,34 @@ class LocalAgentRuntimeService:
             return
         if manager.project_id != ref.project_id:
             raise NotFoundError(f"session {ref.global_id!r} not found under its manager")
+
+    async def _resolve_workspace_session(
+        self, manager: RuntimeManager, ref: SessionRef
+    ) -> Any:
+        """Resolve a workspace-bearing target for read-only/external project operations.
+
+        Prefers an open native ``SessionRuntime`` when present; for a bound external
+        ACP session (which is never opened in ``manager._sessions``) falls back to the
+        project's own workspace/settings so git, artifacts, and external apps work.
+        """
+        try:
+            session = manager.get_session_ref(ref)
+        except ValueError:
+            session = None
+        if session is not None:
+            return session
+        external = await self._external_for(ref)
+        if external is None:
+            raise NotFoundError(f"session {ref.global_id!r} not found")
+        settings = external[2] or getattr(manager, "settings", None)
+        workspace = (
+            getattr(settings, "workspace", None)
+            or getattr(manager, "workspace", None)
+            or getattr(settings, "project_root", None)
+        )
+        if not workspace:
+            raise NotFoundError(f"session {ref.global_id!r} not found")
+        return SimpleNamespace(workspace=workspace, settings=settings)
 
     def _resolve_session(
         self, manager: RuntimeManager, ref: SessionRef

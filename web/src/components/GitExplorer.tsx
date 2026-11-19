@@ -7,6 +7,11 @@ import { useDialogKeyboardNav } from './keyboardNav.ts';
 import { OpenWithMenu } from './OpenWithMenu.tsx';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import {
+  fetchGitDiff,
+  fetchGitStatus,
+  hasNativeGitSurface,
+} from '../client/tauriGitFs.ts';
+import {
   MalformedGitPayloadError,
   changeStatusLabel,
   changeStatusCode,
@@ -45,8 +50,14 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
 }) => {
   const client = useConsoleStore((s) => s.client);
   const currentSession = useConsoleStore((s) => s.currentSession);
+  const sessionWorkspacePath = useConsoleStore((s) => s.workspacePath);
+  const projects = useConsoleStore((s) => s.projects);
+  const activeProjectId = useConsoleStore((s) => s.activeProjectId);
   const openExternalError = useConsoleStore((s) => s.openExternalError);
   const dismissOpenExternalError = useConsoleStore((s) => s.dismissOpenExternalError);
+  const activeProject = projects.find((p) => p.project_id === activeProjectId);
+  const workspacePath = activeProject?.workspace_path || sessionWorkspacePath || '';
+  const nativeGit = hasNativeGitSurface();
   const [status, setStatus] = useState<GitStatusView | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(initialPath ?? null);
@@ -67,11 +78,11 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
   const onKeyDown = useDialogKeyboardNav(dialogRef, status !== null, '#git-file-list button');
 
   const loadStatus = useCallback(async () => {
-    if (client === null) return;
+    if (!nativeGit && client === null) return;
     setBusy(true);
     setStatusError(null);
     try {
-      const next = await client.gitStatus(currentSession);
+      const next = await fetchGitStatus(client, currentSession, workspacePath);
       setStatus(next);
       setSelected((current) => {
         if (current !== null && next.files.some((file) => file.path === current)) return current;
@@ -83,19 +94,19 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
     } finally {
       setBusy(false);
     }
-  }, [client, currentSession]);
+  }, [client, currentSession, nativeGit, workspacePath]);
 
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
 
   useEffect(() => {
-    if (selected === null || client === null) return;
+    if (selected === null || (!nativeGit && client === null)) return;
     let cancelled = false;
     void (async () => {
       setDiffError(null);
       try {
-        const next = await client.gitDiff(currentSession, selected, staged);
+        const next = await fetchGitDiff(client, currentSession, selected, workspacePath, staged);
         if (!cancelled) setDiff(next);
       } catch (err) {
         if (!cancelled) {
@@ -107,7 +118,7 @@ export const GitExplorer: React.FC<{ onClose: () => void; initialPath?: string |
     return () => {
       cancelled = true;
     };
-  }, [client, currentSession, selected, staged, diffReloadToken]);
+  }, [client, currentSession, nativeGit, selected, staged, diffReloadToken, workspacePath]);
 
   const files = status?.files ?? [];
 

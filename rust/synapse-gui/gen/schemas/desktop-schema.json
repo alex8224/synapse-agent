@@ -297,6 +297,18 @@
           "markdownDescription": "Enables the tauri_list_artifacts command without any pre-configured scope."
         },
         {
+          "description": "Enables the tauri_list_external_apps command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-list-external-apps",
+          "markdownDescription": "Enables the tauri_list_external_apps command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tauri_open_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tauri-open-external",
+          "markdownDescription": "Enables the tauri_open_external command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_open_in_vscode command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tauri-open-in-vscode",
@@ -481,6 +493,18 @@
           "type": "string",
           "const": "deny-tauri-list-artifacts",
           "markdownDescription": "Denies the tauri_list_artifacts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_list_external_apps command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-list-external-apps",
+          "markdownDescription": "Denies the tauri_list_external_apps command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tauri_open_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tauri-open-external",
+          "markdownDescription": "Denies the tauri_open_external command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_open_in_vscode command without any pre-configured scope.",

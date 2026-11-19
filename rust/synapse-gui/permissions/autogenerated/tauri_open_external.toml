@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tauri-open-external"
+description = "Enables the tauri_open_external command without any pre-configured scope."
+commands.allow = ["tauri_open_external"]
+
+[[permission]]
+identifier = "deny-tauri-open-external"
+description = "Denies the tauri_open_external command without any pre-configured scope."
+commands.deny = ["tauri_open_external"]

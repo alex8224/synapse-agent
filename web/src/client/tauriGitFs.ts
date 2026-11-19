@@ -32,6 +32,11 @@ import type {
   ArtifactEntry,
   ArtifactPageView,
 } from '../runtime-client/artifacts.ts';
+import {
+  parseExternalAppPage,
+  type ExternalAppsView,
+  type OpenExternalMode,
+} from '../runtime-client/externalApps.ts';
 import type { SynapseRuntimeClient } from './SynapseRuntimeClient.ts';
 import type { SessionRef } from '../runtime-client/contract.generated.ts';
 
@@ -80,6 +85,67 @@ interface RawArtifactChunk {
 /** Whether the native artifact commands are reachable from this webview. */
 export function hasNativeArtifactSurface(): boolean {
   return isTauri() && getTauriInternals() !== null;
+}
+
+/** Whether the native git & external-app commands are reachable from this webview. */
+export function hasNativeGitSurface(): boolean {
+  return isTauri() && getTauriInternals() !== null;
+}
+
+/**
+ * List external applications available on the host: prefers Tauri native IPC
+ * so the desktop shell never depends on a daemon session.
+ */
+export async function fetchExternalApps(
+  client: SynapseRuntimeClient | null,
+): Promise<ExternalAppsView> {
+  const internals = getTauriInternals();
+  if (isTauri() && internals) {
+    const raw = await internals.invoke<unknown>('tauri_list_external_apps');
+    return parseExternalAppPage(raw);
+  }
+
+  if (!client) {
+    throw new Error('Runtime client not available');
+  }
+  return await client.listExternalApps();
+}
+
+/**
+ * Open or reveal a workspace file with an external application: uses Tauri
+ * native IPC on the desktop build, otherwise the runtime RPC.
+ */
+export async function openExternalNativeOrRpc(params: {
+  path: string;
+  workspacePath?: string;
+  appId?: string;
+  mode?: OpenExternalMode;
+  client?: SynapseRuntimeClient | null;
+  session?: SessionRef;
+}): Promise<void> {
+  const internals = getTauriInternals();
+  if (isTauri() && internals) {
+    await internals.invoke('tauri_open_external', {
+      workspace: params.workspacePath || undefined,
+      path: params.path,
+      app_id: params.appId,
+      mode: params.mode,
+    });
+    return;
+  }
+
+  if (!params.client) {
+    throw new Error('Runtime client not available');
+  }
+  if (!params.session?.thread_id) {
+    throw new Error('Session not available');
+  }
+  await params.client.openExternal({
+    session: params.session,
+    path: params.path,
+    appId: params.appId,
+    mode: params.mode,
+  });
 }
 
 /**
@@ -258,6 +324,7 @@ export async function fetchGitDiff(
   session: SessionRef,
   filePath: string,
   workspacePath?: string,
+  staged?: boolean,
 ): Promise<GitDiffView> {
   const internals = getTauriInternals();
   if (isTauri() && internals) {
@@ -265,6 +332,7 @@ export async function fetchGitDiff(
       const res = await internals.invoke<unknown>('tauri_git_diff', {
         workspace: workspacePath || undefined,
         path: filePath,
+        ...(staged === undefined ? {} : { staged }),
       });
       return parseGitDiff(res);
     } catch (err) {
@@ -275,7 +343,7 @@ export async function fetchGitDiff(
   if (!client) {
     throw new Error('Runtime client not available');
   }
-  return await client.gitDiff(session, filePath);
+  return await client.gitDiff(session, filePath, staged);
 }
 
 /** Raised when a history read is asked for outside the desktop shell. */

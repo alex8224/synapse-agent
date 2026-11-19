@@ -30,6 +30,8 @@
     "allow-tauri-open-path",
     "allow-tauri-open-in-vscode",
     "allow-tauri-reveal-in-folder",
+    "allow-tauri-list-external-apps",
+    "allow-tauri-open-external",
     "allow-tauri-git-status",
     "allow-tauri-git-diff",
     "allow-tauri-git-refs",

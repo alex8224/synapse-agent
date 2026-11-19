@@ -151,6 +151,29 @@ async fn tauri_open_in_vscode(workspace: Option<String>, path: String) -> Result
 }
 
 #[tauri::command]
+async fn tauri_list_external_apps() -> Result<git_fs::ExternalAppPageView, String> {
+    run_blocking("读取可用应用", || Ok(git_fs::list_external_apps())).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn tauri_open_external(
+    workspace: Option<String>,
+    path: String,
+    app_id: Option<String>,
+    mode: Option<String>,
+) -> Result<(), String> {
+    run_blocking("用外部程序打开", move || {
+        git_fs::open_external(
+            &command_workspace(workspace),
+            &path,
+            app_id.as_deref(),
+            mode.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn tauri_git_status(workspace: Option<String>) -> Result<git_fs::GitStatusView, String> {
     // `git status --porcelain` plus `git diff --numstat` shell out twice.
     run_blocking("读取 git 状态", move || {
@@ -163,9 +186,10 @@ async fn tauri_git_status(workspace: Option<String>) -> Result<git_fs::GitStatus
 async fn tauri_git_diff(
     workspace: Option<String>,
     path: String,
+    staged: Option<bool>,
 ) -> Result<git_fs::GitDiffView, String> {
     run_blocking("读取 git 差异", move || {
-        git_fs::get_git_diff(&command_workspace(workspace), &path)
+        git_fs::get_git_diff(&command_workspace(workspace), &path, staged)
     })
     .await
 }
@@ -603,6 +627,8 @@ fn main() {
             tauri_open_path,
             tauri_open_in_vscode,
             tauri_reveal_in_folder,
+            tauri_list_external_apps,
+            tauri_open_external,
             tauri_terminal_create,
             tauri_terminal_write,
             tauri_terminal_resize,

@@ -19,6 +19,8 @@ fn main() {
             "tauri_open_path",
             "tauri_open_in_vscode",
             "tauri_reveal_in_folder",
+            "tauri_list_external_apps",
+            "tauri_open_external",
             "tauri_terminal_create",
             "tauri_terminal_write",
             "tauri_terminal_resize",
