@@ -500,3 +500,61 @@ test('toolItemFromPayload tolerates a missing item_id by falling back to call_id
   assert.equal(item.status, 'running');
   assert.equal(item.label, 'grep');
 });
+
+test('interleaved ACP reasoning and tool calls without batch/completion markers stay in order', () => {
+  let s = apply(baseState(), event('reasoning_delta', { text: 'think 1' }, 't1', 1));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'acp:t1:0', call_id: 'acp:t1:0', name: 'read_file' }), 't1', 2));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'acp:t1:1', call_id: 'acp:t1:1', name: 'grep' }), 't1', 3));
+  s = apply(s, event('tool_finished', { item_id: 'acp:t1:0', status: 'completed', preview: 'ok1' }, 't1', 4));
+  s = apply(s, event('tool_finished', { item_id: 'acp:t1:1', status: 'completed', preview: 'ok2' }, 't1', 5));
+  s = apply(s, event('reasoning_delta', { text: 'think 2' }, 't1', 6));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'acp:t1:2', call_id: 'acp:t1:2', name: 'edit_file' }), 't1', 7));
+  s = apply(s, event('tool_finished', { item_id: 'acp:t1:2', status: 'completed', preview: 'ok3' }, 't1', 8));
+  s = apply(s, event('reasoning_delta', { text: 'think 3' }, 't1', 9));
+  s = apply(s, event('answer_delta', { text: 'all done' }, 't1', 10));
+  s = apply(s, event('turn_completed', { status: 'completed' }, 't1', 11));
+
+  assert.deepEqual(
+    s.messages.map((m) => m.type),
+    ['thought', 'tool_group', 'thought', 'tool_group', 'thought', 'assistant'],
+    'later tool calls must open a fresh group below the thought that triggered them',
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'thought').map((m) => m.content),
+    ['think 1', 'think 2', 'think 3'],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'thought').map((m) => m.duration),
+    ['done', 'done', 'done'],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'tool_group').map((m) => m.tools?.map((t) => t.name)),
+    [['read_file', 'grep'], ['edit_file']],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'tool_group').map((m) => m.finished),
+    [true, true],
+  );
+  assert.equal(s.messages.at(-1)?.content, 'all done');
+  assert.equal(s.messages.at(-1)?.streaming, false);
+});
+
+test('interleaved ACP assistant text and tool calls without answer_completed stay in order', () => {
+  let s = apply(baseState(), event('answer_delta', { text: 'checking first' }, 't1', 1));
+  s = apply(s, event('tool_started', toolItem({ item_id: 'acp:t1:0', call_id: 'acp:t1:0', name: 'read_file' }), 't1', 2));
+  s = apply(s, event('tool_finished', { item_id: 'acp:t1:0', status: 'completed' }, 't1', 3));
+  s = apply(s, event('answer_delta', { text: 'final answer' }, 't1', 4));
+
+  assert.deepEqual(
+    s.messages.map((m) => m.type),
+    ['assistant', 'tool_group', 'assistant'],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'assistant').map((m) => m.content),
+    ['checking first', 'final answer'],
+  );
+  assert.deepEqual(
+    s.messages.filter((m) => m.type === 'assistant').map((m) => m.streaming),
+    [false, true],
+  );
+});

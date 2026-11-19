@@ -25,6 +25,7 @@ from synapse.runtime.service.external_ports import (
     ExternalAgentEntry,
     ExternalConfigOption,
     ExternalConfigValue,
+    ExternalMcpState,
     ExternalSessionView,
 )
 from synapse.runtime.service.session_metadata import read_external_session_binding
@@ -325,6 +326,28 @@ class DaemonExternalSessions:
                 bridge.mark_cancelled()
         return cancelled
 
+    def mcp_status(self, ref: SessionRef) -> ExternalMcpState:
+        active_servers, warnings = self._runtime.mcp_status(ref)
+        return ExternalMcpState(active_servers=active_servers, warnings=warnings)
+
+    async def reload_mcp(
+        self, ref: SessionRef, settings: object, workspace: Path
+    ) -> ExternalMcpState:
+        binding = self._agent_for(settings, ref)
+        if binding is None:
+            from synapse.runtime.service.errors import NotFoundError
+
+            raise NotFoundError("External ACP session binding not found")
+        broker = self._ensure_broker(ref)
+        active_servers, warnings = await self._runtime.reload_mcp(
+            ref,
+            settings,
+            workspace,
+            on_update=broker.emit,
+            on_replay=_replay_sink(),
+        )
+        return ExternalMcpState(active_servers=active_servers, warnings=warnings)
+
     async def close(self, ref: SessionRef) -> None:
         key = (ref.project_id, ref.thread_id)
         broker = self._brokers.pop(key, None)
@@ -333,6 +356,7 @@ class DaemonExternalSessions:
         bridge = self._runtime.bridges.pop(key, None)
         if bridge is not None:
             bridge.cancel_unsolicited_timer()
+        self._runtime.reload_locks.pop(key, None)
         await self._runtime.pool.close(key)
 
     async def shutdown(self) -> None:
@@ -342,6 +366,7 @@ class DaemonExternalSessions:
         for bridge in self._runtime.bridges.values():
             bridge.cancel_unsolicited_timer()
         self._runtime.bridges.clear()
+        self._runtime.reload_locks.clear()
         await self._runtime.pool.shutdown()
 
 

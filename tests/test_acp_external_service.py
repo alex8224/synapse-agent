@@ -1301,3 +1301,266 @@ def test_open_session_rejects_external_with_wire_service_code_and_reconciles(
             await manager.shutdown()
 
     asyncio.run(run())
+
+
+def test_local_service_reload_mcp_toggles_and_reloads_external_acp_session(
+    tmp_path: Path,
+) -> None:
+    from synapse.runtime.service.commands import ReloadMcpCommand
+    from synapse.runtime.service.external_commands import InitializeExternalSessionCommand
+    from synapse.runtime.service.local import LocalAgentRuntimeService
+    from synapse.runtime.service.mcp_management import ListMcpServersQuery
+    from synapse.runtime.sessions.manager import RuntimeManager
+
+    log_file = tmp_path / "acp_mcp_log.jsonl"
+    agent_script = f'''
+import json, sys
+log_path = {str(log_file)!r}
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        result = dict(protocolVersion=1, agentCapabilities=dict(loadSession=True))
+    elif method == "session/new":
+        names = [srv["name"] for srv in msg["params"].get("mcpServers", [])]
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({{"op": "new", "mcp": names}}) + "\\n")
+        result = dict(sessionId="peer-mcp-1")
+    elif method == "session/load":
+        names = [srv["name"] for srv in msg["params"].get("mcpServers", [])]
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({{"op": "load", "mcp": names}}) + "\\n")
+        result = dict()
+    else:
+        continue
+    print(json.dumps(dict(jsonrpc="2.0", id=msg["id"], result=result)), flush=True)
+'''
+    mcp_file = tmp_path / "mcp.json"
+    mcp_file.write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "cdp",
+                        "transport": "stdio",
+                        "command": "python",
+                        "args": ["-m", "cdp_mcp"],
+                        "enabled": True,
+                    },
+                    {
+                        "name": "cua",
+                        "transport": "stdio",
+                        "command": "python",
+                        "args": ["-m", "cua_mcp"],
+                        "enabled": False,
+                    },
+                    {
+                        "name": "stitch",
+                        "transport": "streamable_http",
+                        "url": "https://example.com/mcp",
+                        "enabled": False,
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        sessions_path=tmp_path / "sessions.sqlite",
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+        workspace=tmp_path,
+        mcp_config_path=mcp_file,
+        mcp_servers_json=None,
+        enable_mcp=True,
+    )
+    config = {
+        "agents": [
+            {
+                "id": "test",
+                "name": "Test agent",
+                "command": sys.executable,
+                "args": ["-u", "-c", agent_script],
+                "permission_mode": "manual",
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    pool = ExternalSessionPool(catalog)
+    external_service = DaemonExternalSessions(ExternalRuntime(pool))
+    ref = SessionRef(project_id="project", thread_id="external-mcp-reload")
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        project_id=ref.project_id,
+    )
+    local_service = LocalAgentRuntimeService(
+        lambda project: manager if project == ref.project_id else None,
+        external_sessions=external_service,
+    )
+
+    async def run() -> None:
+        try:
+            await local_service.create_session(
+                CreateSessionCommand(
+                    project_id=ref.project_id,
+                    thread_id=ref.thread_id,
+                    external_agent_id="test",
+                )
+            )
+            await local_service.initialize_external_session(InitializeExternalSessionCommand(ref))
+            broker_before = external_service.broker(ref)
+            assert broker_before is not None
+
+            # 1) Inspecting MCP state via reload_mcp(server=None) must NOT restart the process.
+            initial = await local_service.reload_mcp(ReloadMcpCommand(ref))
+            assert initial.attached is True
+            assert initial.active_servers == ("cdp",)
+            assert initial.warnings == ()
+            by_name = {srv.name: srv for srv in initial.servers}
+            assert by_name["cdp"].enabled is True and by_name["cdp"].attached is True
+            assert by_name["cua"].enabled is False and by_name["cua"].attached is False
+            log_entries = [
+                json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            assert log_entries == [{"op": "new", "mcp": ["cdp"]}]
+
+            # 2) Enabling a stdio server persists mcp.json and reloads via session/load
+            #    while keeping the event broker intact.
+            enabled = await local_service.reload_mcp(
+                ReloadMcpCommand(ref, server="cua", enabled=True)
+            )
+            assert enabled.enabled is True
+            assert enabled.attached is True
+            assert enabled.active_servers == ("cdp", "cua")
+            assert external_service.broker(ref) is broker_before
+            listed = await local_service.list_mcp_servers(ListMcpServersQuery(session=ref))
+            listed_by_name = {srv.name: srv for srv in listed.servers}
+            assert listed_by_name["cua"].enabled is True and listed_by_name["cua"].attached is True
+
+            # 3) Disabling cdp persists mcp.json and drops it on session/load.
+            disabled = await local_service.reload_mcp(
+                ReloadMcpCommand(ref, server="cdp", enabled=False)
+            )
+            assert disabled.enabled is False
+            assert disabled.attached is False
+            assert disabled.active_servers == ("cua",)
+            disk = json.loads(mcp_file.read_text(encoding="utf-8"))
+            disk_enabled = {srv["name"]: srv["enabled"] for srv in disk["servers"]}
+            assert disk_enabled == {"cdp": False, "cua": True, "stitch": False}
+
+            # 4) Enabling an HTTP server when peer does not advertise http MCP persists the flag,
+            #    does NOT restart the subprocess, and reports a clear capability warning.
+            http_res = await local_service.reload_mcp(
+                ReloadMcpCommand(ref, server="stitch", enabled=True)
+            )
+            assert http_res.enabled is True
+            assert http_res.attached is False
+            assert http_res.active_servers == ("cua",)
+            assert any("stitch" in w and "http" in w.lower() for w in http_res.warnings)
+
+            log_entries = [
+                json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            assert log_entries == [
+                {"op": "new", "mcp": ["cdp"]},
+                {"op": "load", "mcp": ["cdp", "cua"]},
+                {"op": "load", "mcp": ["cua"]},
+            ]
+        finally:
+            await external_service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
+def test_local_service_reload_mcp_preserves_live_session_without_load_session(
+    tmp_path: Path,
+) -> None:
+    from synapse.runtime.service.commands import ReloadMcpCommand
+    from synapse.runtime.service.external_commands import InitializeExternalSessionCommand
+    from synapse.runtime.service.local import LocalAgentRuntimeService
+    from synapse.runtime.sessions.manager import RuntimeManager
+
+    mcp_file = tmp_path / "mcp.json"
+    mcp_file.write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "cdp",
+                        "transport": "stdio",
+                        "command": "python",
+                        "args": ["-m", "cdp_mcp"],
+                        "enabled": True,
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(
+        sessions_path=tmp_path / "sessions.sqlite",
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+        workspace=tmp_path,
+        mcp_config_path=mcp_file,
+        mcp_servers_json=None,
+        enable_mcp=True,
+    )
+    config = {
+        "agents": [
+            {
+                "id": "test",
+                "name": "Test agent",
+                "command": sys.executable,
+                "args": ["-u", "-c", _AGENT],
+                "permission_mode": "manual",
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    pool = ExternalSessionPool(catalog)
+    external_service = DaemonExternalSessions(ExternalRuntime(pool))
+    ref = SessionRef(project_id="project", thread_id="external-mcp-no-load")
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        project_id=ref.project_id,
+    )
+    local_service = LocalAgentRuntimeService(
+        lambda project: manager if project == ref.project_id else None,
+        external_sessions=external_service,
+    )
+
+    async def run() -> None:
+        try:
+            await local_service.create_session(
+                CreateSessionCommand(
+                    project_id=ref.project_id,
+                    thread_id=ref.thread_id,
+                    external_agent_id="test",
+                )
+            )
+            await local_service.initialize_external_session(InitializeExternalSessionCommand(ref))
+            live_before = pool.session((ref.project_id, ref.thread_id))
+            assert live_before is not None
+
+            result = await local_service.reload_mcp(
+                ReloadMcpCommand(ref, server="cdp", enabled=False)
+            )
+            # Config persisted, live session preserved, truthful attached + warning reported.
+            disk = json.loads(mcp_file.read_text(encoding="utf-8"))
+            assert disk["servers"][0]["enabled"] is False
+            assert pool.session((ref.project_id, ref.thread_id)) is live_before
+            assert result.enabled is False
+            assert result.active_servers == ("cdp",)
+            assert len(result.warnings) == 1
+            assert "新建会话" in result.warnings[0]
+        finally:
+            await external_service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(run())

@@ -56,6 +56,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     mcpTogglingServer,
     mcpTogglingAction,
     runtimeStatus,
+    externalSession,
     toggleMcpServer,
     refreshMcpRuntime,
     fetchRuntimeConfig,
@@ -71,6 +72,7 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       mcpTogglingServer: state.mcpTogglingServer,
       mcpTogglingAction: state.mcpTogglingAction,
       runtimeStatus: state.runtimeStatus,
+      externalSession: state.externalSession,
       toggleMcpServer: state.toggleMcpServer,
       refreshMcpRuntime: state.refreshMcpRuntime,
       fetchRuntimeConfig: state.fetchRuntimeConfig,
@@ -279,7 +281,13 @@ export const McpPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
                 {srv.enabled && basePhase !== 'connecting' && !isStopping && discovered.length === 0 && (
                   <div className="mt-1 pl-4 font-sans text-[10px] text-gray-400">
-                    （未连接：点击「重新连接」后可选择工具）
+                    {externalSession !== null
+                      ? basePhase === 'attached'
+                        ? '（已注入 ACP 会话，工具由外部 Agent 管理）'
+                        : '（未注入：点击「重新连接」重试，或新建会话生效）'
+                      : basePhase === 'attached'
+                        ? '（已连接，该服务器未暴露可筛选工具）'
+                        : '（未连接：点击「重新连接」后可选择工具）'}
                   </div>
                 )}
 

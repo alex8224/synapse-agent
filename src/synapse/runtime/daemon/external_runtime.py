@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from synapse.acp.external_client import ExternalSession, UpdateSink
+from synapse.acp.external_client import (
+    ExternalSession,
+    UpdateSink,
+    _convert_mcp_servers_to_acp,
+)
 from synapse.acp.external_history import ExternalTurnBridge, run_turn
 from synapse.integrations.mcp_client import McpServerConfig, load_mcp_server_configs
 from synapse.runtime.daemon.external_session_pool import ExternalSessionPool
@@ -27,6 +31,8 @@ _LOGGER = logging.getLogger(__name__)
 
 def _load_external_mcp_servers(settings: object, workspace: Path) -> tuple[McpServerConfig, ...]:
     """Load enabled Synapse MCP configs for injection into an external ACP session."""
+    if not getattr(settings, "enable_mcp", True):
+        return ()
     try:
         configs = load_mcp_server_configs(
             path=getattr(settings, "mcp_config_path", None),
@@ -44,6 +50,8 @@ class ExternalRuntime:
     pool: ExternalSessionPool
     #: One bridge per session: it owns the active turn's event projection.
     bridges: dict[tuple[str, str], ExternalTurnBridge] = field(default_factory=dict)
+    #: Serialize MCP reloads per session so rapid toggles never race teardown/reopen.
+    reload_locks: dict[tuple[str, str], asyncio.Lock] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.pool.set_busy_probe(self._is_bridge_busy)
@@ -174,3 +182,110 @@ class ExternalRuntime:
         )
         bridge.configure_unsolicited(live=on_update, settings=settings, session=session)
         return session
+
+    def mcp_status(self, ref: SessionRef) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return ``(attached_servers, warnings)`` for the live session without restarting it."""
+        session = self.pool.session((ref.project_id, ref.thread_id))
+        if session is None or not session.usable:
+            return (), ()
+        return session.attached_mcp_servers, session.mcp_warnings
+
+    async def reload_mcp(
+        self,
+        ref: SessionRef,
+        settings: object,
+        workspace: Path,
+        *,
+        on_update: UpdateSink,
+        on_replay: UpdateSink,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Sync MCP configuration onto an external ACP session when safe to reload.
+
+        ACP passes MCP servers only in ``session/new`` and ``session/load``:
+        - If the live session already has the exact desired MCP set, return its
+          state immediately without restarting the subprocess.
+        - If a turn is running, keep the live turn intact and report a warning.
+        - If the peer does not advertise ``session/load`` (or has no persisted
+          remote session id yet), keep the live session intact and tell the user
+          the saved config applies to new sessions.
+        - Otherwise recycle only the pool process (keeping the event broker and
+          bridge intact) and reopen via ``session/load`` with the updated MCP list.
+        """
+        key = (ref.project_id, ref.thread_id)
+        lock = self.reload_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            latest_configs = await asyncio.to_thread(
+                _load_external_mcp_servers, settings, workspace
+            )
+            live = self.pool.session(key)
+            if live is not None and live.usable:
+                desired_acp, desired_warnings = _convert_mcp_servers_to_acp(
+                    latest_configs, live.mcp_capabilities
+                )
+                if tuple(desired_acp) == live.acp_mcp_servers:
+                    return live.attached_mcp_servers, desired_warnings
+                if live.is_busy or self._is_bridge_busy(key):
+                    return (
+                        live.attached_mcp_servers,
+                        (
+                            *desired_warnings,
+                            "当前 ACP 会话正在运行，MCP 配置已保存，"
+                            "请待本轮结束后点击「重新连接」生效",
+                        ),
+                    )
+                binding = await asyncio.to_thread(
+                    read_external_session_binding, settings, ref.thread_id
+                )
+                peer_id = binding[1] if binding is not None else None
+                if not live.supports_load_session or peer_id is None:
+                    return (
+                        live.attached_mcp_servers,
+                        (
+                            *desired_warnings,
+                            "MCP 配置已保存；当前 ACP Agent 不支持会话热重载，"
+                            "新配置将在新建会话后生效",
+                        ),
+                    )
+                bridge = self.bridges.get(key)
+                if bridge is not None:
+                    bridge.cancel_unsolicited_timer()
+                await self.pool.close(key)
+                try:
+                    reloaded = await self.initialize(
+                        ref,
+                        settings,
+                        workspace,
+                        on_update=on_update,
+                        on_replay=on_replay,
+                    )
+                except Exception as exc:  # noqa: BLE001 - config is already persisted; report cleanly
+                    _LOGGER.warning(
+                        "External ACP MCP reload failed for %s: %s",
+                        key,
+                        type(exc).__name__,
+                    )
+                    return (
+                        (),
+                        (
+                            *desired_warnings,
+                            f"MCP 配置已保存，但重新连接 ACP 会话失败：{type(exc).__name__}",
+                        ),
+                    )
+                return reloaded.attached_mcp_servers, reloaded.mcp_warnings
+
+            try:
+                opened = await self.initialize(
+                    ref,
+                    settings,
+                    workspace,
+                    on_update=on_update,
+                    on_replay=on_replay,
+                )
+            except Exception as exc:  # noqa: BLE001 - config is already persisted; report cleanly
+                _LOGGER.warning(
+                    "External ACP MCP initialize failed for %s: %s",
+                    key,
+                    type(exc).__name__,
+                )
+                return (), (f"MCP 配置已保存，但 ACP 会话未连接：{type(exc).__name__}",)
+            return opened.attached_mcp_servers, opened.mcp_warnings

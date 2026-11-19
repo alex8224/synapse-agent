@@ -307,19 +307,80 @@ function patchTurnToolItem(
  * Index of the tool group still collecting items for this turn, or -1.
  *
  * The runtime brackets every model step's tool calls with `tool_batch_started`
- * and `tool_batch_finished`, so one turn holds one group per batch.  Only the
- * newest group may still take rows: a finished one must never be reopened, or a
- * later batch is appended to the group the first batch opened and the tool calls
- * drift away from the reasoning step they followed.
+ * and `tool_batch_finished`, so one turn holds one group per batch.  External
+ * ACP peers stream bare `tool_started` / `tool_finished` events interleaved
+ * with `reasoning_delta` and `answer_delta` without batch markers, so a group
+ * stays open for *new* items only while it is still the newest row: once a
+ * thought or answer row lands after it, the next tool call must open a fresh
+ * group below that row instead of drifting back above it.
  */
-function openToolGroupIndex(messages: TranscriptMessage[], turnId: string): number {
+function openToolGroupIndex(
+  messages: TranscriptMessage[],
+  turnId: string,
+  { mustBeTail = false }: { mustBeTail?: boolean } = {},
+): number {
   const prefix = toolGroupPrefix(turnId);
+  if (mustBeTail) {
+    const last = messages.length - 1;
+    if (last < 0) return -1;
+    const message = messages[last];
+    if (message.type !== 'tool_group' || !message.id.startsWith(prefix)) return -1;
+    return message.finished === true ? -1 : last;
+  }
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.type !== 'tool_group' || !message.id.startsWith(prefix)) continue;
     return message.finished === true ? -1 : i;
   }
   return -1;
+}
+
+/**
+ * Seal any still-streaming thought/answer rows of this turn when another step
+ * kind takes over (e.g. an external ACP stream that omits `*_completed`).
+ */
+function sealStreamingThoughts(
+  messages: TranscriptMessage[],
+  turnId: string,
+  at: number,
+): TranscriptMessage[] {
+  const prefix = `thought-${turnId}-`;
+  let changed = false;
+  const next = messages.map((m) => {
+    if (m.type !== 'thought' || !m.id.startsWith(prefix) || m.duration !== 'streaming') {
+      return m;
+    }
+    changed = true;
+    const duration = m.startedAt !== undefined ? elapsedLabel(m.startedAt, at) : 'done';
+    return { ...m, duration };
+  });
+  return changed ? next : messages;
+}
+
+function sealStreamingAnswers(messages: TranscriptMessage[], turnId: string): TranscriptMessage[] {
+  const prefix = answerPrefix(turnId);
+  let changed = false;
+  const next = messages.map((m) => {
+    if (m.type !== 'assistant' || !m.id.startsWith(prefix) || m.streaming !== true) {
+      return m;
+    }
+    changed = true;
+    return { ...m, streaming: false };
+  });
+  return changed ? next : messages;
+}
+
+function sealOpenToolGroups(messages: TranscriptMessage[], turnId: string): TranscriptMessage[] {
+  const prefix = toolGroupPrefix(turnId);
+  let changed = false;
+  const next = messages.map((m) => {
+    if (m.type !== 'tool_group' || !m.id.startsWith(prefix) || m.finished === true) {
+      return m;
+    }
+    changed = true;
+    return { ...m, finished: true };
+  });
+  return changed ? next : messages;
 }
 
 /**
@@ -335,12 +396,12 @@ function openToolGroup(
   turnId: string,
   stamp: string,
   parallel: boolean,
+  at: number,
 ): TranscriptMessage[] {
   const prefix = toolGroupPrefix(turnId);
-  const sealed = messages.map((m) =>
-    m.type === 'tool_group' && m.finished !== true && m.id.startsWith(prefix)
-      ? { ...m, finished: true }
-      : m,
+  const sealed = sealOpenToolGroups(
+    sealStreamingAnswers(sealStreamingThoughts(messages, turnId, at), turnId),
+    turnId,
   );
   return [
     ...sealed,
@@ -355,18 +416,19 @@ function openToolGroup(
   ];
 }
 
-/** Append an item to this turn's open group, opening a new one when needed. */
+/** Append an item to this turn's open tail group, opening a new one when needed. */
 function appendToolItem(
   messages: TranscriptMessage[],
   turnId: string,
   stamp: string,
   item: ToolItemView,
+  at: number,
 ): TranscriptMessage[] {
-  const index = openToolGroupIndex(messages, turnId);
+  const index = openToolGroupIndex(messages, turnId, { mustBeTail: true });
   if (index !== -1) {
     return messages.map((m, i) => (i === index ? upsertToolItem(m, item) : m));
   }
-  const opened = openToolGroup(messages, turnId, stamp, false);
+  const opened = openToolGroup(messages, turnId, stamp, false, at);
   const last = opened.length - 1;
   return opened.map((m, i) => (i === last ? upsertToolItem(m, item) : m));
 }
@@ -446,8 +508,9 @@ function appendToThought(
   const id = thoughtIdFor(messages, turnId);
   const index = messages.findIndex((m) => m.id === id);
   if (index === -1) {
+    const sealed = sealStreamingAnswers(sealOpenToolGroups(messages, turnId), turnId);
     return [
-      ...messages,
+      ...sealed,
       {
         id,
         type: 'thought',
@@ -471,10 +534,22 @@ function appendToThought(
  * check X", tools, then the final answer).  Folding every delta of the turn into
  * one per-turn row merged those segments and left the row where the first one
  * started, so the final answer rendered above the tool calls that produced it.
- * A segment stays open until its own `answer_completed` closes it.
+ * A segment stays open for deltas only while it is still streaming *and* at the
+ * tail (for streams that omit `answer_completed`).
  */
-function openAnswerIndex(messages: TranscriptMessage[], turnId: string): number {
+function openAnswerIndex(
+  messages: TranscriptMessage[],
+  turnId: string,
+  { mustBeTail = false }: { mustBeTail?: boolean } = {},
+): number {
   const prefix = answerPrefix(turnId);
+  if (mustBeTail) {
+    const last = messages.length - 1;
+    if (last < 0) return -1;
+    const message = messages[last];
+    if (message.type !== 'assistant' || !message.id.startsWith(prefix)) return -1;
+    return message.streaming === true ? last : -1;
+  }
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.type !== 'assistant' || !message.id.startsWith(prefix)) continue;
@@ -488,18 +563,23 @@ function appendToAnswer(
   turnId: string,
   text: string,
   stamp: string,
+  at: number,
 ): TranscriptMessage[] {
-  const index = openAnswerIndex(messages, turnId);
+  const index = openAnswerIndex(messages, turnId, { mustBeTail: true });
   if (index !== -1) {
     return messages.map((m, i) =>
       i === index ? { ...m, content: (m.content || '') + text } : m,
     );
   }
+  const sealed = sealStreamingAnswers(
+    sealOpenToolGroups(sealStreamingThoughts(messages, turnId, at), turnId),
+    turnId,
+  );
   const prefix = answerPrefix(turnId);
   return [
-    ...messages,
+    ...sealed,
     {
-      id: `${prefix}${countWithPrefix(messages, prefix) + 1}`,
+      id: `${prefix}${countWithPrefix(sealed, prefix) + 1}`,
       type: 'assistant',
       timestamp: stamp,
       content: text,
@@ -645,12 +725,12 @@ export function reduceRuntimeEvent(
     });
   } else if (kind === 'answer_delta') {
     const text = asText(payload.text);
-    if (text) next.messages = appendToAnswer(state.messages, turnId, text, stamp);
+    if (text) next.messages = appendToAnswer(state.messages, turnId, text, stamp, at);
   } else if (kind === 'answer_completed') {
     next.messages = completeAnswer(state.messages, turnId, asText(payload.text), stamp);
   } else if (kind === 'tool_batch_started') {
     // One batch is one group: seal whatever is still open and start the next.
-    next.messages = openToolGroup(state.messages, turnId, stamp, payload.parallel === true);
+    next.messages = openToolGroup(state.messages, turnId, stamp, payload.parallel === true, at);
     const calls = Array.isArray(payload.calls) ? payload.calls : [];
     if (calls.length > 0) {
       const groupIndex = next.messages.length - 1;
@@ -664,7 +744,7 @@ export function reduceRuntimeEvent(
     // after its group closed) patches that row instead of opening a new group.
     const merged = mergeTurnToolItem(state.messages, turnId, item);
     next.messages =
-      merged !== state.messages ? merged : appendToolItem(state.messages, turnId, stamp, item);
+      merged !== state.messages ? merged : appendToolItem(state.messages, turnId, stamp, item, at);
   } else if (kind === 'tool_finished') {
     const itemId = asText(payload.item_id);
     if (itemId) {
@@ -695,7 +775,7 @@ export function reduceRuntimeEvent(
     next.messages =
       patched !== state.messages
         ? patched
-        : appendToolItem(state.messages, turnId, stamp, legacyToolItem(name, callId, status, sub));
+        : appendToolItem(state.messages, turnId, stamp, legacyToolItem(name, callId, status, sub), at);
   } else if (kind === 'tool_batch_finished') {
     next.messages = closeToolGroup(state.messages, turnId);
   } else if (kind === 'subagent_status_changed') {
@@ -766,7 +846,11 @@ export function reduceRuntimeEvent(
   }
   if (isTurnTerminalKind(kind)) {
     next.settledTurnIds = [...(state.settledTurnIds ?? []).filter((id) => id !== turnId), turnId].slice(-100);
-    next.messages = finishWorkTurn(next.messages ?? state.messages, turnId, at, payload.elapsed_s, kind);
+    const sealed = sealOpenToolGroups(
+      sealStreamingAnswers(sealStreamingThoughts(next.messages ?? state.messages, turnId, at), turnId),
+      turnId,
+    );
+    next.messages = finishWorkTurn(sealed, turnId, at, payload.elapsed_s, kind);
   }
   return next;
 }

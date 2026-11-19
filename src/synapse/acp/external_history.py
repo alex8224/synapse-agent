@@ -673,7 +673,12 @@ def _rows(
     attachment_refs: Sequence[Mapping[str, Any]] = (),
     include_user: bool = True,
 ) -> list[UiTranscriptEvent]:
-    """Only text, tool status, and bounded tool output previews are kept."""
+    """Only text, tool status, and bounded tool output previews are kept.
+
+    Preserves the chronological interleaving of thought, tool, and answer blocks
+    (matching the live console reducer) while updating tool items in place when
+    their progress/completion arrives after later reasoning or text chunks.
+    """
     rows: list[UiTranscriptEvent] = []
     if include_user:
         rows.append(
@@ -684,64 +689,124 @@ def _rows(
                 turn_id=None,
             )
         )
-    thoughts = [e.payload.text for e in events if e.kind is TurnEventKind.REASONING_DELTA]
-    calls: dict[str, dict[str, object]] = {}
-    results: dict[str, dict[str, object]] = {}
+
+    current_kind: str | None = None
+    text_buf: list[str] = []
+    current_calls: list[dict[str, object]] = []
+    current_results: list[dict[str, object]] = []
+    item_lookup: dict[str, tuple[dict[str, object], dict[str, object]]] = {}
+
+    def _flush() -> None:
+        nonlocal current_kind, text_buf, current_calls, current_results
+        if current_kind == "thought":
+            body = "".join(text_buf)
+            if body:
+                rows.append(UiTranscriptEvent(kind="thought", text=body))
+        elif current_kind == "answer":
+            body = "".join(text_buf)
+            if body:
+                rows.append(UiTranscriptEvent(kind="answer", text=body))
+        elif current_kind == "tools":
+            if current_calls:
+                rows.append(
+                    UiTranscriptEvent(
+                        kind="tools",
+                        tool_calls=current_calls,
+                        tool_results=current_results,
+                    )
+                )
+        current_kind = None
+        text_buf = []
+        current_calls = []
+        current_results = []
+
     for event in events:
-        if event.kind is TurnEventKind.TOOL_STARTED and isinstance(
+        if event.kind is TurnEventKind.REASONING_DELTA:
+            delta = getattr(event.payload, "text", "")
+            if not delta:
+                continue
+            if current_kind != "thought":
+                _flush()
+                current_kind = "thought"
+            text_buf.append(delta)
+        elif event.kind is TurnEventKind.ANSWER_DELTA:
+            delta = getattr(event.payload, "text", "")
+            if not delta:
+                continue
+            if current_kind != "answer":
+                _flush()
+                current_kind = "answer"
+            text_buf.append(delta)
+        elif event.kind is TurnEventKind.TOOL_STARTED and isinstance(
             event.payload, ToolItemPayload
         ):
             item = event.payload
             args: dict[str, object] = {"intent": item.label}
             if item.path:
                 args["file_path"] = item.path
-            calls[item.item_id] = {
-                "id": item.item_id,
-                "name": item.name,
-                "args": args,
-            }
-            results[item.item_id] = {
-                "id": item.item_id,
-                "name": item.name,
-                "content": item.preview or "",
-                "status": "running",
-            }
+            existing = item_lookup.get(item.item_id)
+            if existing is not None:
+                call_entry, result_entry = existing
+                call_entry["name"] = item.name
+                call_entry["args"] = args
+                result_entry["name"] = item.name
+                if item.preview:
+                    result_entry["content"] = item.preview
+            else:
+                if current_kind != "tools":
+                    _flush()
+                    current_kind = "tools"
+                call_entry = {
+                    "id": item.item_id,
+                    "name": item.name,
+                    "args": args,
+                }
+                result_entry = {
+                    "id": item.item_id,
+                    "name": item.name,
+                    "content": item.preview or "",
+                    "status": "running",
+                }
+                current_calls.append(call_entry)
+                current_results.append(result_entry)
+                item_lookup[item.item_id] = (call_entry, result_entry)
         elif event.kind is TurnEventKind.TOOL_UPDATED and isinstance(
             event.payload, ToolItemPayload
         ):
             item = event.payload
-            if item.item_id in calls:
-                calls[item.item_id]["name"] = item.name
+            existing = item_lookup.get(item.item_id)
+            if existing is not None:
+                call_entry, result_entry = existing
+                call_entry["name"] = item.name
                 updated_args: dict[str, object] = {"intent": item.label}
                 if item.path:
                     updated_args["file_path"] = item.path
-                calls[item.item_id]["args"] = updated_args
-            result = results.get(item.item_id)
-            if result is not None:
-                result["name"] = item.name
+                call_entry["args"] = updated_args
+                result_entry["name"] = item.name
                 if item.preview:
-                    result["content"] = item.preview
+                    result_entry["content"] = item.preview
         elif event.kind is TurnEventKind.TOOL_FINISHED and isinstance(
             event.payload, ToolFinishedPayload
         ):
-            result = results.get(event.payload.item_id)
-            if result is not None:
-                result["content"] = event.payload.preview or result["content"]
-                result["status"] = "error" if event.payload.error else event.payload.status
-    if thoughts:
-        rows.append(UiTranscriptEvent(kind="thought", text="".join(thoughts)))
-    if calls:
-        rows.append(
-            UiTranscriptEvent(
-                kind="tools", tool_calls=list(calls.values()), tool_results=list(results.values())
+            existing = item_lookup.get(event.payload.item_id)
+            if existing is not None:
+                _call_entry, result_entry = existing
+                result_entry["content"] = event.payload.preview or result_entry["content"]
+                result_entry["status"] = (
+                    "error" if event.payload.error else event.payload.status
+                )
+
+    _flush()
+
+    if status != "completed":
+        suffix = f"\n\n[stopped: {status}]"
+        if rows and rows[-1].kind == "answer":
+            rows[-1] = UiTranscriptEvent(
+                kind="answer",
+                text=(rows[-1].text or "") + suffix,
             )
-        )
-    answer = "".join(
-        e.payload.text for e in events if e.kind is TurnEventKind.ANSWER_DELTA
-    )
-    if answer or status != "completed":
-        suffix = "" if status == "completed" else f"\n\n[stopped: {status}]"
-        rows.append(UiTranscriptEvent(kind="answer", text=answer + suffix))
+        else:
+            rows.append(UiTranscriptEvent(kind="answer", text=suffix))
     return rows
 
 

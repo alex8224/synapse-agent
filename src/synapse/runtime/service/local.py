@@ -595,30 +595,53 @@ def _project_session(snapshot: SessionSnapshot) -> SessionView:
     )
 
 
+def _load_mcp_configs_for_state(
+    settings: Any,
+    workspace: Path | str | None = None,
+) -> list[Any]:
+    from synapse.integrations.mcp_client import load_mcp_server_configs
+
+    return list(
+        load_mcp_server_configs(
+            path=getattr(settings, "mcp_config_path", None),
+            json_blob=getattr(settings, "mcp_servers_json", None),
+            workspace=workspace,
+        )
+    )
+
+
 def _build_mcp_server_list_result(
     settings: Any,
     agent: Any = None,
     workspace: Path | str | None = None,
+    *,
+    external_active_servers: tuple[str, ...] | None = None,
+    external_warnings: tuple[str, ...] = (),
 ) -> McpServerListResult:
-    from synapse.integrations.mcp_client import load_mcp_server_configs
-
-    configs = load_mcp_server_configs(
-        path=getattr(settings, "mcp_config_path", None),
-        json_blob=getattr(settings, "mcp_servers_json", None),
-        workspace=workspace,
-    )
+    configs = _load_mcp_configs_for_state(settings, workspace)
     raw_states = getattr(agent, "_coding_mcp_server_states", ()) or ()
-    warnings = tuple(getattr(agent, "_coding_mcp_warnings", ()) or ())
+    warnings = (
+        external_warnings
+        if external_active_servers is not None
+        else tuple(getattr(agent, "_coding_mcp_warnings", ()) or ())
+    )
     states_by_name = {
         entry["name"]: entry
         for entry in raw_states
         if isinstance(entry, dict) and "name" in entry
     }
+    external_active = (
+        frozenset(external_active_servers) if external_active_servers is not None else None
+    )
 
     server_views: list[McpServerDetailView] = []
     for cfg in configs:
         state = states_by_name.get(cfg.name, {})
-        attached = bool(state.get("attached", False))
+        attached = (
+            cfg.name in external_active
+            if external_active is not None
+            else bool(state.get("attached", False))
+        )
         discovered = _text_tuple(state.get("discovered"))
         loaded = _text_tuple(state.get("loaded"))
         include_tools = (
@@ -929,6 +952,9 @@ class LocalAgentRuntimeService:
         self._validate_ref(command.session)
         manager = self._resolve_manager(command.session)
         self._check_project(manager, command.session)
+        external = await self._external_for(command.session)
+        if external is not None:
+            return await self._reload_external_mcp(external, manager, command)
         self._resolve_session(manager, command.session)
         try:
             agent, settings = await asyncio.to_thread(
@@ -965,6 +991,91 @@ class LocalAgentRuntimeService:
             warnings=warnings,
             tool_names=tool_names,
             servers=_mcp_server_states(agent),
+        )
+
+    async def _reload_external_mcp(
+        self,
+        external: tuple[Any, str, Any],
+        manager: RuntimeManager,
+        command: ReloadMcpCommand,
+    ) -> ReloadMcpResult:
+        """Persist MCP edits and sync/report attachment for an external ACP session."""
+        provider, _agent_id, settings = external
+        raw_workspace = (
+            getattr(settings, "workspace", None)
+            or getattr(manager, "workspace", None)
+            or getattr(settings, "project_root", None)
+        )
+        workspace = Path(str(raw_workspace)).expanduser() if raw_workspace else None
+        if workspace is None or not workspace.is_dir():
+            raise InvalidRequestError("external session workspace is unavailable")
+
+        explicit_path = getattr(settings, "mcp_config_path", None)
+        if command.server is not None:
+            from synapse.settings.config_paths import (
+                set_mcp_server_enabled,
+                set_mcp_server_include_tools,
+            )
+
+            try:
+                if command.enabled is not None:
+                    await asyncio.to_thread(
+                        set_mcp_server_enabled,
+                        command.server,
+                        command.enabled,
+                        workspace=workspace,
+                        explicit_path=explicit_path,
+                    )
+                if command.include_tools is not None:
+                    await asyncio.to_thread(
+                        set_mcp_server_include_tools,
+                        command.server,
+                        command.include_tools,
+                        workspace=workspace,
+                        explicit_path=explicit_path,
+                    )
+            except KeyError as exc:
+                raise NotFoundError("MCP server not found") from exc
+            except (FileNotFoundError, ValueError) as exc:
+                raise InvalidRequestError("MCP reload is unavailable") from exc
+
+        reloader = getattr(provider, "reload_mcp", None)
+        if callable(reloader):
+            state = await reloader(command.session, settings, workspace)
+            active_servers = tuple(getattr(state, "active_servers", ()) or ())
+            warnings = tuple(getattr(state, "warnings", ()) or ())
+        else:
+            active_servers = ()
+            warnings = ()
+
+        configs = await asyncio.to_thread(_load_mcp_configs_for_state, settings, workspace)
+        servers = tuple(
+            McpServerStateView(
+                name=cfg.name,
+                enabled=bool(getattr(cfg, "enabled", False)),
+                attached=cfg.name in active_servers,
+                include_tools=_text_tuple(getattr(cfg, "include_tools", None)),
+                discovered=(),
+                loaded=(),
+            )
+            for cfg in configs
+            if isinstance(getattr(cfg, "name", None), str) and cfg.name
+        )
+        return ReloadMcpResult(
+            command_id=command.command_id,
+            session=command.session,
+            server=command.server,
+            enabled=command.enabled,
+            attached=(
+                command.server in active_servers
+                if command.server is not None
+                else bool(active_servers)
+            ),
+            active_servers=active_servers,
+            tool_count=0,
+            warnings=warnings,
+            tool_names=(),
+            servers=servers,
         )
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
@@ -2928,14 +3039,29 @@ class LocalAgentRuntimeService:
                 agent = session.agent
         except Exception:
             agent = None
-        workspace = getattr(manager, "workspace", None) or getattr(
-            manager.settings, "project_root", None
+        workspace = (
+            getattr(manager, "workspace", None)
+            or getattr(manager.settings, "workspace", None)
+            or getattr(manager.settings, "project_root", None)
         )
+        external_active: tuple[str, ...] | None = None
+        external_warnings: tuple[str, ...] = ()
+        if agent is None:
+            external = await self._external_for(query.session)
+            if external is not None:
+                provider = external[0]
+                status_fn = getattr(provider, "mcp_status", None)
+                if callable(status_fn):
+                    state = status_fn(query.session)
+                    external_active = tuple(getattr(state, "active_servers", ()) or ())
+                    external_warnings = tuple(getattr(state, "warnings", ()) or ())
         return await asyncio.to_thread(
             _build_mcp_server_list_result,
             manager.settings,
             agent,
             workspace,
+            external_active_servers=external_active,
+            external_warnings=external_warnings,
         )
 
     async def save_mcp_server(self, command: SaveMcpServerCommand) -> McpServerListResult:
@@ -2954,8 +3080,10 @@ class LocalAgentRuntimeService:
                 agent = session.agent
         except Exception:
             agent = None
-        workspace = getattr(manager, "workspace", None) or getattr(
-            manager.settings, "project_root", None
+        workspace = (
+            getattr(manager, "workspace", None)
+            or getattr(manager.settings, "workspace", None)
+            or getattr(manager.settings, "project_root", None)
         )
         settings = manager.settings
 
@@ -2978,6 +3106,8 @@ class LocalAgentRuntimeService:
         except (ValueError, KeyError) as exc:
             raise InvalidRequestError(str(exc)) from exc
 
+        external_active: tuple[str, ...] | None = None
+        external_warnings: tuple[str, ...] = ()
         # Rebind session so the changes take effect immediately
         if manager.get_session_ref(command.session) is not None:
             try:
@@ -2991,12 +3121,27 @@ class LocalAgentRuntimeService:
                 await manager.rebind_session_ref(command.session, agent, new_settings)
             except Exception as exc:
                 _LOGGER.warning("failed to rebind session after MCP save: %s", exc)
+        else:
+            external = await self._external_for(command.session)
+            if external is not None:
+                provider, _agent_id, ext_settings = external
+                ext_workspace = Path(str(workspace)).expanduser() if workspace else None
+                reloader = getattr(provider, "reload_mcp", None)
+                if callable(reloader) and ext_workspace is not None and ext_workspace.is_dir():
+                    try:
+                        state = await reloader(command.session, ext_settings, ext_workspace)
+                        external_active = tuple(getattr(state, "active_servers", ()) or ())
+                        external_warnings = tuple(getattr(state, "warnings", ()) or ())
+                    except Exception as exc:
+                        _LOGGER.warning("failed to reload external ACP MCP after save: %s", exc)
 
         return await asyncio.to_thread(
             _build_mcp_server_list_result,
             manager.settings,
             agent,
             workspace,
+            external_active_servers=external_active,
+            external_warnings=external_warnings,
         )
 
     async def delete_mcp_server(self, command: DeleteMcpServerCommand) -> McpServerListResult:
@@ -3015,8 +3160,10 @@ class LocalAgentRuntimeService:
                 agent = session.agent
         except Exception:
             agent = None
-        workspace = getattr(manager, "workspace", None) or getattr(
-            manager.settings, "project_root", None
+        workspace = (
+            getattr(manager, "workspace", None)
+            or getattr(manager.settings, "workspace", None)
+            or getattr(manager.settings, "project_root", None)
         )
         settings = manager.settings
 
@@ -3034,6 +3181,8 @@ class LocalAgentRuntimeService:
         except (ValueError, FileNotFoundError) as exc:
             raise InvalidRequestError(str(exc)) from exc
 
+        external_active: tuple[str, ...] | None = None
+        external_warnings: tuple[str, ...] = ()
         # Rebind session so deleted server is detached
         if manager.get_session_ref(command.session) is not None:
             try:
@@ -3047,12 +3196,27 @@ class LocalAgentRuntimeService:
                 await manager.rebind_session_ref(command.session, agent, new_settings)
             except Exception as exc:
                 _LOGGER.warning("failed to rebind session after MCP delete: %s", exc)
+        else:
+            external = await self._external_for(command.session)
+            if external is not None:
+                provider, _agent_id, ext_settings = external
+                ext_workspace = Path(str(workspace)).expanduser() if workspace else None
+                reloader = getattr(provider, "reload_mcp", None)
+                if callable(reloader) and ext_workspace is not None and ext_workspace.is_dir():
+                    try:
+                        state = await reloader(command.session, ext_settings, ext_workspace)
+                        external_active = tuple(getattr(state, "active_servers", ()) or ())
+                        external_warnings = tuple(getattr(state, "warnings", ()) or ())
+                    except Exception as exc:
+                        _LOGGER.warning("failed to reload external ACP MCP after delete: %s", exc)
 
         return await asyncio.to_thread(
             _build_mcp_server_list_result,
             manager.settings,
             agent,
             workspace,
+            external_active_servers=external_active,
+            external_warnings=external_warnings,
         )
 
     def watch_events(

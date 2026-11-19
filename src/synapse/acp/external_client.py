@@ -214,6 +214,9 @@ class ExternalSession:
         timeouts: ExternalTimeouts,
         callbacks: _Callbacks,
         stderr_buffer: deque[str] | None = None,
+        *,
+        acp_mcp_servers: Sequence[McpServerStdio | HttpMcpServer | SseMcpServer] = (),
+        mcp_warnings: Sequence[str] = (),
     ) -> None:
         self.handshake = handshake
         self.created = created
@@ -224,6 +227,10 @@ class ExternalSession:
         self._stderr_buffer: deque[str] = (
             stderr_buffer if stderr_buffer is not None else deque(maxlen=_STDERR_MAX_LINES)
         )
+        self._acp_mcp_servers: tuple[McpServerStdio | HttpMcpServer | SseMcpServer, ...] = tuple(
+            acp_mcp_servers
+        )
+        self._mcp_warnings: tuple[str, ...] = tuple(mcp_warnings)
         self._operation = asyncio.Lock()
         self._closed = False
         self._prompt_deadlines: set[asyncio.Timeout] = set()
@@ -235,6 +242,27 @@ class ExternalSession:
     def stderr_tail(self) -> tuple[str, ...]:
         """Bounded, credential-redacted tail of subprocess stderr lines."""
         return tuple(self._stderr_buffer)
+
+    @property
+    def mcp_capabilities(self) -> McpCapabilities | None:
+        """MCP transport capabilities advertised by the peer during initialize."""
+        caps = self.handshake.agent_capabilities
+        return caps.mcp_capabilities if caps is not None else None
+
+    @property
+    def acp_mcp_servers(self) -> tuple[McpServerStdio | HttpMcpServer | SseMcpServer, ...]:
+        """Exact ACP MCP server definitions injected into this live session."""
+        return self._acp_mcp_servers
+
+    @property
+    def attached_mcp_servers(self) -> tuple[str, ...]:
+        """Names of MCP servers injected into this live ACP session."""
+        return tuple(server.name for server in self._acp_mcp_servers)
+
+    @property
+    def mcp_warnings(self) -> tuple[str, ...]:
+        """Non-fatal warnings produced while preparing MCP servers for this session."""
+        return self._mcp_warnings
 
     @property
     def available_commands(self) -> tuple[AvailableCommand, ...]:
@@ -490,12 +518,13 @@ def prompt_blocks_to_acp(
     return blocks
 
 
-def mcp_servers_to_acp(
+def _convert_mcp_servers_to_acp(
     servers: Sequence[McpServerConfig],
     capabilities: McpCapabilities | None = None,
-) -> list[McpServerStdio | HttpMcpServer | SseMcpServer]:
-    """Convert enabled Synapse MCP configs into ACP schema server entries."""
+) -> tuple[list[McpServerStdio | HttpMcpServer | SseMcpServer], tuple[str, ...]]:
+    """Convert enabled Synapse MCP configs into ACP entries plus skip warnings."""
     result: list[McpServerStdio | HttpMcpServer | SseMcpServer] = []
+    warnings: list[str] = []
     for cfg in servers:
         if not cfg.enabled:
             continue
@@ -504,6 +533,7 @@ def mcp_servers_to_acp(
             command = (cfg.command or "").strip()
             if not command:
                 _LOGGER.warning("Skipping stdio MCP server %r: missing command", cfg.name)
+                warnings.append(f"{cfg.name}: missing stdio command")
                 continue
             result.append(
                 McpServerStdio(
@@ -520,10 +550,12 @@ def mcp_servers_to_acp(
                     "Skipping HTTP MCP server %r: external ACP agent does not advertise http MCP",
                     cfg.name,
                 )
+                warnings.append(f"{cfg.name}: external ACP agent does not advertise http MCP")
                 continue
             url = (cfg.url or "").strip()
             if not url:
                 _LOGGER.warning("Skipping HTTP MCP server %r: missing url", cfg.name)
+                warnings.append(f"{cfg.name}: missing HTTP url")
                 continue
             result.append(
                 HttpMcpServer(
@@ -540,10 +572,12 @@ def mcp_servers_to_acp(
                     "Skipping SSE MCP server %r: external ACP agent does not advertise sse MCP",
                     cfg.name,
                 )
+                warnings.append(f"{cfg.name}: external ACP agent does not advertise sse MCP")
                 continue
             url = (cfg.url or "").strip()
             if not url:
                 _LOGGER.warning("Skipping SSE MCP server %r: missing url", cfg.name)
+                warnings.append(f"{cfg.name}: missing SSE url")
                 continue
             result.append(
                 SseMcpServer(
@@ -555,6 +589,16 @@ def mcp_servers_to_acp(
             )
             continue
         _LOGGER.warning("Skipping MCP server %r: unsupported transport %r", cfg.name, cfg.transport)
+        warnings.append(f"{cfg.name}: unsupported transport {cfg.transport!r}")
+    return result, tuple(warnings)
+
+
+def mcp_servers_to_acp(
+    servers: Sequence[McpServerConfig],
+    capabilities: McpCapabilities | None = None,
+) -> list[McpServerStdio | HttpMcpServer | SseMcpServer]:
+    """Convert enabled Synapse MCP configs into ACP schema server entries."""
+    result, _warnings = _convert_mcp_servers_to_acp(servers, capabilities)
     return result
 
 
@@ -613,7 +657,7 @@ async def open_external_session(
                 if handshake.agent_capabilities is not None
                 else None
             )
-            acp_mcp_servers = mcp_servers_to_acp(mcp_servers, mcp_caps)
+            acp_mcp_servers, mcp_warnings = _convert_mcp_servers_to_acp(mcp_servers, mcp_caps)
             if existing_session_id is None:
                 stage = "session/new"
                 async with asyncio.timeout(timeouts.create):
@@ -659,6 +703,8 @@ async def open_external_session(
             timeouts,
             callbacks,
             stderr_buffer=stderr_buffer,
+            acp_mcp_servers=acp_mcp_servers,
+            mcp_warnings=mcp_warnings,
         )
         try:
             yield session

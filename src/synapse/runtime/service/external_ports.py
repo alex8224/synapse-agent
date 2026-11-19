@@ -54,6 +54,14 @@ class ExternalSessionView:
     stop_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalMcpState:
+    """MCP attachment snapshot reported for one bound external ACP session."""
+
+    active_servers: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 class ExternalSessions(Protocol):
     """Daemon capabilities the service layer delegates to after authorizing."""
 
@@ -114,6 +122,12 @@ class ExternalSessions(Protocol):
 
     def broker(self, ref: SessionRef) -> Any | None:
         """Return a broker exposing ``subscribe_from``/``read_after``/``emit``."""
+
+    def mcp_status(self, ref: SessionRef) -> ExternalMcpState: ...
+
+    async def reload_mcp(
+        self, ref: SessionRef, settings: object, workspace: Path
+    ) -> ExternalMcpState: ...
 
     def close(self, ref: SessionRef) -> Any: ...
 

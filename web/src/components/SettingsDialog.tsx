@@ -84,6 +84,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
     mcpRuntime,
     mcpConnecting,
     mcpRuntimeKnown,
+    externalSession,
     toggleMcpServer,
     canToggleMcpGlobal,
     usage,
@@ -115,6 +116,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
       mcpRuntime: state.mcpRuntime,
       mcpConnecting: state.mcpConnecting,
       mcpRuntimeKnown: state.mcpRuntimeKnown,
+      externalSession: state.externalSession,
       toggleMcpServer: state.toggleMcpServer,
       canToggleMcpGlobal: state.canToggleMcpGlobal,
       usage: state.usage,
@@ -544,7 +546,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({ onClose }) => {
                       {server.transport} · {server.enabled ? 'ON' : 'OFF'}
                       {server.enabled && mcpRuntimeKnown
                         ? attached
-                          ? ` · 已连接 ${runtime?.loaded.length ?? 0} 工具`
+                          ? externalSession !== null && (runtime?.loaded.length ?? 0) === 0
+                            ? ' · 已连接'
+                            : ` · 已连接 ${runtime?.loaded.length ?? 0} 工具`
                           : ' · 未连接'
                         : ''}
                     </span>

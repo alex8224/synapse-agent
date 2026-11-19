@@ -2264,6 +2264,7 @@ async function attachExternalSession(
   // again, so the composer paints "connecting" for this window too. The agent id
   // is only known from the reply here, hence the null.
   store.setState({ externalPending: { agentId: null }, externalSessionError: null });
+  let initializedOk = false;
   try {
     const initialized = await client.initializeExternalSession({ session });
     if (epoch !== sessionEpoch) return;
@@ -2305,6 +2306,7 @@ async function attachExternalSession(
     }
     store.setState({ activeSubscriptionId: watch.subscription_id });
     markAttached(session, epoch);
+    initializedOk = true;
   } catch (err) {
     if (epoch !== sessionEpoch) return;
     // If session/load is unsupported or fails, keep the durable transcript
@@ -2316,6 +2318,11 @@ async function attachExternalSession(
     });
   }
   await loadInitialHistory(epoch);
+  if (epoch !== sessionEpoch) return;
+  await refreshRuntimeConfig(epoch);
+  if (initializedOk && epoch === sessionEpoch) {
+    void refreshMcpRuntime(epoch);
+  }
 }
 
 function backgroundActiveSession(
@@ -2439,6 +2446,11 @@ function restoreBackgroundSession(
             },
             externalPending: null,
             externalSessionError: null,
+          });
+          void refreshRuntimeConfig(epoch).then(() => {
+            if (epoch === sessionEpoch) {
+              void refreshMcpRuntime(epoch);
+            }
           });
         })
         .catch((err: unknown) => {
@@ -3579,6 +3591,10 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
           markAttached(nextSession, epoch);
           await captureLiveEpoch(epoch);
           flushBufferedLiveEvents();
+          await refreshRuntimeConfig(epoch);
+          if (epoch === sessionEpoch) {
+            void refreshMcpRuntime(epoch);
+          }
           return;
         }
         // No global detach: the just-created session has no lease of its own and
