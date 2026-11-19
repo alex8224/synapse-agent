@@ -243,3 +243,12 @@ class ExternalTurnEvents:
     def _event(self, kind: TurnEventKind, payload: object) -> TurnEvent:
         self._sequence += 1
         return TurnEvent(EVENT_VERSION, self.thread_id, self.turn_id, self._sequence, kind, payload)
+
+    @property
+    def has_running_tools(self) -> bool:
+        """True while at least one started tool has not reported completion/failure."""
+        return len(self._finished) < len(self._tools)
+
+    def next_sequence(self) -> int:
+        self._sequence += 1
+        return self._sequence

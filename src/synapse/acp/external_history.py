@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import uuid
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -19,10 +20,13 @@ from synapse.acp.external_client import ExternalSession, ExternalTimeouts, Updat
 from synapse.acp.external_events import ExternalTurnEvents
 from synapse.runtime.service.errors import NoActiveTurnError, TurnMismatchError
 from synapse.runtime.service.event_types import (
+    EVENT_VERSION,
+    ActivityPayload,
     ToolFinishedPayload,
     ToolItemPayload,
     TurnEvent,
     TurnEventKind,
+    TurnTerminalPayload,
 )
 from synapse.runtime.service.history_store import resolve_transcript_path
 from synapse.sessions.transcript import UiTranscriptEvent
@@ -51,10 +55,11 @@ class _TurnSegment:
     text: str
     attachment_refs: tuple[Mapping[str, Any], ...]
     events: list[TurnEvent] = field(default_factory=list)
+    include_user: bool = True
 
 
 class ExternalTurnBridge:
-    """Route peer updates to the active turn, or drop them when idle."""
+    """Route peer updates to the active turn, or capture unsolicited follow-up turns."""
 
     def __init__(self, thread_id: str) -> None:
         self._thread_id = thread_id
@@ -71,6 +76,86 @@ class ExternalTurnBridge:
         self._latest_response: PromptResponse | None = None
         self._fatal_error: BaseException | None = None
         self._cancelled: bool = False
+        # Unsolicited (background-wakeup) continuation support.
+        self._unsolicited: bool = False
+        self._unsolicited_live: UpdateSink | None = None
+        self._unsolicited_settings: object | None = None
+        self._unsolicited_session: ExternalSession | None = None
+        self._unsolicited_idle_s: float = 1.5
+        self._unsolicited_tool_idle_s: float = 120.0
+        self._unsolicited_timer: asyncio.Task[None] | None = None
+
+    def configure_unsolicited(
+        self,
+        *,
+        live: UpdateSink | None,
+        settings: object | None,
+        session: ExternalSession | None = None,
+        idle_s: float = 1.5,
+        tool_idle_s: float = 120.0,
+    ) -> None:
+        """Enable capturing autonomous peer updates that arrive outside a ``session/prompt``."""
+        self._unsolicited_live = live
+        self._unsolicited_settings = settings
+        self._unsolicited_session = session
+        self._unsolicited_idle_s = idle_s
+        self._unsolicited_tool_idle_s = tool_idle_s
+
+    def cancel_unsolicited_timer(self) -> None:
+        timer = self._unsolicited_timer
+        self._unsolicited_timer = None
+        if timer is not None and not timer.done() and timer is not asyncio.current_task():
+            timer.cancel()
+
+    def _schedule_unsolicited_settle(self) -> None:
+        self.cancel_unsolicited_timer()
+        if not self._unsolicited or self._turn is None:
+            return
+        if self._in_flight:
+            return
+        delay = (
+            self._unsolicited_tool_idle_s
+            if self._turn.has_running_tools
+            else self._unsolicited_idle_s
+        )
+        expected_turn_id = self._turn_id
+
+        async def _settle() -> None:
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            if self._unsolicited and self._turn_id == expected_turn_id and not self._in_flight:
+                await self.flush_unsolicited()
+
+        self._unsolicited_timer = asyncio.create_task(_settle())
+
+    async def flush_unsolicited(self, *, status: str = "completed") -> None:
+        """Persist and close an active unsolicited continuation turn, if any."""
+        self.cancel_unsolicited_timer()
+        if not self._unsolicited or self._turn is None or self._turn_id is None:
+            return
+        turn_id = self._turn_id
+        live = self._live
+        next_seq = self._turn.next_sequence()
+        settings = self._unsolicited_settings
+        await _persist(settings, self, turn_id, "", status)
+        if live is not None:
+            kind = {
+                "completed": TurnEventKind.TURN_COMPLETED,
+                "cancelled": TurnEventKind.TURN_CANCELLED,
+            }.get(status, TurnEventKind.TURN_FAILED)
+            await _emit_live(
+                live,
+                TurnEvent(
+                    EVENT_VERSION,
+                    self._thread_id,
+                    turn_id,
+                    next_seq,
+                    kind,
+                    TurnTerminalPayload(status=status),
+                ),
+            )
 
     @property
     def active_turn_id(self) -> str | None:
@@ -86,6 +171,7 @@ class ExternalTurnBridge:
         text: str = "",
         attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> None:
+        self.cancel_unsolicited_timer()
         self._turn = ExternalTurnEvents(self._thread_id, turn_id)
         self._turn_id = turn_id
         self._events = []
@@ -99,6 +185,7 @@ class ExternalTurnBridge:
         self._latest_response = None
         self._fatal_error = None
         self._cancelled = False
+        self._unsolicited = False
 
     def mark_cancelled(self) -> None:
         """Stop draining queued fallback steers once cancellation is requested."""
@@ -209,6 +296,8 @@ class ExternalTurnBridge:
             self._in_flight.discard(done_task)
             if self._wake is not None:
                 self._wake.set()
+            if self._unsolicited and not self._in_flight:
+                self._schedule_unsolicited_settle()
 
         task.add_done_callback(_done)
 
@@ -266,22 +355,51 @@ class ExternalTurnBridge:
 
     async def feed(self, update: BaseModel) -> None:
         if self._turn is None:
-            return
-        events = self._turn.project(update)
-        if not events:
-            return
+            live = self._unsolicited_live
+            if live is None:
+                return
+            candidate_turn_id = uuid.uuid4().hex
+            candidate = ExternalTurnEvents(self._thread_id, candidate_turn_id)
+            events = candidate.project(update)
+            if not events:
+                return
+            self._turn = candidate
+            self._turn_id = candidate_turn_id
+            self._events = []
+            self._segments = [
+                _TurnSegment(text="", attachment_refs=(), include_user=False)
+            ]
+            self._live = live
+            self._session = self._unsolicited_session
+            self._unsolicited = True
+            self._cancelled = False
+            await _emit_live(
+                live,
+                TurnEvent(
+                    EVENT_VERSION,
+                    self._thread_id,
+                    candidate_turn_id,
+                    0,
+                    TurnEventKind.ACTIVITY_STARTED,
+                    ActivityPayload(phase="thinking"),
+                ),
+            )
+        else:
+            events = self._turn.project(update)
+            if not events:
+                return
         self._events.extend(events)
         if self._segments:
             self._segments[-1].events.extend(events)
         live = self._live
         if live is not None:
             for event in events:
-                # A broker's ``emit`` is synchronous; a UI sink may be a coroutine.
-                result = live(event)
-                if inspect.isawaitable(result):
-                    await result
+                await _emit_live(live, event)
+        if self._unsolicited:
+            self._schedule_unsolicited_settle()
 
     def _finish_segments(self) -> tuple[list[TurnEvent], list[_TurnSegment]]:
+        self.cancel_unsolicited_timer()
         events, self._events = self._events, []
         segments, self._segments = self._segments, []
         self._turn = None
@@ -295,11 +413,19 @@ class ExternalTurnBridge:
         self._latest_response = None
         self._fatal_error = None
         self._cancelled = False
+        self._unsolicited = False
         return events, segments
 
     def finish(self) -> list[TurnEvent]:
         events, _segments = self._finish_segments()
         return events
+
+
+async def _emit_live(live: UpdateSink, event: TurnEvent) -> None:
+    # A broker's ``emit`` is synchronous; a UI sink may be a coroutine.
+    result = live(event)
+    if inspect.isawaitable(result):
+        await result
 
 
 async def run_turn(
@@ -314,6 +440,7 @@ async def run_turn(
     live: UpdateSink | None = None,
 ) -> PromptResponse:
     """Run one logical turn (including any mid-turn steers), then persist its transcript."""
+    await bridge.flush_unsolicited()
     bridge.begin(
         turn_id,
         live,
@@ -360,17 +487,23 @@ async def _persist(
                     segment.events,
                     seg_status,
                     attachment_refs=segment.attachment_refs,
+                    include_user=segment.include_user,
                 )
             )
     else:
         rows = _rows(text, events, status, attachment_refs=attachment_refs)
+    if not rows:
+        return
     await asyncio.to_thread(_append, path, bridge._thread_id, turn_id, rows)
 
 
 def _append(path: Path, thread_id: str, turn_id: str, rows: list[UiTranscriptEvent]) -> None:
     projection = TranscriptProjection(path)
     try:
-        projection.append_turn(thread_id, rows, turn_id=turn_id)
+        if any(row.kind == "user" for row in rows):
+            projection.append_turn(thread_id, rows, turn_id=turn_id)
+        else:
+            projection.append_continuation(thread_id, rows, turn_id=turn_id)
     finally:
         projection.close()
 
@@ -381,16 +514,19 @@ def _rows(
     status: str,
     *,
     attachment_refs: Sequence[Mapping[str, Any]] = (),
+    include_user: bool = True,
 ) -> list[UiTranscriptEvent]:
     """Only text, tool status, and bounded tool output previews are kept."""
-    rows = [
-        UiTranscriptEvent(
-            kind="user",
-            text=text,
-            attachments=[dict(item) for item in attachment_refs],
-            turn_id=None,
+    rows: list[UiTranscriptEvent] = []
+    if include_user:
+        rows.append(
+            UiTranscriptEvent(
+                kind="user",
+                text=text,
+                attachments=[dict(item) for item in attachment_refs],
+                turn_id=None,
+            )
         )
-    ]
     thoughts = [e.payload.text for e in events if e.kind is TurnEventKind.REASONING_DELTA]
     calls: dict[str, dict[str, object]] = {}
     results: dict[str, dict[str, object]] = {}

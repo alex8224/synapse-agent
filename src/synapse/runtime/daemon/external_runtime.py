@@ -112,7 +112,6 @@ class ExternalRuntime:
         on_update: UpdateSink,
         on_replay: UpdateSink,
     ) -> ExternalSession:
-        del on_update  # the bridge owns delivery; callers may pass a live sink to turn()
         binding = await asyncio.to_thread(read_external_session_binding, settings, ref.thread_id)
         if binding is None:
             raise NotFoundError("External ACP session binding not found")
@@ -135,7 +134,7 @@ class ExternalRuntime:
 
         mcp_servers = await asyncio.to_thread(_load_external_mcp_servers, settings, workspace)
 
-        return await self.pool.open(
+        session = await self.pool.open(
             key,
             agent_id,
             workspace,
@@ -145,3 +144,5 @@ class ExternalRuntime:
             before_ready=persist if peer_id is None else None,
             mcp_servers=mcp_servers,
         )
+        bridge.configure_unsolicited(live=on_update, settings=settings, session=session)
+        return session

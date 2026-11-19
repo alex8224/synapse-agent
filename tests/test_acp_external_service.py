@@ -802,6 +802,160 @@ while True:
     asyncio.run(run())
 
 
+def test_external_acp_captures_unsolicited_background_wakeup_updates(
+    tmp_path: Path,
+) -> None:
+    """Autonomous updates pushed after end_turn (e.g. agy background wakeup) are not dropped."""
+    from synapse.runtime.service.commands import SubmitTurnCommand
+    from synapse.runtime.service.local import LocalAgentRuntimeService
+    from synapse.runtime.sessions.manager import RuntimeManager
+    from synapse.sessions.transcript_projection import TranscriptProjection
+
+    agent_script = '''
+import json, sys, threading, time
+
+def send(obj):
+    print(json.dumps(obj), flush=True)
+
+def update(payload):
+    send({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {"sessionId": "peer-bg", "update": payload},
+    })
+
+def background_wakeup():
+    time.sleep(0.08)
+    update({
+        "sessionUpdate": "tool_call",
+        "toolCallId": "bg-tool-1",
+        "title": "pytest",
+        "status": "in_progress",
+    })
+    # Stay silent longer than idle_s (0.05s) while tool is running to verify
+    # the unsolicited turn does not settle prematurely mid-tool.
+    time.sleep(0.12)
+    update({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "bg-tool-1",
+        "status": "completed",
+        "content": [{"type": "content", "content": {"type": "text", "text": "171 passed"}}],
+    })
+    update({
+        "sessionUpdate": "agent_message_chunk",
+        "content": {"type": "text", "text": "All tests passed!"},
+    })
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "peer-bg"}})
+    elif method == "session/prompt":
+        update({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "Running tests in background..."},
+        })
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}})
+        threading.Thread(target=background_wakeup, daemon=True).start()
+'''
+    settings = SimpleNamespace(
+        sessions_path=tmp_path / "sessions.sqlite",
+        resolved_sessions_path=lambda: tmp_path / "sessions.sqlite",
+        workspace=tmp_path,
+    )
+    config = {
+        "agents": [
+            {
+                "id": "bg-mock",
+                "name": "BG Mock",
+                "command": sys.executable,
+                "args": ["-u", "-c", agent_script],
+                "permission_mode": "manual",
+            }
+        ]
+    }
+    (tmp_path / "external-acp-agents.json").write_text(json.dumps(config))
+    catalog = ExternalAgentCatalog.from_state_dir(tmp_path)
+    pool = ExternalSessionPool(catalog)
+    runtime = ExternalRuntime(pool)
+    external_service = DaemonExternalSessions(runtime)
+    ref = SessionRef(project_id="project", thread_id="external-bg-wakeup")
+    manager = RuntimeManager(
+        settings=settings,
+        agent_factory=lambda thread_id, shared: SimpleNamespace(thread_id=thread_id),
+        project_id=ref.project_id,
+    )
+    local_service = LocalAgentRuntimeService(
+        lambda project: manager if project == ref.project_id else None,
+        external_sessions=external_service,
+    )
+
+    async def run() -> None:
+        try:
+            await local_service.create_session(
+                CreateSessionCommand(
+                    project_id=ref.project_id,
+                    thread_id=ref.thread_id,
+                    external_agent_id="bg-mock",
+                )
+            )
+            receipt = await local_service.submit_turn(SubmitTurnCommand(ref, "run tests"))
+            if local_service._external_turns:
+                await asyncio.gather(*list(local_service._external_turns))
+
+            # Speed up idle debounce for deterministic unit testing.
+            bridge = runtime.bridges[(ref.project_id, ref.thread_id)]
+            bridge._unsolicited_idle_s = 0.05
+
+            broker = external_service.broker(ref)
+            assert broker is not None
+
+            # Wait for the unsolicited continuation turn to stream and auto-settle.
+            for _ in range(100):
+                events = [env.event for env in broker.read_after(0).events]
+                completed = [e for e in events if e.kind.value == "turn_completed"]
+                if len(completed) >= 2:
+                    break
+                await asyncio.sleep(0.03)
+
+            events = [env.event for env in broker.read_after(0).events]
+            completed = [e for e in events if e.kind.value == "turn_completed"]
+            assert len(completed) == 2
+            assert completed[0].turn_id == receipt.turn_id
+            unsolicited_turn_id = completed[1].turn_id
+            assert unsolicited_turn_id != receipt.turn_id
+
+            unsolicited_events = [e for e in events if e.turn_id == unsolicited_turn_id]
+            unsolicited_kinds = [e.kind.value for e in unsolicited_events]
+            assert unsolicited_kinds == [
+                "activity_started",
+                "tool_started",
+                "tool_finished",
+                "answer_delta",
+                "turn_completed",
+            ]
+
+            projection = TranscriptProjection(tmp_path / "transcript.sqlite")
+            try:
+                page = projection.load_tail(ref.thread_id, turns=10)
+            finally:
+                projection.close()
+            # Unsolicited continuation must not insert a fake empty user bubble.
+            assert [e.kind for e in page.events] == ["user", "answer", "tools", "answer"]
+            assert page.events[0].text == "run tests"
+            assert page.events[1].text == "Running tests in background..."
+            assert page.events[2].tool_results[0]["content"] == "171 passed"
+            assert page.events[3].text == "All tests passed!"
+        finally:
+            await external_service.shutdown()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_open_session_rejects_external_with_wire_service_code_and_reconciles(
     tmp_path: Path,
 ) -> None:

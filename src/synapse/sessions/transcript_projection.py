@@ -340,6 +340,70 @@ class TranscriptProjection:
                 self._conn.rollback()
                 raise
 
+    def append_continuation(
+        self,
+        thread_id: str,
+        events: list[UiTranscriptEvent],
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        """Append assistant-only continuation rows (e.g. background wakeup) to the latest turn."""
+        compact = compact_transcript_events(events)
+        if not compact:
+            return
+        with self._db_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if not self._claim_turn_locked(thread_id, turn_id):
+                    self._conn.rollback()
+                    return
+                row = self._conn.execute(
+                    "SELECT total_turns,total_events,source_message_count,source_checkpoint_id "
+                    "FROM transcript_meta WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+                total_turns = int(row["total_turns"] if row else 0)
+                turn_seq = total_turns if total_turns > 0 else 1
+                event_seq = int(row["total_events"] if row else 0)
+                existing_count = int(row["source_message_count"] if row else 0)
+                existing_id = row["source_checkpoint_id"] if row else None
+                rows: list[tuple[str, int, int, str, str]] = []
+                for event in compact:
+                    rows.append(
+                        (
+                            thread_id,
+                            event_seq,
+                            turn_seq,
+                            event.kind,
+                            _event_payload_json(event),
+                        )
+                    )
+                    event_seq += 1
+                self._conn.executemany(
+                    "INSERT INTO transcript_events"
+                    "(thread_id,event_seq,turn_seq,kind,payload_json) VALUES (?,?,?,?,?)",
+                    rows,
+                )
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO transcript_meta(
+                        thread_id,total_turns,total_events,source_message_count,
+                        source_checkpoint_id,updated_at
+                    ) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        thread_id,
+                        turn_seq,
+                        event_seq,
+                        existing_count,
+                        existing_id,
+                    ),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def _checkpoint_usage_included_locked(
         self, thread_id: str, source_checkpoint_id: str
     ) -> bool:

@@ -285,13 +285,17 @@ class DaemonExternalSessions:
         broker = self._brokers.pop(key, None)
         if broker is not None:
             broker.close()
-        self._runtime.bridges.pop(key, None)
+        bridge = self._runtime.bridges.pop(key, None)
+        if bridge is not None:
+            bridge.cancel_unsolicited_timer()
         await self._runtime.pool.close(key)
 
     async def shutdown(self) -> None:
         for broker in self._brokers.values():
             broker.close()
         self._brokers.clear()
+        for bridge in self._runtime.bridges.values():
+            bridge.cancel_unsolicited_timer()
         self._runtime.bridges.clear()
         await self._runtime.pool.shutdown()
 
