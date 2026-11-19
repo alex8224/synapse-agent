@@ -6,6 +6,17 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.66
+
+### New Features
+
+- **Desktop-Native Git Explorer & External App Launching**: Migrated `GitExplorer` status/diff reads (including staged diff support via `tauri_git_diff`) and the "Open With" application catalog/launcher (`tauri_list_external_apps` and `tauri_open_external`) to Tauri native IPC so desktop Git browsing, file opening, and file manager reveal work independently of daemon session state.
+
+### Bug Fixes
+
+- **Windows Explorer Reveal & Open Path**: Normalized forward slashes (`/`) to Windows backslashes (`\`) in `rust/synapse-gui/src/git_fs.rs` (`reveal_in_explorer` and `open_path`) and switched `/select,"<path>"` to `CommandExt::raw_arg`, fixing broken "locate in Explorer" and "open in Explorer" actions in File Explorer on Windows.
+- **External ACP Workspace RPC Compatibility**: Added `_resolve_workspace_session` in `LocalRuntimeService` (`src/synapse/runtime/service/local.py`) so read-only git, artifact, and external app RPCs no longer fail with `not_found` (`runtime service error`) on external ACP sessions in browser console mode.
+
 ## v0.1.65
 
 ### New Features
