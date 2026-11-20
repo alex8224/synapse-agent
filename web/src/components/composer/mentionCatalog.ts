@@ -229,8 +229,8 @@ export function parseMentionQuery(query: string): ParsedMentionQuery {
     const delimiter = raw.includes(':') ? ':' : '/';
     const [first, ...rest] = raw.split(delimiter);
     const prefix = first.trim().toLowerCase();
-    // Exclude reserved namespaces so `@context:git` or `@skill:cua` behaves normally
-    if (prefix !== 'file' && prefix !== 'skill' && prefix !== 'context') {
+    // Reserved namespaces are direct mentions, not project/session scopes.
+    if (!['file', 'skill', 'context', 'term', 'send', 'spawn'].includes(prefix)) {
       return {
         raw,
         isSessionScope: true,

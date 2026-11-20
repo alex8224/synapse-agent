@@ -101,6 +101,28 @@ Tauri 和浏览器共用 React 控制台，无需另写 Rust 聊天界面。
   - **生命周期与资源治理**：`ExternalSessionPool` 支持默认 30 分钟空闲自动回收（忙碌态自动顺延）与满容量（16）时的 LRU 空闲淘汰；`close_session` 同步释放外部子进程；`fork_session` 对外部会话明确拒绝以防共享 `remote_session_id` 串上下文；`external-acp-agents.json` 支持按文件修改热重载（损坏时保留上一次有效目录）。
   - **诊断与多 Agent 兼容**：子进程 `stderr` 改为有界环形缓冲 + 凭据脱敏采集；兼容仅暴露旧版 `modes` 的对端（`session/set_mode`）；捕获 `available_commands_update` 与 `config_option_update` 并在回合结束时自动同步前端配置快照；支持图片附件与已启用 MCP Server 透传。
 
+### 外部 ACP 会话作为会话协作目标
+
+绑定 ACP Agent 的会话没有原生 `SessionRuntime`，所以协作投递不能走
+`RuntimeManager`。`ExternalDeliveryExecutor`（`src/synapse/runtime/collaboration/external_delivery.py`）
+按 `sessions.external_agent_id` 分流：未绑定的目标完全走原有原生路径，绑定的目标
+交给 daemon 的外部会话服务，用 `deliver_turn` 在对端跑一轮。
+
+对端没有 Synapse 工具，因此：
+
+| 环节 | 行为 |
+| --- | --- |
+| 投递提示词 | 不要求调用 `reply_to_collaboration`，改为“把最终结论直接作为本次回答输出” |
+| 结论回传 | 对端本轮的回答文本（`ExternalTurnBridge.last_answer_text`）由协作运行时记为 `reply` 消息，发起方收到一个普通续接回合 |
+| 对端忙碌 | 抛 `SessionBusyError`，投递保持 claim 并按 FIFO 重试，不打断对端自己的回合 |
+| 工作区不可用 | 记录 `target_unavailable` 进入 review，不回退到原生执行（避免同一 thread 混用两套后端） |
+| 非 `end_turn` | `cancelled` → `execution_cancelled`，其余 → `execution_failed`；不伪造回复，交办标记失败 |
+| 停止交办 | `_cancel_collaboration_turn` 检测到外部绑定时调 `external.cancel`，让该轮以 `cancelled` 结束 |
+
+投递轮仍写入对端会话的 `transcript.sqlite` 与事件 broker，因此控制台里能看到
+“这一轮是协作交办”。注意：外部会话的正文不写 checkpoint，`read_session` /
+`search_session` 的全文分支读不到它，见 [会话管理](../sessions.md)。
+
 ### 公开方法（全部走现有 ACL）
 
 | 方法 | 能力 | 作用 |

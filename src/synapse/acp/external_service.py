@@ -218,6 +218,58 @@ class DaemonExternalSessions:
         attachments: Sequence[Any] = (),
         attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> ExternalSessionView:
+        view, _answer = await self._run_turn(
+            ref,
+            settings,
+            workspace,
+            turn_id=turn_id,
+            text=text,
+            publish=publish,
+            attachments=attachments,
+            attachment_refs=attachment_refs,
+        )
+        return view
+
+    async def deliver_turn(
+        self,
+        ref: SessionRef,
+        settings: object,
+        workspace: Path,
+        *,
+        turn_id: str,
+        text: str,
+    ) -> tuple[str | None, str | None]:
+        """Run one collaboration delivery and return ``(stop_reason, answer)``.
+
+        An ACP peer cannot call ``reply_to_collaboration``, so its final answer
+        text is the reply: the collaboration runtime posts it back to the
+        requester.  The turn still publishes to the session broker, so a console
+        watching this ACP session sees the delivery like any other turn.
+        """
+        broker = self._ensure_broker(ref)
+        view, answer = await self._run_turn(
+            ref,
+            settings,
+            workspace,
+            turn_id=turn_id,
+            text=text,
+            publish=broker.emit,
+        )
+        return view.stop_reason, answer
+
+    async def _run_turn(
+        self,
+        ref: SessionRef,
+        settings: object,
+        workspace: Path,
+        *,
+        turn_id: str,
+        text: str,
+        publish: Callable[[Any], None],
+        attachments: Sequence[Any] = (),
+        attachment_refs: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[ExternalSessionView, str | None]:
+        """Run one logical turn; report its view and the peer's answer text."""
         binding = self._agent_for(settings, ref)
         if binding is None:
             from synapse.runtime.service.errors import NotFoundError
@@ -248,13 +300,22 @@ class DaemonExternalSessions:
         stop_reason = getattr(response, "stop_reason", None)
         self._terminal(broker, ref, turn_id, _STOP_STATUS.get(stop_reason, "failed"))
         view = self._view(session, binding[0])
+        answer = self._answer_text(ref)
         return ExternalSessionView(
             agent_id=view.agent_id,
             remote_session_id=view.remote_session_id,
             permission_mode=view.permission_mode,
             options=view.options,
             stop_reason=stop_reason,
-        )
+        ), answer
+
+    def _answer_text(self, ref: SessionRef) -> str | None:
+        """The peer's final answer of the turn that just finished, if any."""
+        bridge = self._runtime.bridges.get((ref.project_id, ref.thread_id))
+        if bridge is None:
+            return None
+        text = bridge.last_answer_text.strip()
+        return text or None
 
     def _terminal(
         self, broker: SessionEventBroker, ref: SessionRef, turn_id: str, status: str

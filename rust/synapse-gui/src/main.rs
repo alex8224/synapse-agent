@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_title;
 mod git_fs;
 mod sidecar;
 mod stt;
@@ -465,6 +466,8 @@ async fn tauri_terminal_create(
     shell: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    command: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<u32, String> {
     // The shared manager is cloned out of the borrowed state so the blocking
     // body owns everything it touches (`State` itself is not `'static`).
@@ -472,7 +475,15 @@ async fn tauri_terminal_create(
     let ws = workspace.map(PathBuf::from).or_else(resolve_workspace);
     run_blocking("创建终端", move || {
         let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
-        mgr.create_terminal(app, ws, shell, cols.unwrap_or(80), rows.unwrap_or(24))
+        mgr.create_terminal(
+            app,
+            ws,
+            shell,
+            cols.unwrap_or(80),
+            rows.unwrap_or(24),
+            command,
+            initial_prompt,
+        )
     })
     .await
 }
@@ -505,6 +516,26 @@ async fn tauri_terminal_resize(
     run_blocking("终端调整大小", move || {
         let mut mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
         mgr.resize_terminal(id, cols, rows)
+    })
+    .await
+}
+
+/// PTY-scoped snapshot of the `agy` conversation title.
+///
+/// This is the catch-up half of `terminal-agent-title-{ptyId}`: a renderer that
+/// subscribed after the poller resolved the title (remount, tab re-open) reads
+/// the current value here instead of waiting for the next change. The payload
+/// stays PTY-only and never exposes a path or a query.
+#[tauri::command]
+async fn tauri_terminal_agent_title(
+    state: tauri::State<'_, AppState>,
+    pty_id: u32,
+) -> Result<terminal::AgentTitleSnapshotDto, String> {
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("读取终端会话标题", move || {
+        let mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        let snapshot = mgr.agent_title_snapshot(pty_id)?;
+        Ok(terminal::AgentTitleSnapshotDto::new(pty_id, snapshot))
     })
     .await
 }
@@ -632,6 +663,7 @@ fn main() {
             tauri_terminal_create,
             tauri_terminal_write,
             tauri_terminal_resize,
+            tauri_terminal_agent_title,
             tauri_terminal_close,
             stt_cloud_status,
             stt_cloud_begin,

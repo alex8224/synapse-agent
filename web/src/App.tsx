@@ -38,6 +38,11 @@ export function App() {
   const requestSessionSearchFocus = useConsoleStore((s) => s.requestSessionSearchFocus);
   const toggleAppearance = useAppearanceStore((s) => s.toggleAppearance);
   const refreshScreenshotTool = useScreenshotStore((s) => s.refreshTool);
+  const terminalOpen = useTerminalStore((s) => s.open);
+  const terminalDisplayMode = useTerminalStore((s) => s.displayMode);
+  const splitWorkspaceRatio = useTerminalStore((s) => s.splitWorkspaceRatio);
+  const isTerminalStage = terminalOpen && terminalDisplayMode === 'stage';
+  const isTerminalSplit = terminalOpen && terminalDisplayMode === 'split';
 
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 767px)').matches);
   const [tablet, setTablet] = useState(() => window.matchMedia('(min-width: 768px) and (max-width: 1023px)').matches);
@@ -249,8 +254,8 @@ export function App() {
           the material invisible.  Everything in the pane is a flex row that takes
           its own height, so nothing else can overflow it.
         */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col material-pane">
+        <div className={`flex min-h-0 min-w-0 flex-1 ${isTerminalSplit ? 'flex-row' : 'flex-col'} overflow-hidden`}>
+          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col material-pane" style={isTerminalStage ? { display: 'none' } : isTerminalSplit ? { flex: `0 0 ${splitWorkspaceRatio * 100}%` } : undefined}>
             {/* Only rendered when the relay is down and the read-only diagnostics
                 read succeeded; see the component for the degradation rules. */}
             <RuntimeDiagnosticsBanner />

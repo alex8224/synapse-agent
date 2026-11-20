@@ -94,6 +94,17 @@ class ExternalSessions(Protocol):
         attachment_refs: Sequence[Mapping[str, Any]] = (),
     ) -> ExternalSessionView: ...
 
+    async def deliver_turn(
+        self,
+        ref: SessionRef,
+        settings: object,
+        workspace: Path,
+        *,
+        turn_id: str,
+        text: str,
+    ) -> tuple[str | None, str | None]:
+        """Run one collaboration delivery; return ``(stop_reason, answer)``."""
+
     async def cancel(self, ref: SessionRef) -> bool: ...
 
     async def steer(

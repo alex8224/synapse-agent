@@ -131,6 +131,29 @@ def test_external_full_access_is_reported_not_enforced(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_deliver_turn_returns_the_peer_answer_for_collaboration(tmp_path: Path) -> None:
+    """A collaboration delivery reads the peer's own answer as its reply."""
+    settings, service, metadata, ref = _setup(tmp_path)
+
+    async def run() -> None:
+        await service.create(
+            metadata, CreateSessionCommand(project_id="project", thread_id="external"), "test"
+        )
+        stop_reason, answer = await service.deliver_turn(
+            ref, settings, tmp_path, turn_id="delivery", text="协作交办"
+        )
+        assert stop_reason == "end_turn"
+        assert answer == "hello"
+        # The delivery turn is a normal turn for anyone watching the session.
+        broker = service.broker(ref)
+        assert broker is not None
+        kinds = [envelope.event.kind.value for envelope in broker.read_after(0).events]
+        assert "turn_completed" in kinds
+        await service.shutdown()
+
+    asyncio.run(run())
+
+
 def test_external_turn_failure_emits_terminal_and_close_releases_pool(tmp_path: Path) -> None:
     settings, service, metadata, ref = _setup(tmp_path)
 

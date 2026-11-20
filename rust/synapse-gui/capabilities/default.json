@@ -47,6 +47,7 @@
     "allow-tauri-terminal-create",
     "allow-tauri-terminal-write",
     "allow-tauri-terminal-resize",
+    "allow-tauri-terminal-agent-title",
     "allow-tauri-terminal-close",
     "allow-stt-cloud-status",
     "allow-stt-cloud-begin",

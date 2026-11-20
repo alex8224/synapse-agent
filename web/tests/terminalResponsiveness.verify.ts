@@ -75,12 +75,15 @@ const bridgeMock = `
 const listeners = new Map();
 const echoLog = [];
 window.__echoLog = echoLog;
+const launchLog = [];
+window.__launchLog = launchLog;
 
 function emit(name, payload) {
   const set = listeners.get(name);
   if (!set) return;
   for (const cb of Array.from(set)) cb({ event: name, payload });
 }
+window.__terminalEmit = emit;
 
 export function listen(name, cb) {
   let set = listeners.get(name);
@@ -93,7 +96,15 @@ let nextPty = 1000;
 
 export async function invoke(cmd, args) {
   const a = args || {};
-  if (cmd === 'tauri_terminal_create') { nextPty += 1; return nextPty; }
+  if (cmd === 'tauri_terminal_create') {
+    launchLog.push(a.command ?? null);
+    nextPty += 1;
+    return nextPty;
+  }
+  if (cmd === 'tauri_terminal_agent_title') {
+    const title = a.ptyId === 1004 ? 'Indexed agy title' : null;
+    return { pty_id: a.ptyId, conversation_id: title ? 'agy-conversation' : null, title };
+  }
   if (cmd === 'tauri_terminal_write') {
     const streaming = typeof window.__streaming === 'function' ? window.__streaming() : false;
     echoLog.push({ data: a.data, at: Date.now(), streaming });
@@ -221,6 +232,7 @@ window.__startStream = function () {
 };
 
 // --- terminal probes ---------------------------------------------------------
+window.__lastTerminal = () => termStore.getState().sessions.at(-1);
 window.__termReady = function () {
   const s = termStore.getState().sessions[0];
   if (!s) return false;
@@ -416,6 +428,27 @@ try {
   const ready = await wait(`window.__termReady && window.__termReady()`, 300);
   assert.equal(ready, true, 'the terminal never mounted in the fixture');
   console.log(`INFO app + terminal ready in ${Date.now() - setupAt} ms`);
+
+  const paneTitle = `document.querySelector('button[title$="双击编辑别名"]')`;
+  const aliasInput = `document.querySelector('input[placeholder="终端别名"]')`;
+  const press = async (key: string, windowsVirtualKeyCode: number) => {
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await client!.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode }, page.sessionId);
+    }
+  };
+  await run(`${paneTitle}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  assert.equal(await wait(`document.activeElement === ${aliasInput}`, 30), true, 'alias editor takes focus');
+  await client.send('Input.insertText', { text: 'Review' }, page.sessionId);
+  await press('Enter', 13);
+  assert.equal(await wait(`${paneTitle}?.textContent.endsWith(' (Review)')`, 30), true, 'Enter saves the alias');
+  assert.equal(await run(`document.activeElement === ${paneTitle}`), true, 'focus returns to the title');
+  await press('Enter', 13);
+  assert.equal(await wait(`document.activeElement === ${aliasInput}`, 30), true, 'Enter on the title starts editing');
+  await client.send('Input.insertText', { text: 'Discard' }, page.sessionId);
+  await press('Escape', 27);
+  assert.equal(await wait(`${paneTitle}?.textContent.endsWith(' (Review)')`, 30), true, 'Escape leaves the saved alias unchanged');
+  assert.equal(await run(`window.__echoLog.length`), 0, 'alias editing does not send keystrokes to the PTY');
+
   check('the terminal textarea takes focus', (await run(`window.__focusTerminal()`)) === true);
 
   // --- idle floor: what a keystroke costs with nothing else running ----------
@@ -579,6 +612,90 @@ try {
   );
 
   stamp('ctrl+c checks done');
+
+  const launcher = `document.querySelector('button[aria-label="新建终端"]')`;
+  const options = `document.getElementById('terminal-launcher-options')`;
+  const click = async (expression: string) => {
+    const { x, y } = (await run(`(() => {
+      const el = ${expression};
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`)) as { x: number; y: number };
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await client!.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }, page.sessionId);
+    }
+  };
+
+  const launchCount = await run(`window.__launchLog.length`);
+  await click(launcher);
+  assert.equal(await wait(`Boolean(${options})`, 30), true);
+  assert.equal(await run(`window.__launchLog.length`), launchCount, 'opening the launcher does not start agy');
+  const preset = (label: string) => `Array.from(${options}.querySelectorAll('button')).find(b => b.textContent.includes('${label}'))`;
+  await click(preset('Claude Code'));
+  assert.equal(await wait(`window.__launchLog.at(-1) === 'claude' && !${options}`, 30), true);
+  await click(launcher);
+  await click(preset('Codex CLI'));
+  assert.equal(await wait(`window.__launchLog.at(-1) === 'codex' && !${options}`, 30), true);
+  await click(launcher);
+  await click(`${options}.querySelector('input')`);
+  await client.send('Input.insertText', { text: 'agy' }, page.sessionId);
+  await client.send('Input.insertText', { text: ' --help' }, page.sessionId);
+  await click(`${options}.querySelector('button[type="submit"]')`);
+  assert.equal(await wait(`window.__launchLog.at(-1) === 'agy --help' && !${options}`, 30), true);
+
+  const getTerminal = `window.__lastTerminal()`;
+  const hook = (seq: number, event: string, state: string, fullyIdle?: boolean) => run(`(() => {
+    const ptyId = ${getTerminal}.ptyId;
+    window.__terminalEmit('terminal-agent-state-' + ptyId, {
+      ...${JSON.stringify({ seq, event, state, fullyIdle })}, ptyId,
+    });
+  })()`);
+  const output = (data: string) => run(`window.__terminalEmit('terminal-data-' + ${getTerminal}.ptyId, ${JSON.stringify(data)})`);
+  // Wait for both the renderer and its mocked Tauri subscriptions to be attached.
+  await output('\r\nFallback probe\r\n');
+  if (!await wait(`${getTerminal}.tailLines.join(' ').includes('Fallback probe')`, 5)) {
+    await output('\r\nFallback probe\r\n');
+  }
+  assert.equal(await wait(`${getTerminal}.tailLines.join(' ').includes('Fallback probe')`, 30), true);
+  await hook(1, 'PreInvocation', 'working');
+  assert.equal(await wait(`${getTerminal}.hasActiveTask`, 30), true);
+  await hook(2, 'Stop', 'done', false); // Older native builds sent 'done' for every Stop.
+  await hook(3, 'Stop', 'done');
+  await output('\x1b]7501;done\x07\r\nAllow fake approval? [y/n]\r\n');
+  assert.equal(await wait(`${getTerminal}.tailLines.join(' ').includes('fake approval')`, 30), true);
+  await sleep(2300);
+  assert.equal(await run(`${getTerminal}.activity === 'working' && ${getTerminal}.hasActiveTask`), true);
+  await hook(4, 'Stop', 'done', true);
+  assert.equal(await wait(`${getTerminal}.activity === 'idle' && !${getTerminal}.hasActiveTask`, 30), true);
+  await hook(3, 'PreInvocation', 'working'); // Ignore an older event from this PTY.
+  await output('\x1b]7501;working\x07\r\nLate output\r\n');
+  assert.equal(await wait(`${getTerminal}.tailLines.join(' ').includes('Late output')`, 30), true);
+  assert.equal(await run(`${getTerminal}.activity`), 'idle');
+  console.log('PASS agy Hook owns activity until a fully idle Stop, while PTY previews keep updating');
+
+  assert.equal(await wait(`${getTerminal}.agentConversationTitle === 'Indexed agy title'`, 30), true);
+  const seq = await run(`${getTerminal}.seq`);
+  const composer = `document.getElementById('console-composer')`;
+  const mentionOption = (prefix: string) => `Array.from(document.querySelectorAll('[role="option"]')).find(el => el.textContent.includes('${prefix}:${seq} ('))`;
+  const openMention = (prefix: string) => run(`(() => {
+    const editor = ${composer};
+    const query = document.createTextNode('@' + ${JSON.stringify(prefix)} + ':' + ${seq});
+    editor.focus();
+    editor.replaceChildren(query);
+    window.getSelection().collapse(query, query.length);
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  })()`);
+  await openMention('term');
+  assert.equal(await wait(`${mentionOption('term')}?.textContent.includes('Indexed agy title')`, 30), true);
+  await run(`window.__terminalEmit('terminal-agent-title-' + ${getTerminal}.ptyId, {
+    ptyId: ${getTerminal}.ptyId, conversationId: 'agy-conversation', title: 'Updated agy title',
+  })`);
+  assert.equal(await wait(`${mentionOption('term')}?.textContent.includes('Updated agy title')`, 30), true);
+  await openMention('send');
+  assert.equal(await wait(`${mentionOption('send')}?.textContent.includes('Updated agy title')`, 30), true);
+  console.log('PASS agy title snapshot and live updates appear on numbered reference and dispatch options');
+
   if (failures.length > 0) {
     throw new Error(`${failures.length} of ${checks} checks failed:\n- ${failures.join('\n- ')}`);
   }

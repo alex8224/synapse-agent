@@ -35,7 +35,13 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
 长输入或输出可能已截断，历史记录中未保留的内容不会被补造。
 
 桌面端通过底栏终端入口或 `Ctrl` + 反引号打开集成终端，支持通过 `Ctrl` + `Shift` + 反引号或双击面板标题栏切换最大化／还原。
+点击「新建终端」只打开列表，点击某项才会启动对应的本地 Agent CLI 或 Shell。也可以输入带参数的本地命令，再点「运行命令」。
+本地 CLI 需事先安装；此菜单不使用外部 ACP Agent 的配置。
 聊天输出时仍可输入命令、接收终端输出；终端内的 `Ctrl+C` 发给 shell，不会取消 Agent 回合。
+双击分屏的终端名称可以设置别名（键盘聚焦名称后按 `Enter` 也可编辑）。按 `Enter` 保存，按 `Esc` 或点到别处取消，清空后保存可恢复默认名称。
+别名会显示在页签和终端选择菜单中，不改变 `@term:1`、`@send:1` 等编号引用；重启该分屏的进程会保留别名，关闭分屏则不会保存。
+桌面端的 `@` 菜单也会在 agy CLI 分屏名称后显示 agy 自动生成的会话标题。标题尚未生成或索引不可读时，只显示分屏名称。
+自动标题只用于辨认，不替换自定义别名，也不改变 `@term:N` 和 `@send:N` 的编号寻址。
 
 - Markdown 解析放在独立 Worker，待处理更新只保留每条消息的最新版本；已渲染且未变化的块复用，
   避免每个流式片段重新渲染整段回答。聊天仍持续显示，不推迟到回合结束。
@@ -48,6 +54,18 @@ Windows 独立安装版的 Codex 用量、额度、兑换及 OAuth 刷新请求�
 
 部署须使用完整的 `npm run build` 产物（包括 Worker 文件），并重新构建桌面壳以启用原生线程修复。
 回归验收：`node --test tests/terminalResponsiveness.verify.ts`（真实浏览器、模拟 PTY、长文本流式输出与持续键入）。
+
+### agy CLI 忙闲状态端到端验收
+
+1. 使用同时包含最新前端和 Rust 壳的桌面构建。确认桌面进程的 `PATH` 能找到 `agy` 和 `node`。在「新建终端」里打开两个 `agy CLI`，不要用 ACP 会话代替。
+2. 两个分屏应各自显示「就绪」。只给第一个分屏发送一条无副作用的任务，例如请它运行一个等待 10 秒再输出 `HOOK_TEST` 的本地命令。它应切换到「运行中」，安静等待期间也不应变成「就绪」；第二个分屏应保持「就绪」。在测试时仅批准你预期的命令。
+3. 如需确认事件，在 PowerShell 中查看本轮对应文件的状态字段（启动两个分屏后记录各自的 PTY 编号）：
+   ```powershell
+   Get-ChildItem "$env:TEMP\synapse-pty-hooks\pty-*.json" | Get-Content |
+     ForEach-Object { $_ | ConvertFrom-Json } | Select-Object ptyId,seq,event,state,fullyIdle
+   ```
+   文件只保留该 PTY 的最新快照。若观察到 `Stop` 且 `fullyIdle` 为假，应仍显示「运行中」，不回流也不发送排队提示。只有收到 `Stop` 且 `fullyIdle: true` 才应变回「就绪」；开启自动回流时，本轮结果应只回流一次。
+4. 工作中切换主题，确认后续输出不会改写状态。没有收到原生 Hook 的终端仍用输出/OSC 估算；缺失或非布尔真的 `fullyIdle` 不视为完成。非最终 `Stop` 是否出现由 agy 决定，可用上面的自动化回归稳定覆盖此分支。
 
 面向 runtime daemon 的浏览器控制台前端。生产运行方式与完整命令见仓库根
 `README.md`、`docs/web-console/index.md` 与 `docs/web-console/formal-host.md`。

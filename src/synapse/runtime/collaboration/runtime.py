@@ -50,6 +50,37 @@ class TargetUnavailableError(RuntimeError):
     """The delivery's project or session cannot be reached right now."""
 
 
+def _executor_tool_reply(executor: Any, recipient: SessionRef) -> bool:
+    """Whether *recipient* can answer through ``reply_to_collaboration``.
+
+    A Synapse session can; an ACP peer has no such tool, so the prompt must ask
+    for a plain final answer instead.  Executors that cannot tell stay on the
+    native wording, which is what every pre-existing executor gets.
+    """
+    hook = getattr(executor, 'tool_reply', None)
+    if hook is None:
+        return True
+    try:
+        return bool(hook(recipient))
+    except Exception:  # noqa: BLE001 - wording must never fail a delivery
+        return True
+
+
+def _executor_answer(executor: Any, message: CollaborationMessage, token: Any) -> str | None:
+    """The peer's own answer text for a finished delivery, when it has one."""
+    hook = getattr(executor, 'answer', None)
+    if hook is None:
+        return None
+    try:
+        text = hook(message, token)
+    except Exception:  # noqa: BLE001 - a missing answer settles as no_result
+        return None
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    return text or None
+
+
 @dataclass(frozen=True, slots=True)
 class CollaborationMessage:
     """One delivery rendered for a session, with its trusted identity.
@@ -361,7 +392,13 @@ class CollaborationRuntime:
         if not self._may_start(request, scope, recipient, message):
             self._abandon(delivery, 'scope_disabled')
             return _Outcome.DONE
-        outgoing = self._render(delivery, request, scope, message)
+        outgoing = self._render(
+            delivery,
+            request,
+            scope,
+            message,
+            tool_reply=_executor_tool_reply(self._executor, delivery.recipient),
+        )
         try:
             token = await self._executor.start(outgoing)
         except SessionBusyError:
@@ -389,9 +426,53 @@ class CollaborationRuntime:
             self._resolve(delivery, 'stopped')
             return _Outcome.DONE
         reason = await self._executor.settled(outgoing, token)
+        answer = _executor_answer(self._executor, outgoing, token)
+        self._record_answer(
+            outgoing,
+            request,
+            recipient,
+            answer,
+            reason=reason,
+            turn_id=getattr(token, 'turn_id', ''),
+        )
         running = self._store.get_delivery(running.id, recipient)
         self._finish(running, request, recipient, reason=reason)
         return _Outcome.DONE
+
+    def _record_answer(
+        self,
+        outgoing: CollaborationMessage,
+        request: Request,
+        recipient: SessionRef,
+        answer: str | None,
+        *,
+        reason: str | None,
+        turn_id: str = '',
+    ) -> None:
+        """Post a peer's own final answer as the assignment's reply.
+
+        A native target replies through ``reply_to_collaboration``; an ACP peer
+        has no such tool, so its executor reports the turn's answer text and the
+        runtime records it as the target's reply.  Without this the assignment
+        would settle as ``no_result`` even though the peer did answer.
+        """
+        if reason is not None or recipient != request.target:
+            return
+        if not answer:
+            return
+        try:
+            self._store.post_message(
+                request.id,
+                recipient,
+                kind=MessageKind.REPLY,
+                body=answer,
+                operation_key=f'delivery:{outgoing.delivery_id}',
+                anchor_turn_id=turn_id,
+            )
+        except CollaborationError:
+            # Already answered (or the assignment was fenced): never duplicate.
+            return
+        self.notify(request.source)
 
     @staticmethod
     def _may_start(
@@ -415,17 +496,30 @@ class CollaborationRuntime:
         request: Request,
         scope: ContinuationScope,
         message: Message,
+        *,
+        tool_reply: bool = True,
     ) -> CollaborationMessage:
         role = 'target' if delivery.recipient == request.target else 'source'
         if role == 'target':
-            expectation = (
-                '请处理这条协作请求；若缺少关键参数、上下文不足或无法继续，'
-                '必须调用 reply_to_collaboration(kind=\'clarification\', message=\'...\') '
-                '提出澄清，严禁直接无动作退出；'
-                '若本请求为补充上下文，请结合之前中断或未完成的步骤继续推进；'
-                '完成后调用 reply_to_collaboration(kind=\'reply\', message=\'...\') '
-                '交付最终结论。'
-            )
+            if tool_reply:
+                expectation = (
+                    '请处理这条协作请求；若缺少关键参数、上下文不足或无法继续，'
+                    '必须调用 reply_to_collaboration(kind=\'clarification\', message=\'...\') '
+                    '提出澄清，严禁直接无动作退出；'
+                    '若本请求为补充上下文，请结合之前中断或未完成的步骤继续推进；'
+                    '完成后调用 reply_to_collaboration(kind=\'reply\', message=\'...\') '
+                    '交付最终结论。'
+                )
+            else:
+                # An ACP peer has no Synapse tools: its own final answer is the
+                # reply, and the runtime posts it back to the requester.
+                expectation = (
+                    '请处理这条协作请求；若缺少关键参数、上下文不足或无法继续，'
+                    '请直接在回答中说明需要什么；'
+                    '若本请求为补充上下文，请结合之前中断或未完成的步骤继续推进。'
+                    '你无法调用 Synapse 的协作工具：把最终结论直接作为本次回答输出，'
+                    '系统会自动把它作为协作结论回传给发起方。'
+                )
         else:
             expectation = (
                 '这是对方会话的协作回复，请处理下面明确关联的原交办，'
@@ -444,8 +538,12 @@ class CollaborationRuntime:
             f'消息类型：{message.kind.value}\n\n'
             f'{message.body}\n\n'
             f'{expectation}'
-            '\n用 reply_to_collaboration 明确回复；progress 仅报告进度，'
-            'clarification 请求补充，reply 交付结果。不得自行转派。'
+            + (
+                '\n用 reply_to_collaboration 明确回复；progress 仅报告进度，'
+                'clarification 请求补充，reply 交付结果。不得自行转派。'
+                if tool_reply
+                else '\n不得自行转派给其他会话。'
+            )
         )
         return CollaborationMessage(
             delivery_id=delivery.id,

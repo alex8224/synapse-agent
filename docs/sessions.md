@@ -165,6 +165,23 @@ turn id，也不会反序列化完整 checkpoint。投影按轮追加，活跃 t
 - 切换会话时用 `(project_id, thread_id) + generation` 守卫，旧的异步
   open/history 响应不会覆盖新会话；不会自动翻完所有页（无界加载）。
 
+### 外部 ACP 会话只写投影，不写 checkpoint
+
+绑定外部 ACP Agent 的会话（`sessions.external_agent_id`）没有原生
+`SessionRuntime`，它的对话由 `ExternalTurnBridge` 直接追加到
+`transcript.sqlite` 投影，**不产生 LangGraph checkpoint**。因此：
+
+| 读取方 | 外部 ACP 会话 |
+| --- | --- |
+| 控制台 `runtime.session.history` | 可见（读投影） |
+| Agent 工具 `read_session` | 读不到正文（`load_messages_from_sqlite_file` 只读 `checkpoints.sqlite`，返回“没有对话记录”） |
+| Agent 工具 `search_session` 全文分支 | 搜不到正文（检索索引只从 checkpoint 增量重建） |
+| Agent 工具 `search_session` 元数据分支 | 可见标题/模型/绑定信息 |
+
+要把外部 Agent 的结论交给其他会话，用会话协作（`contact_session` 指向该会话，
+见 [外部 ACP Agent 接入](acp-adapter/external-agent-client.md)）或让它把结论落到
+工作区文件。
+
 ### Web 控制台断线恢复契约（第四阶段）
 
 Web 控制台客户端（`web/src/client/SynapseRuntimeClient.ts` + store）对运行时

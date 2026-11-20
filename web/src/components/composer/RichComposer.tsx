@@ -44,6 +44,11 @@ import {
   placeCaret,
 } from './composerSelection.ts';
 import { useConsoleStore } from '../../stores/useConsoleStore';
+import {
+  INSERT_TERMINAL_PILL_EVENT,
+  type InsertTerminalPillDetail,
+  useTerminalStore,
+} from '../../stores/useTerminalStore.ts';
 import type { PendingAttachment } from '../../stores/useConsoleStore.ts';
 import { projectLabel } from '../../stores/sessionList.ts';
 import type { SessionItem } from '../../stores/historyMapper.ts';
@@ -324,6 +329,79 @@ export const RichComposer: React.FC<RichComposerProps> = ({
     );
   }, [projects, projectSessions]);
 
+  const terminalSessions = useTerminalStore((s) => s.sessions);
+
+  const terminalMentionCandidates = useMemo((): MentionEntry[] => {
+    const entries: MentionEntry[] = [];
+    for (const ts of terminalSessions) {
+      const displayTitle = ts.agentConversationTitle
+        ? `${ts.title} — ${ts.agentConversationTitle}`
+        : ts.title;
+      const stateText =
+        ts.activity === 'waiting_input'
+          ? '等待确认'
+          : ts.activity === 'working'
+            ? '运行中'
+            : ts.activity === 'exited'
+              ? '已退出'
+              : '就绪';
+      entries.push({
+        kind: 'context',
+        id: `context:term-${ts.seq}`,
+        label: `term:${ts.seq} (引用 ${displayTitle} 输出)`,
+        detail: `将终端 [${ts.title}] (${stateText}) 的最新屏幕输出作为上下文带入主会话`,
+        token: `@term:${ts.seq}`,
+      });
+      entries.push({
+        kind: 'context',
+        id: `context:send-${ts.seq}`,
+        label: `send:${ts.seq} (直接派发给 ${displayTitle})`,
+        detail: `携带当前会话上下文与改动文件，直接将指令投递给终端 [${ts.title}] 执行（不触发主会话回答）`,
+        token: `@send:${ts.seq}`,
+      });
+    }
+    if (terminalSessions.length > 1) {
+      entries.push({
+        kind: 'context',
+        id: 'context:term-all',
+        label: 'term:all (引用全部已开终端输出)',
+        detail: '同时引用当前所有已开启终端的最新输出上下文到主会话',
+        token: '@term:all',
+      });
+      entries.push({
+        kind: 'context',
+        id: 'context:send-all',
+        label: 'send:all (广播派发给所有已勾选终端)',
+        detail: '携带当前会话上下文，直接广播投递给所有已勾选的终端 Agent 执行',
+        token: '@send:all',
+      });
+    }
+    entries.push(
+      {
+        kind: 'context',
+        id: 'context:spawn-agy',
+        label: 'spawn:agy (新建 agy CLI 并携带上下文派发)',
+        detail: '自动新建 agy CLI 终端，待输入区就绪后自动注入当前会话上下文与你的指令（不触发主会话）',
+        token: '@spawn:agy',
+      },
+      {
+        kind: 'context',
+        id: 'context:spawn-claude',
+        label: 'spawn:claude (新建 Claude Code 并携带上下文派发)',
+        detail: '自动新建 Claude Code 终端，待输入区就绪后自动注入当前会话上下文与你的指令（不触发主会话）',
+        token: '@spawn:claude',
+      },
+      {
+        kind: 'context',
+        id: 'context:spawn-codex',
+        label: 'spawn:codex (新建 Codex CLI 并携带上下文派发)',
+        detail: '自动新建 Codex CLI 终端，待输入区就绪后自动注入当前会话上下文与你的指令（不触发主会话）',
+        token: '@spawn:codex',
+      },
+    );
+    return entries;
+  }, [terminalSessions]);
+
   /** The offers the flyout shows for one query. */
   const offersFor = useCallback(
     (query: string): MentionEntry[] => {
@@ -332,7 +410,10 @@ export const RichComposer: React.FC<RichComposerProps> = ({
         (entry) => needle === '' || entry.detail.toLowerCase().includes(needle),
       );
       const activeSkills = skills.length > 0 ? skills : SKILL_MENTIONS;
-      const statics = rankMentions([...activeSkills, ...CONTEXT_MENTIONS], query);
+      const statics = rankMentions(
+        [...terminalMentionCandidates, ...activeSkills, ...CONTEXT_MENTIONS],
+        query,
+      );
       // The current session is excluded: contacting yourself is refused by the
       // tool, so offering it would only produce a failed call.
       const currentProjectId = activeProjectId || currentSession.project_id;
@@ -349,8 +430,48 @@ export const RichComposer: React.FC<RichComposerProps> = ({
       const orderMap = new Map(MENTION_KIND_ORDER.map((k, i) => [k, i]));
       return all.sort((a, b) => (orderMap.get(a.kind) ?? 99) - (orderMap.get(b.kind) ?? 99));
     },
-    [files, skills, sessionCandidates, projectCandidates, activeProjectId, currentSession],
+    [
+      files,
+      skills,
+      terminalMentionCandidates,
+      sessionCandidates,
+      projectCandidates,
+      activeProjectId,
+      currentSession,
+    ],
   );
+
+  // Listen for terminal selection / review pill insertions from XtermView or TerminalLinkageCard
+  useEffect(() => {
+    const onInsertTerminalPill = (event: Event) => {
+      const custom = event as CustomEvent<InsertTerminalPillDetail>;
+      const payload = custom.detail;
+      if (!payload) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.focus();
+      const selection = editorSelection(editor);
+      pendingCaretRef.current =
+        selection !== null ? selection.getRangeAt(0).cloneRange() : null;
+
+      const pill: ComposerMentionPill = {
+        kind: 'context',
+        pillId: nextPillId(),
+        token: payload.token,
+        label: payload.label,
+        detail: payload.detail,
+      };
+      pillsRef.current.set(pill.pillId, pill);
+      setPills((current) => [...current, { kind: 'mention', pill }]);
+      if (payload.followUpText) {
+        setTimeout(() => {
+          insertSpoken(payload.followUpText!);
+        }, 30);
+      }
+    };
+    window.addEventListener(INSERT_TERMINAL_PILL_EVENT, onInsertTerminalPill);
+    return () => window.removeEventListener(INSERT_TERMINAL_PILL_EVENT, onInsertTerminalPill);
+  }, [insertSpoken]);
 
   /** Open, update or close the `@` list for the caret's current position. */
   const refreshMention = useCallback(() => {

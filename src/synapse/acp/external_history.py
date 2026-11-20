@@ -89,6 +89,10 @@ class ExternalTurnBridge:
         self._cancelled: bool = False
         self._pending_approval: _PendingApproval | None = None
         self.last_turn_usage: tuple[int, int, int] = (0, 0, 0)
+        #: The answer text of the most recently finished turn.  A collaboration
+        #: delivery needs it because an ACP peer has no Synapse tool to call, so
+        #: its final answer *is* the reply that goes back to the requester.
+        self.last_answer_text: str = ""
         # Unsolicited (background-wakeup) continuation support.
         self._unsolicited: bool = False
         self._unsolicited_live: UpdateSink | None = None
@@ -546,6 +550,11 @@ class ExternalTurnBridge:
         else:
             self.last_turn_usage = (0, 0, 0)
         events, self._events = self._events, []
+        self.last_answer_text = "".join(
+            str(getattr(event.payload, "text", "") or "")
+            for event in events
+            if event.kind is TurnEventKind.ANSWER_DELTA
+        )
         segments, self._segments = self._segments, []
         self._turn = None
         self._turn_id = None

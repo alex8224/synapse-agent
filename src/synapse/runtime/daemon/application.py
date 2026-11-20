@@ -71,6 +71,13 @@ _COLLABORATION_WORKERS = 2
 #: Batch size for the startup classification of interrupted deliveries.
 _COLLABORATION_BATCH = 100
 
+
+def _consume_task_error(task: asyncio.Task[Any]) -> None:
+    """Drop a fire-and-forget task's exception instead of logging it at GC."""
+    with contextlib.suppress(BaseException):
+        task.exception()
+
+
 #: Trusted per-connection project scope.  The scope-aware authenticator sets it
 #: from the host-private handshake header, and the per-connection service factory
 #: reads it inside the same connection task, so a value never leaks between
@@ -786,10 +793,7 @@ class RuntimeDaemon:
         """
         try:
             from synapse.runtime.collaboration.coordinator import CollaborationCoordinator
-            from synapse.runtime.collaboration.runtime import (
-                CollaborationRuntime,
-                ManagerExecutor,
-            )
+            from synapse.runtime.collaboration.runtime import CollaborationRuntime
             from synapse.runtime.collaboration.store import CollaborationStore
 
             ensure_directory(self.config.state_dir)
@@ -810,9 +814,7 @@ class RuntimeDaemon:
                 pass
             runtime = CollaborationRuntime(
                 store,
-                ManagerExecutor(
-                    self._collaboration_manager_for, resumed=store.link_resumed_turn,
-                ),
+                self._make_delivery_executor(store),
                 workers=_COLLABORATION_WORKERS,
             )
             coordinator = CollaborationCoordinator(
@@ -857,6 +859,27 @@ class RuntimeDaemon:
     def _collaboration_provider(self) -> Any | None:
         """The adapter the service layer calls, or ``None`` when unavailable."""
         return getattr(self, '_collaboration_service', None)
+
+    def _make_delivery_executor(self, store: Any) -> Any:
+        """Deliveries reach ACP peers too, so one executor routes by binding.
+
+        A target bound to an external ACP Agent has no Synapse Agent to run a
+        turn in, so the delivery is handed to that peer instead; every other
+        target keeps the native ``RuntimeManager`` path unchanged.  Both ports
+        are resolved lazily, so startup order between the collaboration runtime
+        and the external session service does not matter.
+        """
+        from synapse.runtime.collaboration.external_delivery import ExternalDeliveryExecutor
+        from synapse.runtime.collaboration.runtime import ManagerExecutor
+
+        native = ManagerExecutor(
+            self._collaboration_manager_for, resumed=store.link_resumed_turn,
+        )
+        return ExternalDeliveryExecutor(
+            native,
+            provider=lambda: self.external_service,
+            manager_for=self._collaboration_manager_for,
+        )
 
     def _collaboration_manager_for(self, project_id: str) -> Any | None:
         """Resolve one project's manager for the delivery runtime, never raise."""
@@ -1014,6 +1037,8 @@ class RuntimeDaemon:
         manager = self._collaboration_manager_for(ref.project_id)
         if manager is None:
             return False
+        if self._cancel_external_turn(ref, turn_id, manager):
+            return True
         from synapse.runtime.sessions.errors import NoActiveTurnError, TurnMismatchError
 
         try:
@@ -1024,6 +1049,33 @@ class RuntimeDaemon:
             # A completed delivery can outlive its turn until mailbox settlement.
             return False
         return bool(requested)
+
+    def _cancel_external_turn(self, ref: SessionRef, turn_id: str, manager: Any) -> bool:
+        """Stop an ACP peer's delivery turn; ``False`` when the target is native.
+
+        The peer's cancel is asynchronous and this hook is synchronous, so the
+        request is scheduled on the running loop and reported as accepted: the
+        turn then settles with a ``cancelled`` stop reason like any other turn.
+        """
+        external = self.external_service
+        if external is None:
+            return False
+        settings = getattr(manager, "settings", None)
+        if settings is None:
+            return False
+        try:
+            bound = external.binding(settings, ref.thread_id)
+        except Exception:  # noqa: BLE001 - an unreadable store is "not external"
+            return False
+        if bound is None or external.active_turn_id(ref) != turn_id:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        task = loop.create_task(external.cancel(ref), name=f"cancel-external-{turn_id}")
+        task.add_done_callback(_consume_task_error)
+        return True
 
     def _collaboration_execution_status(self, ref: SessionRef, turn_id: str) -> str | None:
         """Read an existing execution without opening a project or session."""

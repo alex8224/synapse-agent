@@ -28,6 +28,7 @@ export const terminalItem: BottomBarItemDefinition = {
     );
 
     const activeCount = sessions.length;
+    const waitingCount = sessions.filter((s) => s.activity === 'waiting_input').length;
     const label = activeCount > 0 ? `终端: ${activeCount}` : '终端';
 
     return (
@@ -36,7 +37,11 @@ export const terminalItem: BottomBarItemDefinition = {
         data-entry={TERMINAL_ITEM_ID}
         type="button"
         onClick={() => toggleOpen()}
-        title="打开/收起底部集成终端 (Ctrl+`)"
+        title={
+          waitingCount > 0
+            ? `有 ${waitingCount} 个 Agent 终端正在等待确认 (Ctrl+\`)`
+            : '打开/收起底部集成终端与多 Agent 画布 (Ctrl+`)'
+        }
         aria-expanded={open}
         className={`flex cursor-pointer items-center gap-1.5 rounded-control px-1.5 py-0.5 transition-colors ${
           open
@@ -50,6 +55,12 @@ export const terminalItem: BottomBarItemDefinition = {
           style={{ fontSize: '15px' }}
         />
         <span>{label}</span>
+        {waitingCount > 0 && (
+          <span
+            className="inline-block h-2 w-2 rounded-full bg-amber-500 animate-pulse"
+            title={`${waitingCount} 个终端等待输入/审批`}
+          />
+        )}
       </button>
     );
   },

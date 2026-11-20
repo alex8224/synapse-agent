@@ -30,6 +30,11 @@ uuid = { version = "1", features = ["v4"] }
 
 open = "5"
 window-vibrancy = "0.6"
+# Read-only, parameterized lookup of the `agy` conversation title in
+# `~/.gemini/antigravity-cli/conversation_summaries.db` (`src/agent_title.rs`).
+# `bundled` compiles the amalgamation we already vendor, so the lookup does not
+# depend on a system SQLite being present or new enough on Windows or Linux.
+rusqlite = { version = "0.32", features = ["bundled"] }
 portable-pty = "0.9.0"
 raw-window-handle = "0.6"
 

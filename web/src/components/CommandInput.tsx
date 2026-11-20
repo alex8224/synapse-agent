@@ -18,6 +18,8 @@ import { isTauri } from '../client/tauri.ts';
 import { useConsoleStore } from '../stores/useConsoleStore';
 import type { SttStatusView } from '../runtime-client/types.ts';
 import { useScreenshotStore } from '../stores/screenshotTask.ts';
+import { processTerminalMentionsAndDirectives } from './terminal/XtermView.tsx';
+import { TerminalLinkageCard } from './terminal/TerminalLinkageCard.tsx';
 import { useShallow } from 'zustand/react/shallow';
 
 /**
@@ -74,6 +76,7 @@ export const CommandInput: React.FC = () => {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [hasContent, setHasContent] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
+  const stackRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<RichComposerHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -84,14 +87,14 @@ export const CommandInput: React.FC = () => {
   };
 
   useEffect(() => {
-    const card = cardRef.current;
-    if (card === null) return;
+    const target = stackRef.current ?? cardRef.current;
+    if (target === null) return;
     const root = document.documentElement;
-    const publish = () => root.style.setProperty('--composer-h', `${card.offsetHeight}px`);
+    const publish = () => root.style.setProperty('--composer-h', `${target.offsetHeight}px`);
     publish();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(publish);
-    observer.observe(card);
+    observer.observe(target);
     return () => {
       observer.disconnect();
       root.style.removeProperty('--composer-h');
@@ -150,8 +153,22 @@ export const CommandInput: React.FC = () => {
       }
       if (isSnapshotEmpty(snapshot) && !readyAttachment) return;
       const session = currentSession;
+      const activeProject = useConsoleStore
+        .getState()
+        .projects.find((p) => p.project_id === useConsoleStore.getState().activeProjectId);
+      const { intercepted, promptText } = processTerminalMentionsAndDirectives(
+        snapshot.text,
+        activeProject?.workspace_path,
+      );
+      if (intercepted) {
+        // The prompt was an explicit terminal dispatch (`@spawn:agy` / `@send:1`):
+        // it was routed with full session context directly to the Terminal Cockpit,
+        // so do NOT trigger a main-session LLM turn or subagent.
+        composerRef.current?.reset();
+        return;
+      }
       sending.current = true;
-      void submitPrompt(snapshot.text).then((accepted) => {
+      void submitPrompt(promptText).then((accepted) => {
         const now = useConsoleStore.getState().currentSession;
         if (accepted && now.project_id === session.project_id && now.thread_id === session.thread_id
           && composerRef.current?.snapshot().text === snapshot.text) {
@@ -360,7 +377,11 @@ export const CommandInput: React.FC = () => {
     // instead of behind the input.  It keeps the shared gutters and the shared
     // `console-column` width, and the transcript shows no scrollbar, so the card's
     // edges line up with the chat column above it.
-    <div className="console-gutter pointer-events-none absolute inset-x-0 bottom-0 z-30 flex w-full justify-center pb-3">
+    <div
+      ref={stackRef}
+      className="console-gutter pointer-events-none absolute inset-x-0 bottom-0 z-30 flex w-full flex-col items-center gap-2 pb-3"
+    >
+      <TerminalLinkageCard />
       <div
         ref={cardRef}
         onDragOver={(e) => {
