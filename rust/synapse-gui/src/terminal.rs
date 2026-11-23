@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
@@ -27,6 +27,118 @@ pub struct AgentTitleSnapshot {
 /// the webview never touches the SQLite file itself.
 pub type SharedAgentTitle = Arc<Mutex<AgentTitleSnapshot>>;
 
+const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
+
+/// Bounded byte ring buffer for PTY output replay across WebView refreshes.
+///
+/// Tracks a monotonic byte offset (`total_bytes`) so an attaching frontend can
+/// deduplicate live `terminal-data-{id}` chunks received while the attach IPC
+/// was in flight, and trims dropped prefixes to a valid UTF-8 codepoint start.
+#[derive(Debug)]
+pub struct OutputRingBuffer {
+    buf: VecDeque<u8>,
+    total_bytes: u64,
+    max_bytes: usize,
+}
+
+impl Default for OutputRingBuffer {
+    fn default() -> Self {
+        Self::with_capacity(MAX_SCROLLBACK_BYTES)
+    }
+}
+
+impl OutputRingBuffer {
+    pub fn with_capacity(max_bytes: usize) -> Self {
+        Self {
+            buf: VecDeque::with_capacity(max_bytes.min(64 * 1024)),
+            total_bytes: 0,
+            max_bytes: max_bytes.max(1),
+        }
+    }
+
+    pub fn push(&mut self, bytes: &[u8]) -> (u64, u64) {
+        let start_offset = self.total_bytes;
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len() as u64);
+        let end_offset = self.total_bytes;
+
+        if bytes.is_empty() {
+            return (start_offset, end_offset);
+        }
+
+        if bytes.len() >= self.max_bytes {
+            self.buf.clear();
+            let tail = &bytes[bytes.len() - self.max_bytes..];
+            self.buf.extend(tail);
+        } else {
+            self.buf.extend(bytes);
+            while self.buf.len() > self.max_bytes {
+                self.buf.pop_front();
+            }
+        }
+
+        // Never leave a UTF-8 continuation byte (10xxxxxx) at the front.
+        while matches!(self.buf.front(), Some(&b) if (b & 0b1100_0000) == 0b1000_0000) {
+            self.buf.pop_front();
+        }
+
+        (start_offset, end_offset)
+    }
+
+    pub fn snapshot(&self) -> (String, u64) {
+        let (front, back) = self.buf.as_slices();
+        let mut combined = Vec::with_capacity(front.len() + back.len());
+        combined.extend_from_slice(front);
+        combined.extend_from_slice(back);
+        let text = String::from_utf8_lossy(&combined).into_owned();
+        (text, self.total_bytes)
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalDataChunk {
+    pub data: String,
+    pub start_offset: u64,
+    pub end_offset: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionInfo {
+    pub pty_id: u32,
+    pub workspace: Option<String>,
+    pub shell: String,
+    pub command: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub exited: bool,
+    pub conversation_id: Option<String>,
+    pub title: Option<String>,
+    pub last_agent_state: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalListResponse {
+    pub boot_id: String,
+    pub sessions: Vec<TerminalSessionInfo>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAttachSnapshot {
+    pub boot_id: String,
+    pub pty_id: u32,
+    pub scrollback: String,
+    pub end_offset: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub exited: bool,
+    pub conversation_id: Option<String>,
+    pub title: Option<String>,
+    pub last_agent_state: Option<serde_json::Value>,
+}
+
 pub struct TerminalInstance {
     #[allow(dead_code)]
     pub id: u32,
@@ -34,14 +146,28 @@ pub struct TerminalInstance {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
     pub stop_flag: Arc<AtomicBool>,
+    pub exited: Arc<AtomicBool>,
+    pub workspace: Option<String>,
+    pub shell: String,
+    pub command: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub output_buffer: Arc<Mutex<OutputRingBuffer>>,
+    pub last_agent_state: Arc<Mutex<Option<serde_json::Value>>>,
     /// Conversation title state fed by the hook poller.
     pub agent_title: SharedAgentTitle,
 }
 
-#[derive(Default)]
 pub struct TerminalManager {
+    boot_id: String,
     next_id: u32,
     instances: HashMap<u32, TerminalInstance>,
+}
+
+impl Default for TerminalManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 const HOOK_SCRIPT_NAME: &str = "synapse-cockpit-hook.mjs";
@@ -315,10 +441,34 @@ fn build_startup_command_with_prompt(startup_cmd: &str, has_initial_prompt: bool
     }
 }
 
+fn generate_boot_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{}", std::process::id(), nanos)
+}
+
+fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string(), "/T"])
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         ensure_agy_hooks_installed();
         Self {
+            boot_id: generate_boot_id(),
             next_id: 1,
             instances: HashMap::new(),
         }
@@ -425,6 +575,12 @@ impl TerminalManager {
             }
         }
 
+        let workspace_str = workspace
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let saved_command = trimmed_command.map(str::to_string);
+        let saved_shell = shell_cmd.clone();
+
         if let Some(cwd) = workspace {
             if cwd.exists() {
                 cmd.cwd(cwd);
@@ -450,6 +606,13 @@ impl TerminalManager {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_for_hook = stop_flag.clone();
         let stop_for_exit = stop_flag.clone();
+        let exited_flag = Arc::new(AtomicBool::new(false));
+        let exited_for_wait = exited_flag.clone();
+
+        let output_buffer = Arc::new(Mutex::new(OutputRingBuffer::default()));
+        let output_for_reader = output_buffer.clone();
+        let last_agent_state: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let state_for_hook = last_agent_state.clone();
 
         // Title state outlives the poller: the snapshot command reads it after
         // the fact, so a renderer that mounted late (or remounted) can still
@@ -460,16 +623,27 @@ impl TerminalManager {
         let app_exit = app.clone();
         let app_hook = app.clone();
 
-        // Stream PTY stdout/stderr bytes to frontend xterm
+        // Stream PTY stdout/stderr bytes to frontend xterm and record into bounded ring buffer
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let (start_offset, end_offset) = match output_for_reader.lock() {
+                            Ok(mut guard) => guard.push(&buf[..n]),
+                            Err(poisoned) => poisoned.into_inner().push(&buf[..n]),
+                        };
                         let text = String::from_utf8_lossy(&buf[..n]).to_string();
                         let event_name = format!("terminal-data-{}", id);
-                        let _ = app_data.emit(&event_name, text);
+                        let _ = app_data.emit(
+                            &event_name,
+                            TerminalDataChunk {
+                                data: text,
+                                start_offset,
+                                end_offset,
+                            },
+                        );
                     }
                     Err(_) => break,
                 }
@@ -505,6 +679,10 @@ impl TerminalManager {
                                 .map(str::to_string);
                             let conversation_changed = conversation_id != observed_conversation_id;
                             observed_conversation_id = conversation_id;
+                            match state_for_hook.lock() {
+                                Ok(mut guard) => *guard = Some(val.clone()),
+                                Err(poisoned) => *poisoned.into_inner() = Some(val.clone()),
+                            }
                             let _ = app_hook.emit(&event_name, val);
 
                             if conversation_changed {
@@ -549,6 +727,7 @@ impl TerminalManager {
         // Wait for child process exit in dedicated thread
         std::thread::spawn(move || {
             let _ = child.wait();
+            exited_for_wait.store(true, Ordering::Relaxed);
             stop_for_exit.store(true, Ordering::Relaxed);
             let exit_event = format!("terminal-exit-{}", id);
             let _ = app_exit.emit(&exit_event, id);
@@ -560,6 +739,14 @@ impl TerminalManager {
             writer,
             master: pty_pair.master,
             stop_flag,
+            exited: exited_flag,
+            workspace: workspace_str,
+            shell: saved_shell,
+            command: saved_command,
+            cols: size.cols,
+            rows: size.rows,
+            output_buffer,
+            last_agent_state,
             agent_title,
         };
 
@@ -607,6 +794,8 @@ impl TerminalManager {
                 pixel_width: 0,
                 pixel_height: 0,
             };
+            inst.cols = size.cols;
+            inst.rows = size.rows;
             inst.master
                 .resize(size)
                 .map_err(|e| format!("Failed to resize PTY: {}", e))
@@ -615,26 +804,92 @@ impl TerminalManager {
         }
     }
 
+    pub fn list_terminals(&self) -> TerminalListResponse {
+        let mut sessions: Vec<TerminalSessionInfo> = self
+            .instances
+            .values()
+            .map(|inst| {
+                let title_snapshot = match inst.agent_title.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => poisoned.into_inner().clone(),
+                };
+                let last_agent_state = match inst.last_agent_state.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => poisoned.into_inner().clone(),
+                };
+                TerminalSessionInfo {
+                    pty_id: inst.id,
+                    workspace: inst.workspace.clone(),
+                    shell: inst.shell.clone(),
+                    command: inst.command.clone(),
+                    cols: inst.cols,
+                    rows: inst.rows,
+                    exited: inst.exited.load(Ordering::Relaxed),
+                    conversation_id: title_snapshot.conversation_id,
+                    title: title_snapshot.title,
+                    last_agent_state,
+                }
+            })
+            .collect();
+        sessions.sort_by_key(|s| s.pty_id);
+        TerminalListResponse {
+            boot_id: self.boot_id.clone(),
+            sessions,
+        }
+    }
+
+    pub fn attach_terminal(&self, id: u32) -> Result<TerminalAttachSnapshot, String> {
+        let inst = self
+            .instances
+            .get(&id)
+            .ok_or_else(|| format!("Terminal session {} not found", id))?;
+        let (scrollback, end_offset) = match inst.output_buffer.lock() {
+            Ok(guard) => guard.snapshot(),
+            Err(poisoned) => poisoned.into_inner().snapshot(),
+        };
+        let title_snapshot = match inst.agent_title.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let last_agent_state = match inst.last_agent_state.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        Ok(TerminalAttachSnapshot {
+            boot_id: self.boot_id.clone(),
+            pty_id: inst.id,
+            scrollback,
+            end_offset,
+            cols: inst.cols,
+            rows: inst.rows,
+            exited: inst.exited.load(Ordering::Relaxed),
+            conversation_id: title_snapshot.conversation_id,
+            title: title_snapshot.title,
+            last_agent_state,
+        })
+    }
+
     pub fn close_terminal(&mut self, id: u32) -> Result<(), String> {
         if let Some(inst) = self.instances.remove(&id) {
             inst.stop_flag.store(true, Ordering::Relaxed);
             if let Some(pid) = inst.child_pid {
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/PID", &pid.to_string(), "/T"])
-                        .status();
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = std::process::Command::new("kill")
-                        .args(["-9", &pid.to_string()])
-                        .status();
-                }
+                kill_process_tree(pid);
             }
             Ok(())
         } else {
             Err(format!("Terminal session {} not found", id))
+        }
+    }
+
+    pub fn close_all(&mut self) {
+        let ids: Vec<u32> = self.instances.keys().copied().collect();
+        for id in ids {
+            if let Some(inst) = self.instances.remove(&id) {
+                inst.stop_flag.store(true, Ordering::Relaxed);
+                if let Some(pid) = inst.child_pid {
+                    kill_process_tree(pid);
+                }
+            }
         }
     }
 }
@@ -798,5 +1053,41 @@ mod tests {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         assert_eq!(recovered, AgentTitleSnapshot::default());
+    }
+
+    #[test]
+    fn ring_buffer_trims_to_valid_utf8_boundary_and_tracks_offsets() {
+        let mut ring = OutputRingBuffer::with_capacity(8);
+        // "ab" (2 bytes) + "中文" (6 bytes: 3 + 3) = 8 bytes
+        let (s1, e1) = ring.push("ab中文".as_bytes());
+        assert_eq!((s1, e1), (0, 8));
+        assert_eq!(ring.snapshot(), ("ab中文".to_string(), 8));
+
+        // Push 2 more bytes ("cd") -> capacity 8 drops "ab" (2 bytes), keeping "中文cd"
+        let (s2, e2) = ring.push(b"cd");
+        assert_eq!((s2, e2), (8, 10));
+        assert_eq!(ring.snapshot(), ("中文cd".to_string(), 10));
+
+        // Push 1 more byte ("e") -> dropping 1 byte cuts inside '中', must advance past continuation bytes
+        let (s3, e3) = ring.push(b"e");
+        assert_eq!((s3, e3), (10, 11));
+        assert_eq!(ring.snapshot(), ("文cde".to_string(), 11));
+    }
+
+    #[test]
+    fn ring_buffer_handles_chunk_larger_than_capacity() {
+        let mut ring = OutputRingBuffer::with_capacity(5);
+        // "a" (1) + "你好" (6) -> tail 5 bytes cuts inside '你', leaving "好" (3 bytes)
+        let (s, e) = ring.push("a你好".as_bytes());
+        assert_eq!((s, e), (0, 7));
+        assert_eq!(ring.snapshot(), ("好".to_string(), 7));
+    }
+
+    #[test]
+    fn terminal_manager_list_has_non_empty_boot_id() {
+        let mgr = TerminalManager::new();
+        let list = mgr.list_terminals();
+        assert!(!list.boot_id.is_empty());
+        assert!(list.sessions.is_empty());
     }
 }

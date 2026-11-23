@@ -541,6 +541,31 @@ async fn tauri_terminal_agent_title(
 }
 
 #[tauri::command]
+async fn tauri_terminal_list(
+    state: tauri::State<'_, AppState>,
+) -> Result<terminal::TerminalListResponse, String> {
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("列出终端会话", move || {
+        let mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        Ok(mgr.list_terminals())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn tauri_terminal_attach(
+    state: tauri::State<'_, AppState>,
+    id: u32,
+) -> Result<terminal::TerminalAttachSnapshot, String> {
+    let terminal_mgr = state.terminal_mgr.clone();
+    run_blocking("重连终端会话", move || {
+        let mgr = terminal_mgr.lock().map_err(|e| e.to_string())?;
+        mgr.attach_terminal(id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn tauri_terminal_close(state: tauri::State<'_, AppState>, id: u32) -> Result<(), String> {
     // Closing kills the child process tree, which is a blocking syscall.
     let terminal_mgr = state.terminal_mgr.clone();
@@ -664,6 +689,8 @@ fn main() {
             tauri_terminal_write,
             tauri_terminal_resize,
             tauri_terminal_agent_title,
+            tauri_terminal_list,
+            tauri_terminal_attach,
             tauri_terminal_close,
             stt_cloud_status,
             stt_cloud_begin,
@@ -851,8 +878,17 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("运行 Synapse GUI 失败");
+        .build(tauri::generate_context!())
+        .expect("构建 Synapse GUI 失败")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Ok(mut mgr) = state.terminal_mgr.lock() {
+                        mgr.close_all();
+                    }
+                }
+            }
+        });
 }
 
 fn dirs_or_local() -> PathBuf {

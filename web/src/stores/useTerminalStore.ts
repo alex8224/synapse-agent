@@ -15,7 +15,14 @@
  *   - `autoReflow` watch mode (notifies main chat when a running Agent terminal finishes)
  */
 import { create } from 'zustand';
-import { createTerminal, closeTerminal, writeTerminal } from '../client/tauriTerminal.ts';
+import {
+  createTerminal,
+  closeTerminal,
+  listTerminals,
+  writeTerminal,
+  type TerminalListResponse,
+  type TerminalSessionInfo,
+} from '../client/tauriTerminal.ts';
 
 /**
  * Latest fitted `(cols, rows)` reported by each mounted `XtermView`, keyed by
@@ -263,6 +270,255 @@ interface TerminalStoreState {
   broadcastInput: (text: string, explicitTargetIds?: string[]) => Promise<number>;
   sendQuickResponse: (id: string, data: string) => Promise<void>;
   handleSessionExit: (ptyId: number) => void;
+  rehydrateTerminals: (activeWorkspace?: string) => Promise<void>;
+}
+
+const TERMINAL_UI_STORAGE_KEY = 'synapse.terminal.ui.v1';
+
+export interface PersistedTerminalTab {
+  id: string;
+  seq: number;
+  ptyId: number | null;
+  title: string;
+  originalTitle?: string;
+  alias?: string;
+  agentId: string;
+  shell: string;
+  command?: string;
+  isAgent: boolean;
+  workspace?: string;
+  autoReflow: boolean;
+  broadcastEnabled: boolean;
+  hasActiveTask: boolean;
+  taskStartedAt?: number;
+}
+
+export interface PersistedTerminalUiState {
+  bootId?: string;
+  open: boolean;
+  displayMode: TerminalDisplayMode;
+  gridLayout: TerminalGridLayout;
+  splitWorkspaceRatio: number;
+  activeSessionId: string | null;
+  zoomedSessionId: string | null;
+  sessions: PersistedTerminalTab[];
+}
+
+export function normalizeWorkspacePath(workspace?: string | null): string {
+  if (!workspace) return '';
+  let normalized = workspace.trim().replace(/\\/g, '/');
+  if (!normalized) return '';
+  // Strip trailing slashes except bare "/" or "C:/"
+  while (normalized.length > 1 && normalized.endsWith('/') && !/^[a-zA-Z]:\/$/.test(normalized)) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (/^[a-zA-Z]:(\/|$)/.test(normalized) || normalized.startsWith('//')) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+export function isSameWorkspace(a?: string | null, b?: string | null): boolean {
+  const na = normalizeWorkspacePath(a);
+  const nb = normalizeWorkspacePath(b);
+  return na.length > 0 && na === nb;
+}
+
+function loadTerminalUiState(): PersistedTerminalUiState | null {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return null;
+    const raw = window.sessionStorage.getItem(TERMINAL_UI_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedTerminalUiState>;
+    if (!parsed || !Array.isArray(parsed.sessions)) return null;
+    return {
+      bootId: typeof parsed.bootId === 'string' ? parsed.bootId : undefined,
+      open: Boolean(parsed.open),
+      displayMode: parsed.displayMode === 'split' || parsed.displayMode === 'stage' ? parsed.displayMode : 'dock',
+      gridLayout:
+        parsed.gridLayout === 'columns' ||
+        parsed.gridLayout === 'rows' ||
+        parsed.gridLayout === 'master-stack' ||
+        parsed.gridLayout === 'monocle'
+          ? parsed.gridLayout
+          : 'auto',
+      splitWorkspaceRatio:
+        typeof parsed.splitWorkspaceRatio === 'number' && Number.isFinite(parsed.splitWorkspaceRatio)
+          ? parsed.splitWorkspaceRatio
+          : 0.48,
+      activeSessionId: typeof parsed.activeSessionId === 'string' ? parsed.activeSessionId : null,
+      zoomedSessionId: typeof parsed.zoomedSessionId === 'string' ? parsed.zoomedSessionId : null,
+      sessions: parsed.sessions,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveTerminalUiState(state: TerminalStoreState, bootId?: string): void {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const payload: PersistedTerminalUiState = {
+      bootId,
+      open: state.open,
+      displayMode: state.displayMode,
+      gridLayout: state.gridLayout,
+      splitWorkspaceRatio: state.splitWorkspaceRatio,
+      activeSessionId: state.activeSessionId,
+      zoomedSessionId: state.zoomedSessionId,
+      sessions: state.sessions
+        .filter((s) => s.ptyId !== null && s.ptyId > 0)
+        .map((s) => ({
+          id: s.id,
+          seq: s.seq,
+          ptyId: s.ptyId,
+          title: s.title,
+          originalTitle: s.originalTitle,
+          alias: s.alias,
+          agentId: s.agentId,
+          shell: s.shell,
+          command: s.command,
+          isAgent: s.isAgent,
+          workspace: s.workspace,
+          autoReflow: s.autoReflow,
+          broadcastEnabled: s.broadcastEnabled,
+          hasActiveTask: s.hasActiveTask,
+          taskStartedAt: s.taskStartedAt,
+        })),
+    };
+    window.sessionStorage.setItem(TERMINAL_UI_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota / disabled storage errors.
+  }
+}
+
+function inferPresetFromInfo(info: TerminalSessionInfo): AgentCliPreset | undefined {
+  const cmd = (info.command ?? '').trim().toLowerCase();
+  if (!cmd) {
+    return AGENT_CLI_PRESETS.find((p) => p.id === 'pwsh');
+  }
+  return AGENT_CLI_PRESETS.find(
+    (p) =>
+      p.command &&
+      (cmd === p.command.toLowerCase() ||
+        cmd.startsWith(`${p.command.toLowerCase()} `) ||
+        cmd.endsWith(`/${p.command.toLowerCase()}`) ||
+        cmd.endsWith(`\\${p.command.toLowerCase()}.exe`)),
+  );
+}
+
+export function reconcileTerminalSessions(
+  liveList: TerminalListResponse,
+  persisted: PersistedTerminalUiState | null,
+  activeWorkspace?: string,
+): {
+  sessions: TerminalTabSession[];
+  activeSessionId: string | null;
+  zoomedSessionId: string | null;
+  open: boolean;
+  displayMode: TerminalDisplayMode;
+  gridLayout: TerminalGridLayout;
+  splitWorkspaceRatio: number;
+} {
+  const sameBoot = Boolean(persisted?.bootId && persisted.bootId === liveList.bootId);
+  const persistedByPty = new Map<number, PersistedTerminalTab>();
+  if (sameBoot && persisted) {
+    for (const tab of persisted.sessions) {
+      if (tab.ptyId && tab.ptyId > 0) {
+        persistedByPty.set(tab.ptyId, tab);
+      }
+    }
+  }
+
+  const sessions: TerminalTabSession[] = [];
+  for (const info of liveList.sessions) {
+    const prev = persistedByPty.get(info.ptyId);
+    const preset = inferPresetFromInfo(info);
+    const command = prev?.command ?? info.command ?? undefined;
+    const isAgent = prev?.isAgent ?? Boolean(preset?.isAgent || (command && command.trim().length > 0));
+    const agentId = prev?.agentId ?? preset?.id ?? (command ? command.split(/\s+/)[0] : 'pwsh');
+    const seq = prev?.seq ?? nextAvailableSeq(sessions);
+    const displayLabel = preset?.label ?? (command || info.shell || 'pwsh');
+    const title = prev?.title ?? `${seq}: ${displayLabel}`;
+    const workspace = prev?.workspace ?? info.workspace ?? undefined;
+    const matchesActive = activeWorkspace ? isSameWorkspace(workspace, activeWorkspace) : true;
+
+    let activity: AgentActivityState = info.exited ? 'exited' : 'idle';
+    let activityDetail: string | undefined;
+    let reflowResult: string | undefined;
+    const hook = info.lastAgentState;
+    if (!info.exited && hook) {
+      if (hook.state === 'working') {
+        activity = 'working';
+      } else if (hook.state === 'idle' || hook.state === 'done') {
+        activity = 'idle';
+      }
+      if (hook.detail) {
+        activityDetail = hook.detail;
+      }
+      if (hook.state === 'done' && hook.lastAssistantMarkdown) {
+        reflowResult = hook.lastAssistantMarkdown;
+      }
+    }
+
+    sessions.push({
+      id: prev?.id ?? `term-reattach-${info.ptyId}`,
+      seq,
+      ptyId: info.ptyId,
+      title,
+      originalTitle: prev?.originalTitle,
+      alias: prev?.alias,
+      agentConversationTitle: info.title ?? undefined,
+      shell: prev?.shell ?? info.shell,
+      agentId,
+      command,
+      isAgent,
+      workspace,
+      status: info.exited ? 'exited' : 'running',
+      activity,
+      activityDetail,
+      broadcastEnabled: matchesActive ? (prev?.broadcastEnabled ?? isAgent) : false,
+      autoReflow: prev?.autoReflow ?? isAgent,
+      hasActiveTask: info.exited ? false : (prev?.hasActiveTask ?? activity === 'working'),
+      taskStartedAt: prev?.taskStartedAt,
+      tailLines: [],
+      reflowResult,
+    });
+  }
+
+  const matchingSessions = activeWorkspace
+    ? sessions.filter((s) => isSameWorkspace(s.workspace, activeWorkspace))
+    : sessions;
+  const hasMatching = matchingSessions.length > 0;
+  const validIds = new Set(sessions.map((s) => s.id));
+
+  let activeSessionId =
+    sameBoot && persisted?.activeSessionId && validIds.has(persisted.activeSessionId)
+      ? persisted.activeSessionId
+      : null;
+  if (activeWorkspace && hasMatching) {
+    const activeMatches = matchingSessions.some((s) => s.id === activeSessionId);
+    if (!activeMatches) {
+      activeSessionId = matchingSessions[0].id;
+    }
+  } else if (!activeSessionId && sessions.length > 0) {
+    activeSessionId = sessions[0].id;
+  }
+
+  const zoomedSessionId =
+    sameBoot && persisted?.zoomedSessionId && validIds.has(persisted.zoomedSessionId)
+      ? persisted.zoomedSessionId
+      : null;
+
+  return {
+    sessions,
+    activeSessionId,
+    zoomedSessionId,
+    open: sameBoot && persisted ? (hasMatching ? persisted.open : false) : false,
+    displayMode: sameBoot && persisted ? persisted.displayMode : 'dock',
+    gridLayout: sameBoot && persisted ? persisted.gridLayout : 'auto',
+    splitWorkspaceRatio: sameBoot && persisted ? persisted.splitWorkspaceRatio : 0.48,
+  };
 }
 
 const DEFAULT_HEIGHT = 300;
@@ -962,4 +1218,40 @@ export const useTerminalStore = create<TerminalStoreState>((set, get) => ({
       void get().closeSession(target.id);
     }
   },
+
+  rehydrateTerminals: async (activeWorkspace?: string) => {
+    try {
+      const liveList = await listTerminals();
+      if (liveList.bootId) {
+        currentBootId = liveList.bootId;
+      }
+      const persisted = loadTerminalUiState();
+      const current = get();
+      if (liveList.sessions.length === 0) {
+        if (current.sessions.length === 0) {
+          saveTerminalUiState(current, currentBootId);
+        }
+        return;
+      }
+      const reconciled = reconcileTerminalSessions(liveList, persisted, activeWorkspace);
+      set({
+        sessions: reconciled.sessions,
+        activeSessionId: reconciled.activeSessionId,
+        zoomedSessionId: reconciled.zoomedSessionId,
+        open: reconciled.open,
+        displayMode: reconciled.displayMode,
+        gridLayout: reconciled.gridLayout,
+        splitWorkspaceRatio: reconciled.splitWorkspaceRatio,
+      });
+      saveTerminalUiState(get(), currentBootId);
+    } catch {
+      // Older desktop shells without `tauri_terminal_list` degrade cleanly.
+    }
+  },
 }));
+
+let currentBootId: string | undefined = loadTerminalUiState()?.bootId;
+
+useTerminalStore.subscribe((state) => {
+  saveTerminalUiState(state, currentBootId);
+});

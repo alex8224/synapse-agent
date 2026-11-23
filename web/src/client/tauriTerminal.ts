@@ -31,6 +31,43 @@ export interface TerminalAgentTitle {
   title: string | null;
 }
 
+export interface TerminalDataChunk {
+  data: string;
+  startOffset?: number;
+  endOffset?: number;
+}
+
+export interface TerminalSessionInfo {
+  ptyId: number;
+  workspace: string | null;
+  shell: string;
+  command: string | null;
+  cols: number;
+  rows: number;
+  exited: boolean;
+  conversationId: string | null;
+  title: string | null;
+  lastAgentState?: TerminalAgentHookEvent | null;
+}
+
+export interface TerminalListResponse {
+  bootId: string;
+  sessions: TerminalSessionInfo[];
+}
+
+export interface TerminalAttachSnapshot {
+  bootId: string;
+  ptyId: number;
+  scrollback: string;
+  endOffset: number;
+  cols: number;
+  rows: number;
+  exited: boolean;
+  conversationId: string | null;
+  title: string | null;
+  lastAgentState?: TerminalAgentHookEvent | null;
+}
+
 export async function createTerminal(
   workspace?: string,
   shell?: string,
@@ -67,15 +104,34 @@ export async function closeTerminal(id: number): Promise<void> {
   await terminalCommands.run(id, () => invoke('tauri_terminal_close', { id }));
 }
 
+export async function listTerminals(): Promise<TerminalListResponse> {
+  if (!isTauri()) {
+    return { bootId: '', sessions: [] };
+  }
+  return await invoke<TerminalListResponse>('tauri_terminal_list');
+}
+
+export async function attachTerminal(id: number): Promise<TerminalAttachSnapshot> {
+  if (!isTauri()) {
+    throw new Error('原生终端仅支持在桌面端环境运行');
+  }
+  return await invoke<TerminalAttachSnapshot>('tauri_terminal_attach', { id });
+}
+
 export async function onTerminalData(
   id: number,
-  callback: (data: string) => void,
+  callback: (data: string, chunk?: TerminalDataChunk) => void,
 ): Promise<UnlistenFn> {
   if (!isTauri()) {
     return () => {};
   }
-  return await listen<string>(`terminal-data-${id}`, (event) => {
-    callback(event.payload);
+  return await listen<string | TerminalDataChunk>(`terminal-data-${id}`, (event) => {
+    const payload = event.payload;
+    if (typeof payload === 'string') {
+      callback(payload);
+    } else if (payload && typeof payload.data === 'string') {
+      callback(payload.data, payload);
+    }
   });
 }
 

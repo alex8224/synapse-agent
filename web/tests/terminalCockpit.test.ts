@@ -6,6 +6,9 @@ import { test } from 'node:test';
 import {
   AGENT_CLI_PRESETS,
   formatPtySubmission,
+  isSameWorkspace,
+  normalizeWorkspacePath,
+  reconcileTerminalSessions,
   useTerminalStore,
 } from '../src/stores/useTerminalStore.ts';
 
@@ -196,4 +199,179 @@ test('pane aliases preserve identity, survive a process restart, and can be clea
   assert.equal(firstPane.agentConversationTitle, undefined);
   store.renameSession(first.id, '   ');
   assert.equal(useTerminalStore.getState().sessions[0].title, first.title);
+});
+
+test('normalizeWorkspacePath and isSameWorkspace handle Windows casing and slashes', () => {
+  assert.equal(normalizeWorkspacePath('C:\\Users\\Demo\\Repo\\'), 'c:/users/demo/repo');
+  assert.equal(isSameWorkspace('C:\\Users\\Demo\\Repo\\', 'c:/users/demo/repo'), true);
+  assert.equal(isSameWorkspace('C:\\ProjectA', 'C:\\ProjectB'), false);
+});
+
+test('reconcileTerminalSessions restores matching bootId and isolates cross-project terminals', () => {
+  const reconciledSameProject = reconcileTerminalSessions(
+    {
+      bootId: 'boot-1',
+      sessions: [
+        {
+          ptyId: 7,
+          workspace: 'C:\\ProjectA',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          cols: 100,
+          rows: 30,
+          exited: false,
+          conversationId: 'conv-1',
+          title: 'Fix attach bug',
+          lastAgentState: {
+            seq: 10,
+            ptyId: 7,
+            state: 'working',
+            event: 'PreInvocation',
+            detail: '正在思考与推理...',
+          },
+        },
+      ],
+    },
+    {
+      bootId: 'boot-1',
+      open: true,
+      displayMode: 'split',
+      gridLayout: 'auto',
+      splitWorkspaceRatio: 0.52,
+      activeSessionId: 'term-old-7',
+      zoomedSessionId: null,
+      sessions: [
+        {
+          id: 'term-old-7',
+          seq: 3,
+          ptyId: 7,
+          title: '3: agy CLI (主刀)',
+          originalTitle: '3: agy CLI',
+          alias: '主刀',
+          agentId: 'agy',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          isAgent: true,
+          workspace: 'C:\\ProjectA',
+          autoReflow: true,
+          broadcastEnabled: true,
+          hasActiveTask: true,
+        },
+      ],
+    },
+    'c:/projecta/',
+  );
+
+  assert.equal(reconciledSameProject.open, true);
+  assert.equal(reconciledSameProject.displayMode, 'split');
+  assert.equal(reconciledSameProject.sessions.length, 1);
+  assert.equal(reconciledSameProject.sessions[0].id, 'term-old-7');
+  assert.equal(reconciledSameProject.sessions[0].seq, 3);
+  assert.equal(reconciledSameProject.sessions[0].alias, '主刀');
+  assert.equal(reconciledSameProject.sessions[0].activity, 'working');
+  assert.equal(reconciledSameProject.sessions[0].agentConversationTitle, 'Fix attach bug');
+  assert.equal(reconciledSameProject.sessions[0].broadcastEnabled, true);
+
+  // Project A's agy is still recovered when opening Project B, but stays closed & non-broadcasting.
+  const crossProject = reconcileTerminalSessions(
+    {
+      bootId: 'boot-1',
+      sessions: [
+        {
+          ptyId: 7,
+          workspace: 'C:\\ProjectA',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          cols: 100,
+          rows: 30,
+          exited: false,
+          conversationId: null,
+          title: null,
+          lastAgentState: null,
+        },
+      ],
+    },
+    {
+      bootId: 'boot-1',
+      open: true,
+      displayMode: 'split',
+      gridLayout: 'auto',
+      splitWorkspaceRatio: 0.48,
+      activeSessionId: 'term-old-7',
+      zoomedSessionId: null,
+      sessions: [
+        {
+          id: 'term-old-7',
+          seq: 3,
+          ptyId: 7,
+          title: '3: agy CLI',
+          agentId: 'agy',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          isAgent: true,
+          workspace: 'C:\\ProjectA',
+          autoReflow: true,
+          broadcastEnabled: true,
+          hasActiveTask: false,
+        },
+      ],
+    },
+    'C:\\ProjectB',
+  );
+
+  assert.equal(crossProject.open, false);
+  assert.equal(crossProject.sessions.length, 1);
+  assert.equal(crossProject.sessions[0].broadcastEnabled, false);
+
+  // Different bootId discards stale persisted UI metadata, preventing ptyId collision.
+  const staleBoot = reconcileTerminalSessions(
+    {
+      bootId: 'boot-2',
+      sessions: [
+        {
+          ptyId: 7,
+          workspace: 'C:\\ProjectA',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          cols: 80,
+          rows: 24,
+          exited: true,
+          conversationId: null,
+          title: null,
+          lastAgentState: null,
+        },
+      ],
+    },
+    {
+      bootId: 'boot-1',
+      open: true,
+      displayMode: 'stage',
+      gridLayout: 'auto',
+      splitWorkspaceRatio: 0.48,
+      activeSessionId: 'term-old-7',
+      zoomedSessionId: null,
+      sessions: [
+        {
+          id: 'term-old-7',
+          seq: 9,
+          ptyId: 7,
+          title: '9: stale',
+          agentId: 'agy',
+          shell: 'pwsh.exe',
+          command: 'agy',
+          isAgent: true,
+          workspace: 'C:\\ProjectA',
+          autoReflow: true,
+          broadcastEnabled: true,
+          hasActiveTask: false,
+        },
+      ],
+    },
+    'C:\\ProjectA',
+  );
+
+  assert.equal(staleBoot.open, false);
+  assert.equal(staleBoot.sessions[0].id, 'term-reattach-7');
+  assert.equal(staleBoot.sessions[0].seq, 1);
+  assert.equal(staleBoot.sessions[0].status, 'exited');
 });

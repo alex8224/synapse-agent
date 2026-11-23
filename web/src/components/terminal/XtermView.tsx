@@ -15,12 +15,14 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import {
+  attachTerminal,
   writeTerminal,
   resizeTerminal,
   onTerminalData,
   onTerminalAgentState,
   onTerminalAgentTitle,
   onTerminalExit,
+  type TerminalDataChunk,
 } from '../../client/tauriTerminal.ts';
 import type { TerminalTabSession } from '../../stores/useTerminalStore.ts';
 import {
@@ -712,8 +714,12 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
         })
         .catch(() => {});
 
-      void onTerminalData(ptyId, (data) => {
-        if (disposed) return;
+      // Buffer live chunks while `attachTerminal` is in flight so bytes emitted
+      // between `listen()` and `attach()` are deduplicated by `endOffset` rather
+      // than duplicated or lost.
+      let attachDone = false;
+      const bufferedChunks: Array<{ data: string; chunk?: TerminalDataChunk }> = [];
+      const writeLiveOutput = (data: string) => {
         lastDataAt = Date.now();
         term.write(data, () => {
           if (disposed) return;
@@ -741,6 +747,15 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
             scheduleIdleInspection();
           }
         });
+      };
+
+      void onTerminalData(ptyId, (data, chunk) => {
+        if (disposed) return;
+        if (!attachDone) {
+          bufferedChunks.push({ data, chunk });
+          return;
+        }
+        writeLiveOutput(data);
       })
         .then((unlisten) => {
           if (disposed) {
@@ -750,6 +765,56 @@ export const XtermView: React.FC<XtermViewProps> = ({ session, isActive = true }
           cleanupDataStream = unlisten;
         })
         .catch(() => reportError('终端输出连接失败，请重新打开终端'));
+
+      void attachTerminal(ptyId)
+        .catch(() => null)
+        .then((snapshot) => {
+          if (disposed) return;
+          attachDone = true;
+          if (snapshot?.scrollback) {
+            term.write(snapshot.scrollback, () => {
+              if (disposed) return;
+              const { tailLines } = readTailSnapshot(term);
+              const cur = useTerminalStore.getState().sessions.find((s) => s.id === session.id);
+              if (cur && tailLines.length > 0) {
+                useTerminalStore
+                  .getState()
+                  .setSessionActivity(session.id, cur.activity, cur.activityDetail, tailLines);
+              }
+            });
+          }
+          for (const entry of bufferedChunks) {
+            if (
+              snapshot &&
+              entry.chunk?.endOffset !== undefined &&
+              entry.chunk.endOffset <= snapshot.endOffset
+            ) {
+              continue;
+            }
+            writeLiveOutput(entry.data);
+          }
+          bufferedChunks.length = 0;
+
+          if (snapshot?.exited) {
+            handleSessionExit(ptyId);
+          } else if (
+            snapshot &&
+            session.isAgent &&
+            term.cols > 12 &&
+            snapshot.cols === term.cols &&
+            snapshot.rows === term.rows
+          ) {
+            // Nudge ConPTY/TUI width by 1 column and back when re-attaching at the
+            // exact same dimensions so full-screen TUIs like `agy` redraw cleanly.
+            void resizeTerminal(ptyId, term.cols - 1, term.rows)
+              .then(() => {
+                if (!disposed) {
+                  return resizeTerminal(ptyId, term.cols, term.rows);
+                }
+              })
+              .catch(() => {});
+          }
+        });
 
       void onTerminalExit(ptyId, () => {
         if (disposed) return;

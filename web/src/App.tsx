@@ -67,6 +67,17 @@ export function App() {
     }
   }, []);
 
+  const rehydratedTerminalsRef = useRef(false);
+  const activeProjectWorkspace = useConsoleStore((s) =>
+    s.projects.find((p) => p.project_id === s.currentSession.project_id)?.workspace_path,
+  );
+  useEffect(() => {
+    if (!isTauri() || rehydratedTerminalsRef.current) return;
+    if (connectionState !== 'connected' && !activeProjectWorkspace) return;
+    rehydratedTerminalsRef.current = true;
+    void useTerminalStore.getState().rehydrateTerminals(activeProjectWorkspace);
+  }, [connectionState, activeProjectWorkspace]);
+
   useEffect(() => {
     const phone = window.matchMedia('(max-width: 767px)');
     const medium = window.matchMedia('(min-width: 768px) and (max-width: 1023px)');
