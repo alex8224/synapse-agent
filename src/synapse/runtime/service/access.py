@@ -84,6 +84,8 @@ from synapse.runtime.service.external_apps import (
     OpenExternalResult,
 )
 from synapse.runtime.service.external_commands import (
+    ExternalUsageView,
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     InitializeExternalSessionResult,
     ListExternalAgentsQuery,
@@ -881,6 +883,19 @@ class AccessControlledAgentRuntimeService:
         if not callable(delegate):
             raise InvalidRequestError("external sessions are unavailable")
         return await delegate(command)
+
+    async def get_external_usage(
+        self, query: GetExternalUsageQuery
+    ) -> ExternalUsageView:
+        """Authorize ``session.read`` before reading external ACP agent usage."""
+        session = self._session_from_dto(
+            query, GetExternalUsageQuery, "external usage query"
+        )
+        self._authorize(session, SESSION_READ)
+        delegate = getattr(self._delegate, "get_external_usage", None)
+        if not callable(delegate):
+            raise InvalidRequestError("external usage is unavailable")
+        return await delegate(query)
 
     async def rebind_session(self, command: RebindSessionCommand) -> RebindSessionResult:
         """Authorize SESSION_REBIND, then delegate the model rebind.

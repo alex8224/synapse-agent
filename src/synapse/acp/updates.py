@@ -127,10 +127,18 @@ def _project_updates(event: Any) -> list[Any]:
             )],
         )]
     if kind == "usage_updated" and payload.get("context_size") is not None:
+        context_size = int(payload["context_size"])
+        context_window = payload.get("context_window")
+        if context_window is not None:
+            return [UsageUpdate(
+                session_update="usage_update",
+                used=context_size,
+                size=int(context_window),
+            )]
         return [UsageUpdate(
             session_update="usage_update",
             used=int(payload.get("turn_input", 0)) + int(payload.get("turn_output", 0)),
-            size=int(payload["context_size"]),
+            size=context_size,
         )]
     return []
 

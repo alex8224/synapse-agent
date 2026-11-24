@@ -74,6 +74,10 @@ from synapse.runtime.service.external_commands import (
     ExternalAgentView,
     ExternalConfigOptionView,
     ExternalConfigValueView,
+    ExternalUsageBucketView,
+    ExternalUsageGroupView,
+    ExternalUsageView,
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     InitializeExternalSessionResult,
     ListExternalAgentsQuery,
@@ -1990,6 +1994,79 @@ class RuntimeWebSocketClient(GoalClientMixin):
                 remote_session_id=_text(result["remote_session_id"], "remote_session_id", 4096),
                 permission_mode=_text(result["permission_mode"], "permission_mode", 16),
                 options=_external_options(result["options"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ProtocolTransportError() from None
+
+    @_fence_on_protocol_failure
+    async def get_external_usage(
+        self, query: GetExternalUsageQuery
+    ) -> ExternalUsageView:
+        """Read quota usage for the external ACP agent bound to one session."""
+        result = await self._command(
+            "runtime.external.usage.get",
+            {
+                "session": _wire_session(query.session),
+                "force": query.force,
+                "command_id": query.command_id,
+            },
+            query.command_id,
+        )
+        try:
+            supported = result["supported"]
+            if type(supported) is not bool:
+                raise TypeError("supported must be bool")
+            captured = result["captured_at"]
+            if type(captured) is bool or not isinstance(captured, (int, float)):
+                raise TypeError("captured_at must be number")
+            groups: list[ExternalUsageGroupView] = []
+            for group in result["groups"]:
+                buckets: list[ExternalUsageBucketView] = []
+                for bucket in group["buckets"]:
+                    win_min = bucket["window_minutes"]
+                    if win_min is not None and type(win_min) is not int:
+                        raise TypeError("window_minutes must be int or None")
+                    rem = bucket["remaining_percent"]
+                    if rem is not None and (
+                        type(rem) is bool or not isinstance(rem, (int, float))
+                    ):
+                        raise TypeError("remaining_percent must be number or None")
+                    reset = bucket["reset_at"]
+                    if reset is not None and (
+                        type(reset) is bool or not isinstance(reset, (int, float))
+                    ):
+                        raise TypeError("reset_at must be number or None")
+                    buckets.append(
+                        ExternalUsageBucketView(
+                            id=_text(bucket["id"], "id", 128),
+                            name=_text(bucket["name"], "name", 128),
+                            window=(
+                                _text(bucket["window"], "window", 32)
+                                if bucket["window"] != ""
+                                else ""
+                            ),
+                            window_minutes=win_min,
+                            remaining_percent=None if rem is None else float(rem),
+                            reset_at=None if reset is None else float(reset),
+                        )
+                    )
+                desc = group["description"]
+                groups.append(
+                    ExternalUsageGroupView(
+                        name=_text(group["name"], "name", 128),
+                        description=(
+                            None if desc is None else _text(desc, "description", 512)
+                        ),
+                        buckets=tuple(buckets),
+                    )
+                )
+            return ExternalUsageView(
+                command_id=_checked_command_id(result, query.command_id),
+                session=query.session,
+                agent_id=_text(result["agent_id"], "agent_id", 64),
+                supported=supported,
+                groups=tuple(groups),
+                captured_at=float(captured),
             )
         except (KeyError, TypeError, ValueError):
             raise ProtocolTransportError() from None

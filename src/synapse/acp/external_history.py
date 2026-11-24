@@ -98,8 +98,8 @@ class ExternalTurnBridge:
         self._unsolicited_live: UpdateSink | None = None
         self._unsolicited_settings: object | None = None
         self._unsolicited_session: ExternalSession | None = None
-        self._unsolicited_idle_s: float = 1.5
-        self._unsolicited_tool_idle_s: float = 120.0
+        self._unsolicited_idle_s: float = 4.0
+        self._unsolicited_tool_idle_s: float = 1800.0
         self._unsolicited_timer: asyncio.Task[None] | None = None
 
     def configure_unsolicited(
@@ -108,8 +108,8 @@ class ExternalTurnBridge:
         live: UpdateSink | None,
         settings: object | None,
         session: ExternalSession | None = None,
-        idle_s: float = 1.5,
-        tool_idle_s: float = 120.0,
+        idle_s: float = 4.0,
+        tool_idle_s: float = 1800.0,
     ) -> None:
         """Enable capturing autonomous peer updates that arrive outside a ``session/prompt``."""
         self._unsolicited_live = live
@@ -521,7 +521,7 @@ class ExternalTurnBridge:
                     candidate_turn_id,
                     0,
                     TurnEventKind.ACTIVITY_STARTED,
-                    ActivityPayload(phase="thinking"),
+                    ActivityPayload(phase="thinking", detail="后台任务回调中..."),
                 ),
             )
         else:

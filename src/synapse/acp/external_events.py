@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from time import monotonic
 
 from acp.schema import (
     AgentMessageChunk,
@@ -30,6 +32,7 @@ from synapse.runtime.service.event_types import (
     UsagePayload,
 )
 from synapse.runtime.timeline import _basename, tool_category
+from synapse.runtime.token_rate import TokenRateTracker
 
 _MAX_TOOL_PREVIEW_CHARS = 4000
 
@@ -135,7 +138,13 @@ def _extract_tool_preview(update: AcpToolCallStart | ToolCallProgress) -> str | 
 class ExternalTurnEvents:
     """One ordered projection per turn; no peer paths or raw arguments are trusted."""
 
-    def __init__(self, thread_id: str, turn_id: str) -> None:
+    def __init__(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self.thread_id = thread_id
         self.turn_id = turn_id
         self._sequence = 0
@@ -149,17 +158,70 @@ class ExternalTurnEvents:
         self.output_tokens: int = 0
         self.cache_tokens: int = 0
         self.context_size: int | None = None
+        self.context_window: int | None = None
+        self._clock = clock
+        self._rate_tracker = TokenRateTracker(clock=clock)
+        self._rate_tracker.model_started()
+        self._last_live_rate_push: float = 0.0
+        self._last_rate: float | None = None
+        self._last_ttft_s: float | None = None
+        self._last_rate_basis: str = "end_to_end"
+        self._last_rate_estimated: bool = False
+
+    def _build_usage_payload(
+        self,
+        *,
+        last_input: int,
+        last_output: int,
+        last_cache: int,
+    ) -> UsagePayload:
+        return UsagePayload(
+            turn_input=self.input_tokens,
+            turn_output=self.output_tokens,
+            turn_cache=self.cache_tokens,
+            last_input=last_input,
+            last_output=last_output,
+            last_cache=last_cache,
+            output_tokens_per_second=self._last_rate,
+            ttft_s=self._last_ttft_s,
+            rate_basis=self._last_rate_basis,
+            rate_estimated=self._last_rate_estimated,
+            context_size=self.context_size,
+            context_window=self.context_window,
+        )
+
+    def _maybe_live_rate_event(self) -> TurnEvent | None:
+        now = self._clock()
+        if now - self._last_live_rate_push < 0.5:
+            return None
+        snapshot = self._rate_tracker.live_snapshot(now)
+        decode_s = max(0.0, snapshot.elapsed_s - (snapshot.ttft_s or 0.0))
+        if decode_s < 0.5 or snapshot.tokens_per_second is None:
+            return None
+        self._last_live_rate_push = now
+        self._last_rate = snapshot.tokens_per_second
+        self._last_ttft_s = snapshot.ttft_s
+        self._last_rate_basis = snapshot.basis.value
+        self._last_rate_estimated = snapshot.estimated
+        payload = self._build_usage_payload(
+            last_input=self.input_tokens,
+            last_output=self.output_tokens,
+            last_cache=self.cache_tokens,
+        )
+        return self._event(TurnEventKind.USAGE_UPDATED, payload)
 
     def project(self, update: BaseModel) -> tuple[TurnEvent, ...]:
         if isinstance(update, (AgentMessageChunk, AgentThoughtChunk)):
             if update.content.type != "text" or not update.content.text:
                 return ()
-            kind = (
-                TurnEventKind.ANSWER_DELTA
-                if isinstance(update, AgentMessageChunk)
-                else TurnEventKind.REASONING_DELTA
-            )
-            return (self._event(kind, TextPayload(update.content.text)),)
+            is_thought = isinstance(update, AgentThoughtChunk)
+            self._rate_tracker.output_observed(update.content.text, reasoning=is_thought)
+            kind = TurnEventKind.REASONING_DELTA if is_thought else TurnEventKind.ANSWER_DELTA
+            events: list[TurnEvent] = [self._event(kind, TextPayload(update.content.text))]
+            rate_event = self._maybe_live_rate_event()
+            if rate_event is not None:
+                events.append(rate_event)
+            return tuple(events)
         if isinstance(update, AgentPlanUpdate):
             entries = tuple(
                 PlanEntryPayload(entry.content[:2048], entry.priority, entry.status)
@@ -169,21 +231,17 @@ class ExternalTurnEvents:
         if isinstance(update, UsageUpdate):
             used = max(0, int(update.used))
             size = max(0, int(update.size)) or None
-            if used > self.input_tokens:
-                self.input_tokens = used
+            self.context_size = used
             if size is not None:
-                self.context_size = size
-            payload = UsagePayload(
-                turn_input=self.input_tokens,
-                turn_output=self.output_tokens,
-                turn_cache=self.cache_tokens,
-                last_input=used,
+                self.context_window = size
+            payload = self._build_usage_payload(
+                last_input=self.input_tokens,
                 last_output=self.output_tokens,
                 last_cache=self.cache_tokens,
-                context_size=self.context_size,
             )
             return (self._event(TurnEventKind.USAGE_UPDATED, payload),)
         if isinstance(update, (AcpToolCallStart, ToolCallProgress)):
+            self._rate_tracker.output_observed("", tool_call=True)
             return self._tool(update)
         return ()
 
@@ -191,24 +249,35 @@ class ExternalTurnEvents:
         """Project final token counts from ``PromptResponse.usage`` into ``USAGE_UPDATED``."""
         if usage is None:
             return None
-        inp = max(0, int(usage.input_tokens or 0))
+        raw_inp = max(0, int(usage.input_tokens or 0))
         out = max(0, int(usage.output_tokens or 0))
         cache = max(0, int(usage.cached_read_tokens or 0)) + max(
             0, int(usage.cached_write_tokens or 0)
         )
+        total = max(0, int(usage.total_tokens or 0))
+        # Providers like agy / Anthropic report uncached input in ``input_tokens``
+        # and cache hits separately in ``cached_read_tokens``; Synapse totals
+        # follow the inclusive convention (``input >= cache``) so ``cache / input``
+        # yields the true cache hit rate.
+        if cache > 0 and (raw_inp < cache or total >= raw_inp + out + cache):
+            inp = raw_inp + cache
+        else:
+            inp = raw_inp
         if inp == 0 and out == 0 and cache == 0:
             return None
         self.input_tokens += inp
         self.output_tokens += out
         self.cache_tokens += cache
-        payload = UsagePayload(
-            turn_input=self.input_tokens,
-            turn_output=self.output_tokens,
-            turn_cache=self.cache_tokens,
+        if out > 0:
+            snapshot = self._rate_tracker.model_finished(out)
+            self._last_rate = snapshot.tokens_per_second
+            self._last_ttft_s = snapshot.ttft_s
+            self._last_rate_basis = snapshot.basis.value
+            self._last_rate_estimated = snapshot.estimated
+        payload = self._build_usage_payload(
             last_input=inp,
             last_output=out,
             last_cache=cache,
-            context_size=self.context_size,
         )
         return self._event(TurnEventKind.USAGE_UPDATED, payload)
 

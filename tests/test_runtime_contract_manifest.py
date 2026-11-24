@@ -202,6 +202,7 @@ ADDITIVE_WIRE_METHODS = {
     "runtime.external.agents.list": "list_external_agents",
     "runtime.external.session.initialize": "initialize_external_session",
     "runtime.external.session.config": "set_external_config",
+    "runtime.external.usage.get": "get_external_usage",
 }
 
 #: Authorization capabilities added on top of the frozen v1 ACL surface.  Like the

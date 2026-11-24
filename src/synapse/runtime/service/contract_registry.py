@@ -217,6 +217,10 @@ from synapse.runtime.service.external_commands import (
     ExternalAgentView,
     ExternalConfigOptionView,
     ExternalConfigValueView,
+    ExternalUsageBucketView,
+    ExternalUsageGroupView,
+    ExternalUsageView,
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     InitializeExternalSessionResult,
     ListExternalAgentsQuery,
@@ -825,6 +829,29 @@ SCHEMAS: Final[tuple[SchemaDeclaration, ...]] = (
         ),
     ),
     _dto(SetExternalConfigResult, role="result"),
+    _dto(
+        ExternalUsageBucketView,
+        role="view",
+        notes=("One bounded quota window bucket for an external ACP agent.",),
+    ),
+    _dto(
+        ExternalUsageGroupView,
+        role="view",
+        notes=("One model-group quota section reported by an external ACP agent.",),
+    ),
+    _dto(
+        GetExternalUsageQuery,
+        role="request",
+        notes=("Read quota usage for the external ACP agent bound to one session.",),
+    ),
+    _dto(
+        ExternalUsageView,
+        role="result",
+        notes=(
+            "Read-only quota snapshot; ``supported`` is ``false`` for agents without a "
+            "documented usage command.",
+        ),
+    ),
     _dto(
         CreateSessionCommand,
         role="request",
@@ -2761,6 +2788,23 @@ WIRE_METHODS: Final[tuple[WireMethod, ...]] = (
             "force; the reply is the peer's own confirmed snapshot."
         ),
         notes=("``config_id`` and ``value`` are required; see the request schema.",),
+    ),
+    WireMethod(
+        method="runtime.external.usage.get",
+        method_class="service",
+        request="GetExternalUsageQuery",
+        result="ExternalUsageView",
+        capability=SESSION_READ,
+        scope="session",
+        scope_location="params.session",
+        service_method="get_external_usage",
+        params_alias="GetExternalUsageParams",
+        in_process=(
+            "Optional delegate method.  Read-only quota snapshot for the external ACP",
+            "agent bound to this session; agents without a usage command return",
+            "``supported=false``.",
+        ),
+        notes=("``force`` bypasses the daemon's 300s cache when ``true``.",),
     ),
     WireMethod(
         method="runtime.session.rebind",

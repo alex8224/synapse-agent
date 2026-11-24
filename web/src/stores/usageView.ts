@@ -19,6 +19,7 @@ export interface UsageView {
   rateBasis: string;
   rateEstimated: boolean;
   contextSize: number | null;
+  contextWindow: number | null;
   modelCalls: number;
 }
 
@@ -34,6 +35,7 @@ export const EMPTY_USAGE: UsageView = {
   rateBasis: 'end_to_end',
   rateEstimated: false,
   contextSize: null,
+  contextWindow: null,
   modelCalls: 0,
 };
 
@@ -45,9 +47,22 @@ function num(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Ensure input token total is inclusive of cache tokens (`input >= cache`).
+ *
+ * Legacy or uncached-only records may store uncached input in `input` and cache
+ * hits in `cache` separately (`input < cache`); normalizing them in one place
+ * keeps the status bar count, hit-rate percentage, settings row and tooltip
+ * consistent and prevents cache hit rates from ever exceeding 100%.
+ */
+function totalInputTokens(input: number, cache: number): number {
+  return input >= cache ? input : input + cache;
+}
+
 /** Normalize one `UsagePayload` JSON object into the console view model. */
 export function parseUsagePayload(payload: Record<string, unknown>): UsageView {
   const context = num(payload.context_size);
+  const contextWindow = num(payload.context_window);
   return {
     turnInput: int(payload.turn_input),
     turnOutput: int(payload.turn_output),
@@ -60,6 +75,7 @@ export function parseUsagePayload(payload: Record<string, unknown>): UsageView {
     rateBasis: typeof payload.rate_basis === 'string' ? payload.rate_basis : 'end_to_end',
     rateEstimated: payload.rate_estimated === true,
     contextSize: context === null ? null : Math.trunc(context),
+    contextWindow: contextWindow === null ? null : Math.trunc(contextWindow),
     modelCalls: int(payload.model_calls),
   };
 }
@@ -119,8 +135,9 @@ export function sessionUsageSegments(
   if (session !== null) {
     // input/cache/output, then the hit share those two imply.  The share is left
     // out (never printed as a placeholder) when there is no input to divide by.
+    const totalInput = totalInputTokens(session.input, session.cache);
     const totals = [
-      compactCount(session.input),
+      compactCount(totalInput),
       compactCount(session.cache),
       compactCount(session.output),
       cacheHitRate(session),
@@ -162,7 +179,8 @@ export function sessionUsageSegments(
  */
 export function cacheHitRate(session: SessionUsage | null): string | null {
   if (session === null || session.input <= 0) return null;
-  return `${((session.cache / session.input) * 100).toFixed(1)}%`;
+  const totalInput = totalInputTokens(session.input, session.cache);
+  return `${((session.cache / totalInput) * 100).toFixed(1)}%`;
 }
 
 /**
@@ -181,7 +199,8 @@ export function contextOccupancy(usage: UsageView | null): number | null {
 /** Full-precision session totals for the settings panel. */
 export function formatSessionUsage(session: SessionUsage | null): string {
   if (session === null) return '-';
-  return `in ${fullCount(session.input)} · cache ${fullCount(session.cache)} · out ${fullCount(session.output)}`;
+  const totalInput = totalInputTokens(session.input, session.cache);
+  return `in ${fullCount(totalInput)} · cache ${fullCount(session.cache)} · out ${fullCount(session.output)}`;
 }
 
 /**
@@ -335,15 +354,17 @@ export function compactSegments(segments: UsageSegment[], limit = 2): UsageSegme
 export function usageTooltip(usage: UsageView | null, session: SessionUsage | null = null): string {
   const lines: string[] = [];
   if (session !== null) {
+    const totalInput = totalInputTokens(session.input, session.cache);
     lines.push(
-      `本会话累计 in ${fullCount(session.input)} / cache ${fullCount(session.cache)} / out ${fullCount(session.output)}`,
+      `本会话累计 in ${fullCount(totalInput)} / cache ${fullCount(session.cache)} / out ${fullCount(session.output)}`,
     );
   }
   if (usage === null) return lines.join('\n');
-  lines.push(`本轮 输入 ${fullCount(usage.turnInput)} · 输出 ${fullCount(usage.turnOutput)}`);
+  const turnInput = totalInputTokens(usage.turnInput, usage.turnCache);
+  lines.push(`本轮 输入 ${fullCount(turnInput)} · 输出 ${fullCount(usage.turnOutput)}`);
   if (usage.turnCache > 0) {
     const share =
-      usage.turnInput > 0 ? `（占输入 ${((usage.turnCache / usage.turnInput) * 100).toFixed(1)}%）` : '';
+      turnInput > 0 ? `（占输入 ${((usage.turnCache / turnInput) * 100).toFixed(1)}%）` : '';
     lines.push(`缓存 ${fullCount(usage.turnCache)}${share}`);
   }
   if (usage.contextSize !== null && usage.contextSize > 0) {

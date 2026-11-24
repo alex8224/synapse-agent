@@ -11,6 +11,10 @@ __all__ = [
     "ExternalAgentView",
     "ExternalConfigOptionView",
     "ExternalConfigValueView",
+    "ExternalUsageBucketView",
+    "ExternalUsageGroupView",
+    "ExternalUsageView",
+    "GetExternalUsageQuery",
     "InitializeExternalSessionCommand",
     "InitializeExternalSessionResult",
     "ListExternalAgentsQuery",
@@ -114,3 +118,45 @@ class SetExternalConfigResult:
     remote_session_id: str
     permission_mode: str
     options: tuple[ExternalConfigOptionView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUsageBucketView:
+    """One bounded quota window bucket for an external ACP agent."""
+
+    id: str
+    name: str
+    window: str
+    window_minutes: int | None
+    remaining_percent: float | None
+    reset_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUsageGroupView:
+    """One model-group quota section reported by an external ACP agent."""
+
+    name: str
+    description: str | None
+    buckets: tuple[ExternalUsageBucketView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GetExternalUsageQuery:
+    """Read quota usage for the external ACP agent bound to one session."""
+
+    session: SessionRef
+    force: bool = False
+    command_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUsageView:
+    """Read-only quota snapshot for one bound external ACP session."""
+
+    command_id: str
+    session: SessionRef
+    agent_id: str
+    supported: bool
+    groups: tuple[ExternalUsageGroupView, ...]
+    captured_at: float

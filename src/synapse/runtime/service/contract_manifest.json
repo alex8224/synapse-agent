@@ -689,6 +689,27 @@
       "wire_defaults": {}
     },
     {
+      "capability": "session.read",
+      "class": "service",
+      "in_process": [
+        "Optional delegate method.  Read-only quota snapshot for the external ACP",
+        "agent bound to this session; agents without a usage command return",
+        "``supported=false``."
+      ],
+      "method": "runtime.external.usage.get",
+      "notes": [
+        "``force`` bypasses the daemon's 300s cache when ``true``."
+      ],
+      "params_alias": "GetExternalUsageParams",
+      "request": "GetExternalUsageQuery",
+      "result": "ExternalUsageView",
+      "result_nullable": false,
+      "scope": "session",
+      "scope_location": "params.session",
+      "service_method": "get_external_usage",
+      "wire_defaults": {}
+    },
+    {
       "capability": "fs.list",
       "class": "service",
       "in_process": "Optional delegate method: a delegate without it reports the feature as unavailable.  Read-only and bounded: only immediate sub-directory names are returned, never file contents, and never a recursive walk.",
@@ -4417,6 +4438,168 @@
       "origin": "python",
       "role": "nested"
     },
+    "ExternalUsageBucketView": {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "window",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "window_minutes",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "remaining_percent",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "name": "reset_at",
+          "nullable": true,
+          "optional": false,
+          "python_type": "float | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One bounded quota window bucket for an external ACP agent."
+      ],
+      "origin": "python",
+      "role": "view"
+    },
+    "ExternalUsageGroupView": {
+      "fields": [
+        {
+          "name": "name",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "description",
+          "nullable": true,
+          "optional": false,
+          "python_type": "str | None",
+          "required": true,
+          "ts_type": "string | null",
+          "wire": "json"
+        },
+        {
+          "name": "buckets",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalUsageBucketView, ...]",
+          "required": true,
+          "ts_type": "ExternalUsageBucketView[]",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "One model-group quota section reported by an external ACP agent."
+      ],
+      "origin": "python",
+      "role": "view"
+    },
+    "ExternalUsageView": {
+      "fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "name": "agent_id",
+          "nullable": false,
+          "optional": false,
+          "python_type": "str",
+          "required": true,
+          "ts_type": "string",
+          "wire": "json"
+        },
+        {
+          "name": "supported",
+          "nullable": false,
+          "optional": false,
+          "python_type": "bool",
+          "required": true,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "name": "groups",
+          "nullable": false,
+          "optional": false,
+          "python_type": "tuple[ExternalUsageGroupView, ...]",
+          "required": true,
+          "ts_type": "ExternalUsageGroupView[]",
+          "wire": "json"
+        },
+        {
+          "name": "captured_at",
+          "nullable": false,
+          "optional": false,
+          "python_type": "float",
+          "required": true,
+          "ts_type": "number",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Read-only quota snapshot; ``supported`` is ``false`` for agents without a documented usage command."
+      ],
+      "origin": "python",
+      "role": "result"
+    },
     "FinishAttachmentCommand": {
       "fields": [
         {
@@ -4649,6 +4832,46 @@
           "ts_type": "boolean",
           "wire": "json"
         }
+      ],
+      "origin": "python",
+      "role": "request"
+    },
+    "GetExternalUsageQuery": {
+      "fields": [
+        {
+          "name": "session",
+          "nullable": false,
+          "optional": false,
+          "python_type": "SessionRef",
+          "required": true,
+          "ts_type": "SessionRef",
+          "wire": "json"
+        },
+        {
+          "default": false,
+          "default_kind": "value",
+          "name": "force",
+          "nullable": false,
+          "optional": true,
+          "python_type": "bool",
+          "required": false,
+          "ts_type": "boolean",
+          "wire": "json"
+        },
+        {
+          "default": "<lambda>",
+          "default_kind": "factory",
+          "name": "command_id",
+          "nullable": false,
+          "optional": true,
+          "python_type": "str",
+          "required": false,
+          "ts_type": "string",
+          "wire": "json"
+        }
+      ],
+      "notes": [
+        "Read quota usage for the external ACP agent bound to one session."
       ],
       "origin": "python",
       "role": "request"
@@ -11496,6 +11719,17 @@
           "default": null,
           "default_kind": "value",
           "name": "context_size",
+          "nullable": true,
+          "optional": false,
+          "python_type": "int | None",
+          "required": true,
+          "ts_type": "number | null",
+          "wire": "json"
+        },
+        {
+          "default": null,
+          "default_kind": "value",
+          "name": "context_window",
           "nullable": true,
           "optional": false,
           "python_type": "int | None",

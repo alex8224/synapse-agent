@@ -26,7 +26,7 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * The 82 wire methods: 80 service methods
+ * The 83 wire methods: 81 service methods
  * plus the connection-state methods runtime.protocol.negotiate and
  * runtime.events.unwatch.
  */
@@ -53,6 +53,7 @@ export const WIRE_METHODS = [
   "runtime.external.agents.list",
   "runtime.external.session.config",
   "runtime.external.session.initialize",
+  "runtime.external.usage.get",
   "runtime.fs.list",
   "runtime.git.diff",
   "runtime.git.status",
@@ -228,6 +229,7 @@ export const WIRE_METHOD_CAPABILITIES: Partial<
   "runtime.external.agents.list": "session.read",
   "runtime.external.session.config": "session.open",
   "runtime.external.session.initialize": "session.open",
+  "runtime.external.usage.get": "session.read",
   "runtime.fs.list": "fs.list",
   "runtime.git.diff": "git.diff",
   "runtime.git.status": "git.status",
@@ -946,6 +948,39 @@ export interface ExternalConfigValueView {
   label: string;
 }
 
+/**
+ * One bounded quota window bucket for an external ACP agent.
+ */
+export interface ExternalUsageBucketView {
+  id: string;
+  name: string;
+  window: string;
+  window_minutes: number | null;
+  remaining_percent: number | null;
+  reset_at: number | null;
+}
+
+/**
+ * One model-group quota section reported by an external ACP agent.
+ */
+export interface ExternalUsageGroupView {
+  name: string;
+  description: string | null;
+  buckets: ExternalUsageBucketView[];
+}
+
+/**
+ * Read-only quota snapshot; ``supported`` is ``false`` for agents without a documented usage command.
+ */
+export interface ExternalUsageView {
+  command_id: string;
+  session: SessionRef;
+  agent_id: string;
+  supported: boolean;
+  groups: ExternalUsageGroupView[];
+  captured_at: number;
+}
+
 export interface FinishAttachmentCommand {
   ref: AttachmentRef;
   expected_size: number;
@@ -1007,6 +1042,21 @@ export interface GetCodexUsageQuery {
    * python_default_kind=value python_default=false
    */
   force?: boolean;
+}
+
+/**
+ * Read quota usage for the external ACP agent bound to one session.
+ */
+export interface GetExternalUsageQuery {
+  session: SessionRef;
+  /**
+   * python_default_kind=value python_default=false
+   */
+  force?: boolean;
+  /**
+   * python_default_kind=factory python_default="<lambda>"
+   */
+  command_id?: string;
 }
 
 export interface GetProjectTaskQuery {
@@ -2959,6 +3009,10 @@ export interface UsagePayload {
    */
   context_size: number | null;
   /**
+   * python_default_kind=value python_default=null
+   */
+  context_window: number | null;
+  /**
    * python_default_kind=value python_default=0
    */
   model_calls: number;
@@ -3117,6 +3171,7 @@ export type EditSessionGoalParams = EditSessionGoalCommand;
 export type ForkSessionParams = ForkSessionCommand;
 export type GetCodexResetCreditsParams = GetCodexResetCreditsQuery;
 export type GetCodexUsageParams = GetCodexUsageQuery;
+export type GetExternalUsageParams = GetExternalUsageQuery;
 export type GetProjectTaskParams = GetProjectTaskQuery;
 export type GetRuntimeConfigParams = GetRuntimeConfigQuery;
 export type HistoryToolCall = Record<string, JsonValue>;

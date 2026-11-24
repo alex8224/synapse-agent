@@ -67,6 +67,13 @@ test('the cache hit rate is appended to the totals, and omitted when unknown', (
   assert.equal(cacheHitRate(null), null);
   assert.equal(cacheHitRate({ input: 0, output: 5, cache: 0 }), null);
   assert.equal(cacheHitRate({ input: 20327, output: 93, cache: 19840 }), '97.6%');
+  // Uncached-only legacy records where input < cache are normalized consistently
+  // across the status bar, hit-rate percentage, settings row and tooltip.
+  const uncachedRecord = { input: 36941, output: 2492, cache: 63604 };
+  assert.equal(cacheHitRate(uncachedRecord), '63.3%');
+  assert.equal(sessionUsageSegments(uncachedRecord)[0].value, '100.5k/63.6k/2.5k/63.3%');
+  assert.equal(formatSessionUsage(uncachedRecord), 'in 100,545 · cache 63,604 · out 2,492');
+  assert.equal(usageTooltip(null, uncachedRecord), '本会话累计 in 100,545 / cache 63,604 / out 2,492');
   // No input to divide by: three numbers, no trailing placeholder.
   assert.equal(sessionUsageSegments({ input: 0, output: 5, cache: 0 })[0].value, '0/0/5');
 });
@@ -139,6 +146,7 @@ test('parseUsagePayload reads the snake_case wire fields and defaults the rest',
     rate_basis: 'first_token',
     rate_estimated: true,
     context_size: 8000,
+    context_window: 1048576,
     model_calls: 4,
   });
   assert.deepEqual(usage, {
@@ -153,6 +161,7 @@ test('parseUsagePayload reads the snake_case wire fields and defaults the rest',
     rateBasis: 'first_token',
     rateEstimated: true,
     contextSize: 8000,
+    contextWindow: 1048576,
     modelCalls: 4,
   });
 });
@@ -188,6 +197,7 @@ test('formatUsageMetrics renders nothing when every metric is zero', () => {
     rateBasis: 'end_to_end',
     rateEstimated: false,
     contextSize: null,
+    contextWindow: null,
     modelCalls: 0,
   };
   assert.equal(formatUsageMetrics(usage), '');
@@ -206,6 +216,7 @@ test('formatUsageMetrics joins only the metrics that are present', () => {
     rateBasis: 'end_to_end',
     rateEstimated: false,
     contextSize: 45000,
+    contextWindow: null,
     modelCalls: 3,
   };
   assert.equal(
@@ -227,6 +238,7 @@ test('formatUsageMetrics marks an estimated rate with a trailing tilde', () => {
     rateBasis: 'end_to_end',
     rateEstimated: true,
     contextSize: null,
+    contextWindow: null,
     modelCalls: 0,
   };
   assert.equal(formatUsageMetrics(usage), 'up 0 down 10 - 20.0 tok/s~');

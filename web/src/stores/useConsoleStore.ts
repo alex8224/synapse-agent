@@ -368,6 +368,7 @@ function startAuthenticatedRuntime(project: ConsoleProject, epoch: number): void
     activity: null,
     usage: null,
     sessionUsage: null,
+    contextWindow: null,
     metricsLabel: '',
     backgroundViews: {},
     goal: null,
@@ -1628,6 +1629,11 @@ async function refreshRuntimeConfig(epoch: number): Promise<void> {
     // preserveModel=true: the model resolved from open.view is authoritative
     // for the session; a config refresh must never reset it to the project default.
     const patch = mapRuntimeConfig(view, { preserveModel: true });
+    // An external ACP session reports its own context window via usage_updated;
+    // never overwrite it with the project's native model window.
+    if (latest.externalSession !== null || latest.externalPending !== null) {
+      delete patch.contextWindow;
+    }
     // Preserve known attached status from latest.mcpRuntime so attached flags aren't blanked.
     const nextServers = (patch.mcpServers ?? latest.mcpServers).map((server) => {
       const live = latest.mcpRuntime[server.name];
@@ -2552,6 +2558,7 @@ async function attachToSession(session: SessionRef, title?: string): Promise<voi
     usage: null,
     // The previous session's totals must not linger while this one loads.
     sessionUsage: null,
+    contextWindow: null,
     metricsLabel: '',
     goal: null,
     goalBusy: false,
@@ -3304,6 +3311,8 @@ async function activateProject(projectId: string): Promise<boolean> {
     pendingApproval: null,
     activity: null,
     usage: null,
+    sessionUsage: null,
+    contextWindow: null,
     metricsLabel: '',
     goal: null,
     goalBusy: false,
@@ -3563,6 +3572,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       pendingApproval: null,
       activity: null,
       usage: null,
+      sessionUsage: null,
+      contextWindow: null,
       metricsLabel: '',
       thinkingLevelError: null,
       projectThinkingLevel: null,
@@ -5100,6 +5111,8 @@ export const useConsoleStore = create<ConsoleStore>((set, get) => ({
       pendingApproval: null,
       activity: null,
       usage: null,
+      sessionUsage: null,
+      contextWindow: null,
       metricsLabel: '',
       goal: null,
       thinkingLevelError: null,

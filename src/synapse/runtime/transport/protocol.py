@@ -105,6 +105,7 @@ from synapse.runtime.service.external_apps import (
     OpenExternalCommand,
 )
 from synapse.runtime.service.external_commands import (
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     ListExternalAgentsQuery,
     SetExternalConfigCommand,
@@ -702,6 +703,20 @@ def decode_params(method: str, params: dict[str, Any]) -> object | WatchSpec:
             session=_session(params["session"]),
             config_id=_session_text(params["config_id"]),
             value=value,
+            command_id=(
+                _command_id(params["command_id"])
+                if "command_id" in params
+                else uuid.uuid4().hex
+            ),
+        )
+    if method == "runtime.external.usage.get":
+        _optional_fields(params, {"session"}, {"force", "command_id"})
+        force = params.get("force", False)
+        if type(force) is not bool:
+            raise ProtocolError(-32602, "invalid_params: force must be a boolean")
+        return GetExternalUsageQuery(
+            session=_session(params["session"]),
+            force=force,
             command_id=(
                 _command_id(params["command_id"])
                 if "command_id" in params
@@ -1635,6 +1650,8 @@ async def dispatch(
         return await service.initialize_external_session(dto)  # type: ignore[arg-type]
     if method == "runtime.external.session.config":
         return await service.set_external_config(dto)  # type: ignore[arg-type]
+    if method == "runtime.external.usage.get":
+        return await service.get_external_usage(dto)  # type: ignore[arg-type]
     if method == "runtime.session.rebind":
         return await service.rebind_session(dto)  # type: ignore[arg-type]
     if method == "runtime.session.thinking.set":

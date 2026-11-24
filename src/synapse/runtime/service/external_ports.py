@@ -62,6 +62,37 @@ class ExternalMcpState:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalUsageBucket:
+    """One bounded quota window bucket for an external ACP agent."""
+
+    id: str
+    name: str
+    window: str
+    window_minutes: int | None
+    remaining_percent: float | None
+    reset_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUsageGroup:
+    """One model-group quota section reported by an external ACP agent."""
+
+    name: str
+    description: str | None
+    buckets: tuple[ExternalUsageBucket, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalUsageSnapshot:
+    """Read-only quota snapshot returned by the daemon's external usage reader."""
+
+    agent_id: str
+    supported: bool
+    groups: tuple[ExternalUsageGroup, ...]
+    captured_at: float
+
+
 class ExternalSessions(Protocol):
     """Daemon capabilities the service layer delegates to after authorizing."""
 
@@ -118,6 +149,10 @@ class ExternalSessions(Protocol):
     ) -> tuple[str, int]: ...
 
     def active_turn_id(self, ref: SessionRef) -> str | None: ...
+
+    async def get_usage(
+        self, ref: SessionRef, settings: object, *, force: bool = False
+    ) -> ExternalUsageSnapshot: ...
 
     def pending_approval(
         self, ref: SessionRef, expected_turn_id: str | None = None

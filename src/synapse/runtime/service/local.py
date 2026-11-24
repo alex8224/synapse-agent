@@ -144,6 +144,10 @@ from synapse.runtime.service.external_commands import (
     ExternalAgentView,
     ExternalConfigOptionView,
     ExternalConfigValueView,
+    ExternalUsageBucketView,
+    ExternalUsageGroupView,
+    ExternalUsageView,
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     InitializeExternalSessionResult,
     ListExternalAgentsQuery,
@@ -1795,6 +1799,51 @@ class LocalAgentRuntimeService:
             remote_session_id=view.remote_session_id,
             permission_mode=view.permission_mode,
             options=tuple(_external_option(option) for option in view.options),
+        )
+
+    async def get_external_usage(
+        self, query: GetExternalUsageQuery
+    ) -> ExternalUsageView:
+        """Read quota usage for the external ACP agent bound to one session."""
+        if type(query) is not GetExternalUsageQuery:
+            raise InvalidRequestError("query must be a GetExternalUsageQuery")
+        self._validate_ref(query.session)
+        external = await self._external_for(query.session)
+        if external is None:
+            raise NotFoundError("external ACP session binding not found")
+        provider, _agent_id, settings = external
+        try:
+            snapshot = await provider.get_usage(
+                query.session, settings, force=query.force
+            )
+        except NotFoundError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - upstream CLI failures are redacted here
+            raise RuntimeServiceError("external usage request failed") from exc
+        return ExternalUsageView(
+            command_id=query.command_id,
+            session=query.session,
+            agent_id=snapshot.agent_id,
+            supported=snapshot.supported,
+            groups=tuple(
+                ExternalUsageGroupView(
+                    name=group.name,
+                    description=group.description,
+                    buckets=tuple(
+                        ExternalUsageBucketView(
+                            id=bucket.id,
+                            name=bucket.name,
+                            window=bucket.window,
+                            window_minutes=bucket.window_minutes,
+                            remaining_percent=bucket.remaining_percent,
+                            reset_at=bucket.reset_at,
+                        )
+                        for bucket in group.buckets
+                    ),
+                )
+                for group in snapshot.groups
+            ),
+            captured_at=snapshot.captured_at,
         )
 
     async def _external_context(self, ref: SessionRef) -> tuple[Any, Path, Any]:

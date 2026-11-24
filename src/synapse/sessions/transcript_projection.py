@@ -625,7 +625,12 @@ class TranscriptProjection:
             ).fetchone()
         if row is None:
             return None
-        return TranscriptUsage(**{key: int(row[key] or 0) for key in row.keys()})
+        data = {key: int(row[key] or 0) for key in row.keys()}
+        if data["input_tokens"] < data["cache_tokens"]:
+            data["input_tokens"] += data["cache_tokens"]
+        if data["last_input_tokens"] < data["last_cache_tokens"]:
+            data["last_input_tokens"] += data["last_cache_tokens"]
+        return TranscriptUsage(**data)
 
     def replace_usage(self, thread_id: str, usage: TranscriptUsage) -> None:
         with self._db_lock, self._conn:
@@ -666,6 +671,16 @@ class TranscriptProjection:
         return True
 
     def _accumulate_usage_locked(self, thread_id: str, usage: TranscriptUsage) -> None:
+        in_tok = max(0, int(usage.input_tokens))
+        out_tok = max(0, int(usage.output_tokens))
+        cache_tok = max(0, int(usage.cache_tokens))
+        if in_tok < cache_tok:
+            in_tok += cache_tok
+        last_in = max(0, int(usage.last_input_tokens))
+        last_out = max(0, int(usage.last_output_tokens))
+        last_cache = max(0, int(usage.last_cache_tokens))
+        if last_in < last_cache:
+            last_in += last_cache
         self._conn.execute(
             """
             INSERT INTO transcript_usage(
@@ -673,7 +688,12 @@ class TranscriptProjection:
                 last_output_tokens,last_cache_tokens,updated_at
             ) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
             ON CONFLICT(thread_id) DO UPDATE SET
-                input_tokens = transcript_usage.input_tokens + excluded.input_tokens,
+                input_tokens = (
+                    CASE WHEN transcript_usage.input_tokens < transcript_usage.cache_tokens
+                         THEN transcript_usage.input_tokens + transcript_usage.cache_tokens
+                         ELSE transcript_usage.input_tokens
+                    END
+                ) + excluded.input_tokens,
                 output_tokens = transcript_usage.output_tokens + excluded.output_tokens,
                 cache_tokens = transcript_usage.cache_tokens + excluded.cache_tokens,
                 last_input_tokens = excluded.last_input_tokens,
@@ -683,12 +703,12 @@ class TranscriptProjection:
             """,
             (
                 thread_id,
-                max(0, int(usage.input_tokens)),
-                max(0, int(usage.output_tokens)),
-                max(0, int(usage.cache_tokens)),
-                max(0, int(usage.last_input_tokens)),
-                max(0, int(usage.last_output_tokens)),
-                max(0, int(usage.last_cache_tokens)),
+                in_tok,
+                out_tok,
+                cache_tok,
+                last_in,
+                last_out,
+                last_cache,
             ),
         )
 

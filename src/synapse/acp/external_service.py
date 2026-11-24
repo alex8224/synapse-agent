@@ -14,6 +14,7 @@ from acp.schema import (
 )
 
 from synapse.acp.external_client import ExternalSession
+from synapse.acp.external_usage import ExternalUsageCache
 from synapse.runtime.daemon.external_runtime import ExternalRuntime
 from synapse.runtime.service.event_types import (
     EVENT_VERSION,
@@ -27,6 +28,7 @@ from synapse.runtime.service.external_ports import (
     ExternalConfigValue,
     ExternalMcpState,
     ExternalSessionView,
+    ExternalUsageSnapshot,
 )
 from synapse.runtime.service.session_metadata import read_external_session_binding
 from synapse.runtime.sessions.events import SessionEventBroker
@@ -84,10 +86,17 @@ def _option(option: Any) -> ExternalConfigOption:
 class DaemonExternalSessions:
     """Owns the ACP processes, their event brokers, and the wire-safe views."""
 
-    def __init__(self, runtime: ExternalRuntime, *, bus_capacity: int = 2000) -> None:
+    def __init__(
+        self,
+        runtime: ExternalRuntime,
+        *,
+        bus_capacity: int = 2000,
+        usage_cache: ExternalUsageCache | None = None,
+    ) -> None:
         self._runtime = runtime
         self._brokers: dict[tuple[str, str], SessionEventBroker] = {}
         self._capacity = bus_capacity
+        self._usage = usage_cache if usage_cache is not None else ExternalUsageCache()
 
     # -- catalog / metadata -------------------------------------------------
 
@@ -390,6 +399,22 @@ class DaemonExternalSessions:
     def mcp_status(self, ref: SessionRef) -> ExternalMcpState:
         active_servers, warnings = self._runtime.mcp_status(ref)
         return ExternalMcpState(active_servers=active_servers, warnings=warnings)
+
+    async def get_usage(
+        self, ref: SessionRef, settings: object, *, force: bool = False
+    ) -> ExternalUsageSnapshot:
+        binding = self._agent_for(settings, ref)
+        if binding is None:
+            from synapse.runtime.service.errors import NotFoundError
+
+            raise NotFoundError("External ACP session binding not found")
+        agent_id, _ = binding
+        agent = self._runtime.pool.catalog.get(agent_id)
+        if agent is None:
+            from synapse.runtime.service.errors import NotFoundError
+
+            raise NotFoundError("External ACP agent is not configured")
+        return await self._usage.fetch(agent, force=force)
 
     async def reload_mcp(
         self, ref: SessionRef, settings: object, workspace: Path

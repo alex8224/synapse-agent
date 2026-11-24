@@ -207,6 +207,7 @@
   },
   "usage_updated": {
     "context_size": null,
+    "context_window": null,
     "last_cache": 0,
     "last_input": 5,
     "last_output": 6,

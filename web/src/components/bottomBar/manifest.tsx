@@ -18,11 +18,13 @@ import { todoItem } from './todoItem.tsx';
 import { helpItem } from './helpItem.tsx';
 import { terminalItem } from './terminalItem.tsx';
 import { codexUsageItem } from './codexUsageItem.tsx';
+import { externalUsageItem } from './externalUsageItem.tsx';
 import type { BottomBarItemDefinition } from './contract.ts';
 
 export const BOTTOM_BAR_ITEMS: readonly BottomBarItemDefinition[] = [
   activityItem,
   codexUsageItem,
+  externalUsageItem,
   mcpItem,
   terminalItem,
   todoItem,

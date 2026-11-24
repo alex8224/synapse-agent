@@ -82,6 +82,8 @@ from synapse.runtime.service.external_apps import (
     OpenExternalResult,
 )
 from synapse.runtime.service.external_commands import (
+    ExternalUsageView,
+    GetExternalUsageQuery,
     InitializeExternalSessionCommand,
     InitializeExternalSessionResult,
     ListExternalAgentsQuery,
@@ -485,6 +487,12 @@ class AgentRuntimeService(Protocol):
         self, command: SetExternalConfigCommand
     ) -> SetExternalConfigResult:
         """Write one peer config option and return the peer's new snapshot."""
+        ...
+
+    async def get_external_usage(
+        self, query: GetExternalUsageQuery
+    ) -> ExternalUsageView:
+        """Read quota usage for the external ACP agent bound to one session."""
         ...
 
     async def rename_session(self, command: RenameSessionCommand) -> RenameSessionResult:

@@ -142,6 +142,7 @@ class _Callbacks:
         self.last_activity_at: float = time.monotonic()
         self._permission = permission
         self._timeout = timeout
+        self._on_activity: Callable[[], None] | None = None
 
     async def session_update(self, session_id: str, update: BaseModel, **_: Any) -> None:
         # The SDK dispatches notifications independently of response delivery.
@@ -174,6 +175,8 @@ class _Callbacks:
         try:
             self.deliveries.put_nowait((self.replay or live, update))
             self.last_activity_at = time.monotonic()
+            if self._on_activity is not None:
+                self._on_activity()
         except asyncio.QueueFull:
             self.overflow = True
             self.invalidated.set()
@@ -246,6 +249,16 @@ class ExternalSession:
         self._cancel_requested = False
         self.concurrent_prompt_rejected = False
         self._last_activity_at: float = time.monotonic()
+        self._callbacks._on_activity = self.extend_prompt_deadlines
+
+    def extend_prompt_deadlines(self) -> None:
+        """Push active ``session/prompt`` deadlines forward on peer activity."""
+        if self._closed or self._cancel_requested or not self._prompt_deadlines:
+            return
+        cutoff = asyncio.get_running_loop().time() + self._timeouts.prompt
+        for deadline in list(self._prompt_deadlines):
+            if not deadline.expired():
+                deadline.reschedule(cutoff)
 
     @property
     def stderr_tail(self) -> tuple[str, ...]:

@@ -94,6 +94,7 @@ export interface LiveReducibleState {
   pendingApproval: PendingApproval | null;
   activity: ActivityView | null;
   usage: UsageView | null;
+  contextWindow?: number | null;
   metricsLabel: string;
 }
 
@@ -790,6 +791,9 @@ export function reduceRuntimeEvent(
     const usage = parseUsagePayload(payload);
     next.usage = usage;
     next.metricsLabel = formatUsageMetrics(usage);
+    if (usage.contextWindow !== null) {
+      next.contextWindow = usage.contextWindow;
+    }
   } else if (kind === 'info' || kind === 'warning') {
     const text =
       typeof raw === 'string' ? raw : asText(payload.message) || asText(payload.text);

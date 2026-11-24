@@ -860,3 +860,45 @@ def test_mcp_stdio_proxy_recovers_from_errors_and_retries_stale_connection() -> 
         server.server_close()
 
 
+def test_external_acp_prompt_deadline_extends_on_updates(tmp_path: Path) -> None:
+    agent_script = '''
+import json, sys, time
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        result = dict(protocolVersion=1)
+    elif method == "session/new":
+        result = dict(sessionId="peer-stream")
+    elif method == "session/prompt":
+        for idx in range(3):
+            time.sleep(0.2)
+            print(json.dumps(dict(jsonrpc="2.0", method="session/update", params=dict(
+                sessionId="peer-stream",
+                update=dict(sessionUpdate="agent_message_chunk",
+                            content=dict(type="text", text=f"chunk-{idx} "))))), flush=True)
+        result = dict(stopReason="end_turn")
+    else:
+        raise AssertionError(method)
+    print(json.dumps(dict(jsonrpc="2.0", id=msg["id"], result=result)), flush=True)
+'''
+    spec = ExternalAgentSpec(command=sys.executable, args=("-u", "-c", agent_script))
+    seen: list[str] = []
+
+    async def sink(update: object) -> None:
+        content = getattr(update, "content", None)
+        if content is not None and getattr(content, "text", None):
+            seen.append(str(content.text))
+
+    async def run() -> None:
+        # Total stream time (~0.6s) exceeds prompt=0.35s, but each chunk arrives
+        # within 0.2s so activity-based deadline extension keeps the session alive.
+        timeouts = ExternalTimeouts(prompt=0.35)
+        async with open_external_session(spec, tmp_path, sink, timeouts=timeouts) as session:
+            resp = await session.prompt("stream")
+            assert resp.stop_reason == "end_turn"
+
+    asyncio.run(run())
+    assert seen == ["chunk-0 ", "chunk-1 ", "chunk-2 "]
+
+

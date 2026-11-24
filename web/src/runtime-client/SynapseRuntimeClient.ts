@@ -147,6 +147,11 @@ import type {
   ScreenshotToolView,
 } from './screenshot.ts';
 import {
+  EXTERNAL_USAGE_METHOD,
+  decodeExternalUsageView,
+  type ExternalUsageView,
+} from './externalUsage.ts';
+import {
   CODEX_RESET_CONSUME_METHOD,
   CODEX_RESET_CREDITS_METHOD,
   CODEX_USAGE_METHOD,
@@ -805,6 +810,21 @@ export class SynapseRuntimeClient {
     };
     if (params.command_id !== undefined) payload.command_id = params.command_id;
     return this.call<SetExternalConfigResult>('runtime.external.session.config', payload);
+  }
+
+  /**
+   * Read quota usage for the external ACP agent bound to this session
+   * (`runtime.external.usage.get`).
+   */
+  public async getExternalUsage(
+    session: SessionRef,
+    force = false,
+  ): Promise<ExternalUsageView> {
+    const raw = await this.call<unknown>(EXTERNAL_USAGE_METHOD, {
+      session,
+      force,
+    });
+    return decodeExternalUsageView(raw);
   }
 
   public async renameSession(params: RenameSessionParams): Promise<RenameSessionResult> {
