@@ -6,6 +6,23 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.68
+
+### New Features
+
+- **External ACP (`agy`) Bottom-Bar Quota Display**: Added a read-only quota reader (`src/synapse/acp/external_usage.py`) backed by `agy --output-format json --print=/usage` with a per-agent 300s serialized cache, exposed via the new `runtime.external.usage.get` RPC. The Web Console now renders an Antigravity usage item (`web/src/components/bottomBar/externalUsageItem.tsx`) and popover panel (`web/src/components/ExternalUsagePanel.tsx`) modeled after the Codex usage surface, showing the active model group's 5h and 7d remaining percentages and live local reset countdowns, with low-quota red tinting (< 50%) and full per-group details on click.
+- **Reattach Live Terminal Sessions Across Webview Reloads**: The desktop shell (`rust/synapse-gui`) now retains a bounded PTY output ring buffer with monotonic byte offsets and exposes `tauri_terminal_list` / `tauri_terminal_attach` IPC commands so the Web Console (`rehydrateTerminals`, `XtermView`) restores tabs, titles, activity, dock layout, and scrollback cleanly across webview reloads without leaking PTY process trees on exit.
+- **Live Output Rate & Context Window Telemetry For External ACP Sessions**: `ExternalTurnEvents` now tracks live token generation rate (`TokenRateTracker`), TTFT, and peer-reported `context_window` (`UsagePayload.context_window`), keeping the bottom bar's context occupancy and tok/s metrics accurate for external ACP sessions without being overwritten by the project's native model window.
+
+### Bug Fixes
+
+- **Accurate Cache Hit Rate & Input Token Totals On External ACP Sessions**: Normalized providers that report uncached `input_tokens` separately from `cached_read_tokens` (`agy` / Anthropic convention) into Synapse's inclusive input convention across `ExternalTurnEvents`, `TranscriptProjection`, and `usageView.ts`, eliminating >100% cache hit rates and inconsistent input totals.
+- **Long-Running External ACP Prompt Stability**: Active `session/prompt` deadlines in `ExternalSession` are now extended on incoming peer `session_update` activity, and unsolicited background continuation idle timeouts were relaxed (`4.0s` / `1800.0s`) with explicit background callback status text.
+
+### Engineering
+
+- **Wire Contract & Test Coverage**: Registered `GetExternalUsageQuery` / `ExternalUsageView` (`runtime.external.usage.get`) and `UsagePayload.context_window` in `contract_registry.py`, regenerated `contract_manifest.json` and `web/src/runtime-client/contract.generated.ts`, and added unit coverage in `tests/test_acp_external_usage.py`, `tests/test_acp_external_client.py`, `tests/test_acp_p2_updates.py`, `web/tests/externalUsage.test.ts`, and `web/tests/terminalCockpit.test.ts`.
+
 ## v0.1.67
 
 ### New Features
