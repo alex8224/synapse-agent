@@ -6,6 +6,16 @@ Each release section starts with `## v{version}` and ends before the next `## ` 
 The release workflow automatically extracts the matching section as release notes.
 All entries are written in English.
 
+## v0.1.69
+
+### New Features
+
+- **ACP TCP Bridge For Hosts Without A Usable VM Stdio**: New standalone Go helper `scripts/acp-tcp-bridge/` carries external ACP traffic when a VM guest cannot forward interactive stdin: the Windows side publishes ACP stdio on a loopback TCP port behind a shared token and the Linux side spawns one agent per authenticated connection. `setup.ps1` covers the build, the explicitly authorized restart that publishes the port, and a real handshake check, while the token lives only in a protected file and the port is published to the host loopback only — TCP itself is unencrypted. The bridge maps a new or loaded session's `cwd` but does not mount the workspace or translate MCP commands and other file paths, and deploying it never rewrites an existing agent configuration. Documented in `docs/acp-adapter/external-agent-client.md`.
+
+### Engineering
+
+- **Native Headroom Compression Core Removed**: Deleted the `rust/synapse-tool-compress-core` crate, `native-compression-wheels.yml`, `docs/native-compression-core.md`, the `synapse-tool-compress-core` dependency (pyproject, `uv.lock`, `release.yml`), and the `NativeTransformer` / `load_native_transformers` / `use_native` / `enable_native_tool_output_compression` surface, so `AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION` is no longer read. Tool-output compression now runs on the pure-Python pipeline only, and the `tool-output status` command, docs, and tests were updated to match.
+
 ## v0.1.68
 
 ### New Features

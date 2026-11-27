@@ -2397,7 +2397,7 @@ wheels = [
 
 [[package]]
 name = "synapse-cli-agent"
-version = "0.1.68"
+version = "0.1.69"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
