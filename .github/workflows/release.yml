@@ -127,7 +127,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies (builds local synapse-core-tool and synapse-tool-compress-core)
+      - name: Install dependencies (builds local synapse-core-tool)
         run: uv sync --frozen
 
       - name: Install PyInstaller
@@ -145,7 +145,6 @@ jobs:
             --collect-all textual_image `
             --collect-all termaid `
             --collect-all texicode `
-            --collect-all synapse_tool_compress_core `
             --collect-submodules synapse.runtime `
             --collect-data synapse `
             src/synapse/entry.py

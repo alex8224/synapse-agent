@@ -491,7 +491,7 @@ uv run --no-sync python scripts/export_contract_manifest.py --check # verify com
 
 ```
 src/synapse/    Agent assembly, commands, runtime, sessions, TUI, integrations
-rust/           Optional native compression cores (PyO3)
+rust/           Native filesystem/OpenAI core (PyO3) and Tauri desktop shell
 docs/           User documentation
 tests/          Python test suite
 scripts/        Install / release helpers

@@ -24,23 +24,20 @@ from synapse.tool_output.transformers import (
     GitSummaryTransformer,
     JsonTransformer,
     LogTransformer,
-    NativeTransformer,
     PathListTransformer,
     SearchTransformer,
     ToolOutputTransformer,
-    load_native_transformers,
 )
 
 
 class ToolOutputTransformPipeline:
-    """Deterministic Headroom-inspired algorithms with optional local plugins."""
+    """Deterministic tool-output transformation pipeline with optional local plugins."""
 
     def __init__(
         self,
         *,
         transformers: list[ToolOutputTransformer] | None = None,
         disabled_types: set[str] | frozenset[str] | None = None,
-        use_native: bool = True,
     ) -> None:
         builtins: list[ToolOutputTransformer] = [
             SearchTransformer(),
@@ -54,7 +51,6 @@ class ToolOutputTransformPipeline:
         ]
         self.transformers = [
             *(transformers or []),
-            *load_native_transformers(enabled=use_native),
             *builtins,
         ]
         self.disabled_types = frozenset(str(item) for item in (disabled_types or set()))
@@ -182,53 +178,20 @@ class ToolOutputTransformPipeline:
         transform_started = time.perf_counter()
         result = transformer.transform(content, context)
         result_bytes = len(result.content.encode("utf-8"))
-        native = isinstance(transformer, NativeTransformer)
-        native_reason = str(result.metadata.get("fallback") or "compressed")
+        reason_code = str(result.metadata.get("fallback") or "compressed")
         stages.append(
             CompressionStageEvent(
-                phase="native-transform" if native else "transform",
+                phase="transform",
                 algorithm=str(getattr(transformer, "name", result.transformer)),
                 applied=result.content != content,
-                reason_code=native_reason,
+                reason_code=reason_code,
                 input_bytes=original_bytes,
                 output_bytes=result_bytes,
                 duration_ms=(time.perf_counter() - transform_started) * 1000,
                 metadata=dict(result.metadata),
             )
         )
-        execution_path = "native" if native else "python_only"
-        native_result_is_unsafe_or_unhelpful = native and (
-            result.metadata.get("fallback") == "native_error"
-            or result.critical_retained < result.critical_total
-            or result_bytes >= original_bytes
-        )
-        if native_result_is_unsafe_or_unhelpful:
-            fallback_transformer = next(
-                (
-                    item
-                    for item in self.transformers
-                    if detection.content_type in getattr(item, "content_types", set())
-                    and not isinstance(item, NativeTransformer)
-                ),
-                None,
-            )
-            if fallback_transformer is not None:
-                fallback_started = time.perf_counter()
-                result = fallback_transformer.transform(content, context)
-                result_bytes = len(result.content.encode("utf-8"))
-                stages.append(
-                    CompressionStageEvent(
-                        phase="python-fallback",
-                        algorithm=str(getattr(fallback_transformer, "name", result.transformer)),
-                        applied=result.content != content,
-                        reason_code="python_fallback_used",
-                        input_bytes=original_bytes,
-                        output_bytes=result_bytes,
-                        duration_ms=(time.perf_counter() - fallback_started) * 1000,
-                        metadata=dict(result.metadata),
-                    )
-                )
-                execution_path = "python_fallback_after_native"
+        execution_path = "python_only"
         result = TransformResult(
             result.content,
             result.transformer,

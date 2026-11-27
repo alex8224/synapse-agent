@@ -86,16 +86,13 @@ def test_default_approval_is_off(monkeypatch):
 def test_tool_output_transform_defaults_and_env(monkeypatch):
     monkeypatch.delenv("AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM", raising=False)
     monkeypatch.delenv("AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES", raising=False)
-    monkeypatch.delenv("AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION", raising=False)
     settings = Settings(_env_file=None)
     assert settings.enable_tool_output_transform is False
     assert settings.tool_output_transform_threshold_bytes == 512
-    assert settings.enable_native_tool_output_compression is True
 
     monkeypatch.setenv("AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM", "false")
     monkeypatch.setenv("AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES", "4096")
     monkeypatch.setenv("AGENT_TOOL_OUTPUT_DISABLED_TYPES", '["code", "json"]')
-    monkeypatch.setenv("AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION", "false")
     monkeypatch.setenv(
         "AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS",
         '["tests.tool_output_plugin_fixture:fixture_transformer"]',
@@ -104,7 +101,6 @@ def test_tool_output_transform_defaults_and_env(monkeypatch):
     assert disabled.enable_tool_output_transform is False
     assert disabled.tool_output_transform_threshold_bytes == 4_096
     assert disabled.tool_output_disabled_types == ["code", "json"]
-    assert disabled.enable_native_tool_output_compression is False
     assert disabled.tool_output_transform_plugins == [
         "tests.tool_output_plugin_fixture:fixture_transformer"
     ]

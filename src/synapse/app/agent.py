@@ -614,7 +614,6 @@ def build_coding_agent(
             tool_output_transform_threshold_bytes=settings.tool_output_transform_threshold_bytes,
             tool_output_disabled_types=settings.tool_output_disabled_types,
             tool_output_transform_plugins=settings.tool_output_transform_plugins,
-            enable_native_tool_output_compression=settings.enable_native_tool_output_compression,
             inherit_tools=tools,
             custom_subagents=custom_subagents,
             disable_builtin_subagents=settings.disable_builtin_subagents,
