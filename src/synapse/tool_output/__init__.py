@@ -21,11 +21,9 @@ from synapse.tool_output.transformers import (
     GitSummaryTransformer,
     JsonTransformer,
     LogTransformer,
-    NativeTransformer,
     PathListTransformer,
     SearchTransformer,
     ToolOutputTransformer,
-    load_native_transformers,
     load_transformer_plugins,
 )
 
@@ -40,7 +38,6 @@ __all__ = [
     "JsonTransformer",
     "LogTransformer",
     "ModelRequestCompressionEvent",
-    "NativeTransformer",
     "PathListTransformer",
     "SearchTransformer",
     "ToolOutputRecord",
@@ -53,7 +50,6 @@ __all__ = [
     "clear_metrics_notifier",
     "content_to_text",
     "detect_content_type",
-    "load_native_transformers",
     "load_transformer_plugins",
     "set_metrics_notifier",
 ]

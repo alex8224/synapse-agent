@@ -223,11 +223,6 @@ class Settings(BaseSettings):
     tool_output_transform_plugins: list[str] = Field(
         default_factory=list, validation_alias="AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS"
     )
-    # Prefer the optional prebuilt native compression wheel when installed.
-    # Python transformers remain the automatic fallback on unsupported platforms.
-    enable_native_tool_output_compression: bool = Field(
-        default=True, validation_alias="AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION"
-    )
     # Prompt cache: append the per-build environment / git / date sections to the
     # system prompt and split the system message at the stable/dynamic boundary,
     # tagging the stable half with a cache breakpoint. One switch owns both: the

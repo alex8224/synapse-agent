@@ -20,7 +20,6 @@ from synapse.tool_output import (
     GitSummaryTransformer,
     LogTransformer,
     ModelRequestCompressionEvent,
-    NativeTransformer,
     SearchTransformer,
     ToolOutputRepository,
     ToolOutputTransformPipeline,
@@ -29,7 +28,6 @@ from synapse.tool_output import (
     clear_metrics_notifier,
     detect_content_type,
     jsonio,
-    load_native_transformers,
     load_transformer_plugins,
     set_metrics_notifier,
 )
@@ -164,10 +162,10 @@ def test_multiline_json_with_error_keywords_is_detected_as_json() -> None:
     assert detect_content_type(single).content_type is ContentType.JSON
 
     result = ToolOutputTransformPipeline().transform(
-        data, TransformContext(tool_name="execute", status="success")
+        single, TransformContext(tool_name="execute", status="success")
     )
-    assert result.transformer == "headroom-smart-crusher-v1"
-    assert '"file"' in result.content
+    assert result.transformer == "json-v1"
+    assert '"error"' in result.content
 
 
 def test_bracket_level_log_lines_are_detected_as_log() -> None:
@@ -183,7 +181,7 @@ def test_bracket_level_log_lines_are_detected_as_log() -> None:
     result = ToolOutputTransformPipeline().transform(
         log, TransformContext(tool_name="execute", status="success")
     )
-    assert result.transformer == "headroom-log-v1"
+    assert result.transformer == "log-v1"
     assert len(result.content) < len(log)
 
 
@@ -225,7 +223,7 @@ def test_path_listing_is_losslessly_folded() -> None:
         ]
     )
 
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         content, TransformContext(tool_name="glob", status="success")
     )
 
@@ -240,7 +238,7 @@ def test_path_listing_is_losslessly_folded() -> None:
 def test_path_listing_preserves_trailing_crlf() -> None:
     content = "\r\n".join(f"C:\\repo\\src\\module_{index}.py" for index in range(20)) + "\r\n"
 
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         content, TransformContext(tool_name="glob", status="success")
     )
 
@@ -252,7 +250,7 @@ def test_path_listing_preserves_trailing_crlf() -> None:
 def test_mixed_path_listing_is_not_classified_as_paths() -> None:
     content = "src/a.py\nsrc/b.py\nwarning: incomplete result\nsrc/c.py"
 
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         content, TransformContext(tool_name="glob", status="success")
     )
 
@@ -329,7 +327,7 @@ def test_distinct_numbered_source_range_remains_protected(tmp_path: Path) -> Non
 
 def test_numbered_non_source_read_file_keeps_content_detection() -> None:
     content = "\n".join(f"{index:6d}\t2026-01-01 INFO passed={index}" for index in range(40))
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         content,
         TransformContext(
             tool_name="read_file",
@@ -416,7 +414,7 @@ def test_diff_pipeline_records_bloat_profile() -> None:
         ]
     )
 
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         diff, TransformContext(tool_name="execute", status="success", query="new value")
     )
 
@@ -443,7 +441,7 @@ def test_low_effective_savings_diff_falls_back(tmp_path: Path) -> None:
     middleware = build_tool_output_transform_middleware(
         repo,
         threshold_bytes=100,
-        pipeline=ToolOutputTransformPipeline(use_native=False),
+        pipeline=ToolOutputTransformPipeline(),
     )
 
     result = middleware.wrap_tool_call(
@@ -501,7 +499,7 @@ def test_search_error_matches_are_ranked_not_required_verbatim() -> None:
         ]
     )
 
-    result = ToolOutputTransformPipeline(use_native=False).transform(
+    result = ToolOutputTransformPipeline().transform(
         content,
         TransformContext(tool_name="execute", status="success", query="worker error"),
     )
@@ -539,96 +537,15 @@ def test_log_transformer_deduplicates_warnings_and_keeps_stack_context() -> None
     assert result.metadata["omitted_lines"] > 0
 
 
-def test_native_transformers_are_used_when_wheel_is_installed() -> None:
-    pytest.importorskip("synapse_tool_compress_core")
-    pipeline = ToolOutputTransformPipeline(use_native=True)
+def test_pipeline_uses_builtin_python_transformer() -> None:
+    pipeline = ToolOutputTransformPipeline()
     result = pipeline.transform(
         _search(), TransformContext(tool_name="execute", status="success", query="authentication")
     )
 
-    assert result.transformer == "headroom-search-v1"
-    assert result.metadata["native"] is True
+    assert result.transformer == "search-v1"
+    assert result.metadata["execution_path"] == "python_only"
     assert "AUTH_TIMEOUT" in result.content
-
-
-def test_native_diff_context_supports_legacy_wheel(monkeypatch) -> None:
-    pytest.importorskip("synapse_tool_compress_core")
-    import synapse_tool_compress_core as native
-
-    calls: list[str] = []
-
-    def legacy_diff(content: str) -> dict:
-        calls.append(content)
-        return {
-            "content": content[: len(content) // 2],
-            "transformer": "headroom-diff-v1",
-            "content_type": "diff",
-        }
-
-    monkeypatch.setattr(native, "compress_diff", legacy_diff)
-    diff = "\n".join(
-        [
-            "diff --git a/app.py b/app.py",
-            "--- a/app.py",
-            "+++ b/app.py",
-            "@@ -1,80 +1,80 @@",
-            *[f" context {index}" for index in range(70)],
-            "-old",
-            "+new",
-        ]
-    )
-    transformer = next(
-        item
-        for item in load_native_transformers(enabled=True)
-        if ContentType.DIFF in item.content_types
-    )
-    result = transformer.transform(
-        diff, TransformContext(tool_name="execute", status="success", query="new")
-    )
-
-    assert calls == [diff]
-    assert result.metadata["context_supported"] is False
-    assert result.metadata["native"] is True
-
-
-def test_native_transform_error_falls_back_to_python_transformer() -> None:
-    broken_native = NativeTransformer(
-        name="broken-native",
-        content_type=ContentType.SEARCH,
-        native_transform=lambda _content, _context: (_ for _ in ()).throw(RuntimeError("broken")),
-    )
-    pipeline = ToolOutputTransformPipeline(transformers=[broken_native], use_native=False)
-    result = pipeline.transform(
-        _search(), TransformContext(tool_name="execute", status="success", query="authentication")
-    )
-
-    assert result.transformer == "search-v1"
-    assert result.metadata.get("native") is None
-    assert "AUTH_TIMEOUT" in result.content
-
-
-def test_native_pipeline_can_be_disabled() -> None:
-    pipeline = ToolOutputTransformPipeline(use_native=False)
-    result = pipeline.transform(
-        _search(), TransformContext(tool_name="execute", status="success", query="authentication")
-    )
-
-    assert result.transformer == "search-v1"
-
-
-def test_native_unhelpful_result_falls_back_to_python_transformer() -> None:
-    unhelpful_native = NativeTransformer(
-        name="unhelpful-native",
-        content_type=ContentType.SEARCH,
-        native_transform=lambda content, _context: {"content": content, "transformer": "native"},
-    )
-    pipeline = ToolOutputTransformPipeline(transformers=[unhelpful_native], use_native=False)
-    result = pipeline.transform(
-        _search(), TransformContext(tool_name="execute", status="success", query="authentication")
-    )
-
-    assert result.transformer == "search-v1"
-    assert len(result.content) < len(_search())
 
 
 def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) -> None:
@@ -656,7 +573,7 @@ def test_repository_events_include_execution_path_and_retrieval(tmp_path: Path) 
     events = repo.events(thread_id="thread-a")
     assert len(events) == 2
     assert events[1]["outcome"] == "transformed"
-    assert events[1]["execution_path"] in {"native", "python_only", "python_fallback_after_native"}
+    assert events[1]["execution_path"] == "python_only"
     assert events[1]["retrieval_bytes"] == 42
     assert events[0]["outcome"] == "passthrough"
     assert events[0]["ref"] is None

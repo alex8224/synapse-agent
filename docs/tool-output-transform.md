@@ -21,8 +21,7 @@ All transforms are deterministic. Synapse uses a low-cost `512` byte prefilter, 
   "enable_tool_output_transform": false,
   "tool_output_transform_threshold_bytes": 512,
   "tool_output_disabled_types": ["code"],
-  "tool_output_transform_plugins": ["my_package.transforms:my_transformer"],
-  "enable_native_tool_output_compression": true
+  "tool_output_transform_plugins": ["my_package.transforms:my_transformer"]
 }
 ```
 
@@ -35,26 +34,13 @@ AGENT_ENABLE_TOOL_OUTPUT_TRANSFORM=false
 AGENT_TOOL_OUTPUT_TRANSFORM_THRESHOLD_BYTES=512
 AGENT_TOOL_OUTPUT_DISABLED_TYPES=["code"]
 AGENT_TOOL_OUTPUT_TRANSFORM_PLUGINS=["my_package.transforms:my_transformer"]
-AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION=true
 ```
 
 A plugin exports an object (or zero-argument class) with `name`, `content_types`, and `transform(content, context)`. Plugin transformers precede built-ins for the declared content type.
 
-## Native Algorithms
-
-When `synapse_tool_compress_core` is installed, the pipeline automatically prefers its prebuilt Apache-2.0 native search, log, diff, JSON, and AST-code algorithms. The native result still passes Synapse's critical-fact and size checks; originals remain in Synapse SQLite and native CCR is disabled.
-
-The wheel is optional. If it is absent, incompatible with the host, or raises during a transform, Synapse uses the deterministic Python transformer for that content type. Disable native selection explicitly with:
-
-```text
-AGENT_ENABLE_NATIVE_TOOL_OUTPUT_COMPRESSION=false
-```
-
-During local development, install the wheel built under `rust/synapse-tool-compress-core/dist/` with `uv pip install`. After the wheel is published to the configured package index, Synapse can declare it as a normal optional dependency. No user needs Rust, Cargo, maturin, or a compiler; see [native-compression-core](native-compression-core.md).
-
 ## Status, events, retrieval, and metrics
 
-Inspect whether transformation and the optional native wheel are active:
+Inspect whether transformation is active:
 
 ```text
 synapse tool-output status
@@ -67,7 +53,7 @@ synapse tool-output stats
 synapse tool-output stats --thread <thread_id>
 ```
 
-Inspect recent per-output decisions for analysis. Each event includes content type, transformer, `native` / `python_only` / `python_fallback_after_native` / `passthrough` path, byte counts, retrieval bytes, critical retention, and the reversible reference when one was created:
+Inspect recent per-output decisions for analysis. Each event includes content type, transformer, `python_only` / `passthrough` path, byte counts, retrieval bytes, critical retention, and the reversible reference when one was created:
 
 ```text
 synapse tool-output events

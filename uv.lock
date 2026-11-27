@@ -2417,7 +2417,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "synapse-core-tool" },
-    { name = "synapse-tool-compress-core" },
     { name = "termaid" },
     { name = "texicode" },
     { name = "textual" },
@@ -2474,7 +2473,6 @@ requires-dist = [
     { name = "sherpa-onnx", marker = "extra == 'stt-local'", specifier = ">=1.13.8" },
     { name = "sherpa-onnx-core", marker = "extra == 'stt-local'", specifier = ">=1.13.8" },
     { name = "synapse-core-tool", directory = "rust/synapse-core-tool" },
-    { name = "synapse-tool-compress-core", directory = "rust/synapse-tool-compress-core" },
     { name = "termaid", specifier = "==0.7.1" },
     { name = "texicode", specifier = "==1.0.3" },
     { name = "textual", specifier = "==8.2.8" },
@@ -2499,11 +2497,6 @@ dev = [
 name = "synapse-core-tool"
 version = "0.1.5"
 source = { directory = "rust/synapse-core-tool" }
-
-[[package]]
-name = "synapse-tool-compress-core"
-version = "0.1.3"
-source = { directory = "rust/synapse-tool-compress-core" }
 
 [[package]]
 name = "tenacity"

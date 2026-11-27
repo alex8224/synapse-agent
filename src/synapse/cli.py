@@ -1397,26 +1397,12 @@ def tool_output_stats(
 
 @tool_output_app.command("status")
 def tool_output_status() -> None:
-    """Show whether tool-output transformation and native acceleration are usable."""
-    from synapse.tool_output.transformers import load_native_transformers
-
+    """Show whether tool-output transformation is enabled and where it stores data."""
     settings = load_settings()
-    native_requested = settings.enable_native_tool_output_compression
-    native_transformers = load_native_transformers(enabled=native_requested)
     console.print("Tool output transformation status")
     console.print(f"transform enabled: {settings.enable_tool_output_transform}")
     console.print(f"threshold bytes: {settings.tool_output_transform_threshold_bytes}")
     console.print(f"database: {settings.resolved_tool_output_db_path()}")
-    console.print(f"native enabled by config: {native_requested}")
-    console.print(f"native wheel loadable: {bool(native_transformers)}")
-    console.print(
-        "active native types: "
-        + (
-            ", ".join(sorted(next(iter(item.content_types)).value for item in native_transformers))
-            if native_transformers
-            else "none"
-        )
-    )
 
 
 @tool_output_app.command("events")

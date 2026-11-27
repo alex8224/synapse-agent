@@ -123,12 +123,10 @@ def build_tool_output_pipeline(settings: Any) -> ToolOutputTransformPipeline:
         return ToolOutputTransformPipeline(
             transformers=load_transformer_plugins(settings.tool_output_transform_plugins),
             disabled_types=set(settings.tool_output_disabled_types),
-            use_native=settings.enable_native_tool_output_compression,
         )
     except Exception:  # noqa: BLE001 - optional plugins must not block startup
         return ToolOutputTransformPipeline(
             disabled_types=set(settings.tool_output_disabled_types),
-            use_native=settings.enable_native_tool_output_compression,
         )
 
 

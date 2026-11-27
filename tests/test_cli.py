@@ -226,6 +226,13 @@ def test_cli_tool_output_eval_fixture():
     assert "passed: 3" in result.stdout
 
 
+def test_cli_tool_output_status():
+    result = runner.invoke(app, ["tool-output", "status"])
+    assert result.exit_code == 0
+    assert "Tool output transformation status" in result.stdout
+    assert "native" not in result.stdout.lower()
+
+
 def test_cli_mcp_help():
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0
